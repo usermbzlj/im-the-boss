@@ -1,15 +1,18 @@
 // ============================================================
-// I'm the Boss! — 游戏数据配置
-// 基于规则文档 §14 复刻版参数表
+// I'm the Boss! — 游戏静态数据
+// 版图/景气牌/牌堆构成依据官方规则（Face2Face 英文版 & 德版原规则）：
+//   · 16 个交易格，每格需要 2~5 位投资者，分红份数 = 投资者数 + 1
+//   · 15 张景气牌：$2M/股 起步，第 13 张起 $5M/股
+//   · 第 10~14 张景气牌背面终局骰面为 1 / 1-2 / 1-3 / 1-4 / 1-5，第 15 张必定结束
+//   · 98 张影响牌：家族成员 24、旅行 21（18 定向 + 3 万能）、招募 33、老板 10、阻止 10
 // ============================================================
 
-import type { Family, FamilyId, BoardSpace, DealTile, InfluenceCard } from './types'
+import type { Family, FamilyId, BoardSpace, DealGroup, DealTile, InfluenceCard } from './types'
 
-// --- 6个家族 ---
 export const FAMILIES: Record<FamilyId, Family> = {
   A: { id: 'A', name: '星桥资本', color: '#e74c3c', textColor: '#fff' },
   B: { id: 'B', name: '赤岩集团', color: '#e67e22', textColor: '#fff' },
-  C: { id: 'C', name: '银湾基金', color: '#95a5a6', textColor: '#fff' },
+  C: { id: 'C', name: '银湾基金', color: '#b8a13a', textColor: '#fff' },
   D: { id: 'D', name: '蓝鲸实业', color: '#3498db', textColor: '#fff' },
   E: { id: 'E', name: '绿洲商会', color: '#27ae60', textColor: '#fff' },
   F: { id: 'F', name: '黑松控股', color: '#9b59b6', textColor: '#fff' },
@@ -17,96 +20,76 @@ export const FAMILIES: Record<FamilyId, Family> = {
 
 export const FAMILY_IDS: FamilyId[] = ['A', 'B', 'C', 'D', 'E', 'F']
 
-// --- 16个交易格（§14.3） ---
-export const BOARD_SPACES: Omit<BoardSpace, 'isClosed' | 'placedDealTileId'>[] = [
-  { id: 1,  requiredFamilies: ['A','B'],       optionalFamilies: [],             optionalNeed: 0, dividends: 2 },
-  { id: 2,  requiredFamilies: ['C'],           optionalFamilies: [],             optionalNeed: 0, dividends: 3 },
-  { id: 3,  requiredFamilies: ['A','D','E'],   optionalFamilies: [],             optionalNeed: 0, dividends: 1 },
-  { id: 4,  requiredFamilies: ['D','E'],       optionalFamilies: [],             optionalNeed: 0, dividends: 2 },
-  { id: 5,  requiredFamilies: ['F'],           optionalFamilies: ['B','C','D','E'], optionalNeed: 2, dividends: 4 },
-  { id: 6,  requiredFamilies: ['A','C'],       optionalFamilies: ['E','F'],      optionalNeed: 1, dividends: 4 },
-  { id: 7,  requiredFamilies: ['B'],           optionalFamilies: ['C','D','F'],  optionalNeed: 1, dividends: 3 },
-  { id: 8,  requiredFamilies: ['E'],           optionalFamilies: ['A','B','C','F'], optionalNeed: 2, dividends: 5 },
-  { id: 9,  requiredFamilies: ['D','F'],       optionalFamilies: ['A','E'],      optionalNeed: 1, dividends: 4 },
-  { id: 10, requiredFamilies: ['A'],           optionalFamilies: ['B','C','D','E','F'], optionalNeed: 2, dividends: 6 },
-  { id: 11, requiredFamilies: ['B','E'],       optionalFamilies: [],             optionalNeed: 0, dividends: 3 },
-  { id: 12, requiredFamilies: ['C','F'],       optionalFamilies: ['A','D'],      optionalNeed: 1, dividends: 5 },
-  { id: 13, requiredFamilies: ['A','D'],       optionalFamilies: ['B','E','F'],  optionalNeed: 1, dividends: 5 },
-  { id: 14, requiredFamilies: ['B','C'],       optionalFamilies: ['A','D','E','F'], optionalNeed: 2, dividends: 6 },
-  { id: 15, requiredFamilies: ['E','F'],       optionalFamilies: ['A','B','D'],  optionalNeed: 1, dividends: 5 },
-  { id: 16, requiredFamilies: ['A','F'],       optionalFamilies: ['B','C','E'],  optionalNeed: 2, dividends: 7 },
+/** 全部必需 */
+const R = (...families: FamilyId[]): DealGroup => ({ families, need: families.length })
+/** N 选 M */
+const P = (need: number, ...families: FamilyId[]): DealGroup => ({ families, need })
+
+export const BOARD_SPACES: Array<Omit<BoardSpace, 'closedByTileId'>> = [
+  { id: 1, groups: [R('A', 'B')], dividends: 3 },
+  { id: 2, groups: [P(2, 'C', 'D', 'E')], dividends: 3 },
+  { id: 3, groups: [R('C', 'F'), P(1, 'A', 'B')], dividends: 4 },
+  { id: 4, groups: [R('A', 'D'), P(2, 'B', 'C', 'E', 'F')], dividends: 5 },
+  { id: 5, groups: [R('E', 'F')], dividends: 3 },
+  { id: 6, groups: [R('B'), P(2, 'A', 'C', 'D')], dividends: 4 },
+  { id: 7, groups: [R('A', 'B', 'C'), P(2, 'D', 'E', 'F')], dividends: 6 },
+  { id: 8, groups: [R('D', 'E', 'F')], dividends: 4 },
+  { id: 9, groups: [P(2, 'A', 'B', 'F')], dividends: 3 },
+  { id: 10, groups: [P(2, 'A', 'B', 'C'), P(2, 'D', 'E', 'F')], dividends: 5 },
+  { id: 11, groups: [R('A', 'E'), P(1, 'B', 'C', 'D', 'F')], dividends: 4 },
+  { id: 12, groups: [R('C', 'D', 'E'), P(1, 'A', 'B', 'F')], dividends: 5 },
+  { id: 13, groups: [R('B', 'D')], dividends: 3 },
+  { id: 14, groups: [P(5, 'A', 'B', 'C', 'D', 'E', 'F')], dividends: 6 },
+  { id: 15, groups: [R('F'), P(2, 'A', 'B', 'C', 'D', 'E')], dividends: 4 },
+  { id: 16, groups: [R('B', 'F'), P(2, 'A', 'C', 'D', 'E')], dividends: 5 },
 ]
 
-// --- 15张景气卡（§14.2） ---
 export const DEAL_TILES: DealTile[] = [
-  { id: 1,  shareValue: 1,  endGameFaces: undefined },
-  { id: 2,  shareValue: 2,  endGameFaces: undefined },
-  { id: 3,  shareValue: 2,  endGameFaces: undefined },
-  { id: 4,  shareValue: 3,  endGameFaces: undefined },
-  { id: 5,  shareValue: 3,  endGameFaces: undefined },
-  { id: 6,  shareValue: 4,  endGameFaces: undefined },
-  { id: 7,  shareValue: 4,  endGameFaces: undefined },
-  { id: 8,  shareValue: 5,  endGameFaces: undefined },
-  { id: 9,  shareValue: 5,  endGameFaces: undefined },
-  { id: 10, shareValue: 6,  endGameFaces: [6] },
-  { id: 11, shareValue: 7,  endGameFaces: [5, 6] },
-  { id: 12, shareValue: 8,  endGameFaces: [4, 5, 6] },
-  { id: 13, shareValue: 9,  endGameFaces: [3, 4, 5, 6] },
-  { id: 14, shareValue: 10, endGameFaces: [2, 3, 4, 5, 6] },
-  { id: 15, shareValue: 12, endGameFaces: [1, 2, 3, 4, 5, 6] }, // 自动结束
+  { id: 1, shareValue: 2, endFaces: [] },
+  { id: 2, shareValue: 2, endFaces: [] },
+  { id: 3, shareValue: 2, endFaces: [] },
+  { id: 4, shareValue: 2, endFaces: [] },
+  { id: 5, shareValue: 3, endFaces: [] },
+  { id: 6, shareValue: 3, endFaces: [] },
+  { id: 7, shareValue: 3, endFaces: [] },
+  { id: 8, shareValue: 3, endFaces: [] },
+  { id: 9, shareValue: 4, endFaces: [] },
+  { id: 10, shareValue: 4, endFaces: [1] },
+  { id: 11, shareValue: 4, endFaces: [1, 2] },
+  { id: 12, shareValue: 4, endFaces: [1, 2, 3] },
+  { id: 13, shareValue: 5, endFaces: [1, 2, 3, 4] },
+  { id: 14, shareValue: 5, endFaces: [1, 2, 3, 4, 5] },
+  { id: 15, shareValue: 5, endFaces: [1, 2, 3, 4, 5, 6] },
 ]
 
-// --- 生成98张影响牌 ---
+export const HAND_LIMIT = 12
+export const CARDS_PER_DRAW = 3
+export const STARTING_HAND = 5
+export const TOTAL_DEALS = 15
+export const MAX_SPEECHES_PER_PLAYER = 3
+export const MAX_OFFERS_PER_BOSS = 5
+export const MAX_STALEMATE_ROUNDS = 2
+/** 状态中保留的事件条数上限（UI 日志 / AI 提示词只需要最近一段） */
+export const MAX_EVENTS = 300
+
 export function createInfluenceDeck(): InfluenceCard[] {
   const cards: InfluenceCard[] = []
   let id = 1
-
-  // Clan: 每家族4张 × 6 = 24张
-  for (const fid of FAMILY_IDS) {
-    for (let i = 0; i < 4; i++) {
-      cards.push({ id: id++, type: 'CLAN', familyId: fid })
-    }
-  }
-
-  // Travel: 每家族3张定向 × 6 = 18张 + 3张万能 = 21张
-  for (const fid of FAMILY_IDS) {
-    for (let i = 0; i < 3; i++) {
-      cards.push({ id: id++, type: 'TRAVEL', familyId: fid })
-    }
-  }
-  for (let i = 0; i < 3; i++) {
-    cards.push({ id: id++, type: 'TRAVEL' }) // 万能旅行牌，无familyId
-  }
-
-  // Recruitment: 33张
-  for (let i = 0; i < 33; i++) {
-    cards.push({ id: id++, type: 'RECRUITMENT' })
-  }
-
-  // Boss: 10张
-  for (let i = 0; i < 10; i++) {
-    cards.push({ id: id++, type: 'BOSS' })
-  }
-
-  // Stop: 10张
-  for (let i = 0; i < 10; i++) {
-    cards.push({ id: id++, type: 'STOP' })
-  }
-
-  return cards // 24+21+33+10+10 = 98
+  for (const fid of FAMILY_IDS) for (let i = 0; i < 4; i++) cards.push({ id: id++, type: 'CLAN', familyId: fid })
+  for (const fid of FAMILY_IDS) for (let i = 0; i < 3; i++) cards.push({ id: id++, type: 'TRAVEL', familyId: fid })
+  for (let i = 0; i < 3; i++) cards.push({ id: id++, type: 'TRAVEL' })
+  for (let i = 0; i < 33; i++) cards.push({ id: id++, type: 'RECRUITMENT' })
+  for (let i = 0; i < 10; i++) cards.push({ id: id++, type: 'BOSS' })
+  for (let i = 0; i < 10; i++) cards.push({ id: id++, type: 'STOP' })
+  return cards // 98
 }
 
-// --- AI 玩家名字与人格绑定表 ---
-// 之前的设计是把名字列表（AI_NAMES）和人格ID列表（personaIds）分别独立
-// shuffle/分配给座位，两者是两个互不相关的随机排列——结果是显示名"稳如山"
-// 的玩家，人格系统提示词却自称"钱多多"（PERSONA_PROMPTS.greedy 里硬编码的
-// flavor 名字），台词与人设完全对不上。这里把名字与人格绑定为不可分割的
-// 整体，分配座位时整体 shuffle，保证"UI 显示名"与"AI 自称的名字"永远一致。
 export interface AIRosterEntry {
   name: string
   personaId: 'greedy' | 'grudge' | 'steady' | 'smile' | 'stingy'
 }
 
+/** 名字与人格绑定，整体打乱后分配座位，保证 UI 显示名与 AI 自称一致 */
 export const AI_ROSTER: AIRosterEntry[] = [
   { name: '妙算子', personaId: 'smile' },
   { name: '钱多多', personaId: 'greedy' },
@@ -115,23 +98,30 @@ export const AI_ROSTER: AIRosterEntry[] = [
   { name: '铁公鸡', personaId: 'stingy' },
 ]
 
-/** 兼容旧引用：仅取名字列表 */
-export const AI_NAMES = AI_ROSTER.map(r => r.name)
+// ---------- 确定性随机数（mulberry32） ----------
 
-// --- 工具函数 ---
-export function shuffle<T>(arr: T[]): T[] {
+export function randomSeed(): number {
+  return (Math.floor(Math.random() * 0xffffffff) >>> 0) || 1
+}
+
+/** 推进 rng 状态并返回 [0,1) 的随机数 */
+export function nextRandom(holder: { rng: number }): number {
+  holder.rng = (holder.rng + 0x6d2b79f5) | 0
+  let t = holder.rng
+  t = Math.imul(t ^ (t >>> 15), t | 1)
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+}
+
+export function shuffleWith<T>(holder: { rng: number }, arr: T[]): T[] {
   const result = [...arr]
   for (let i = result.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
+    const j = Math.floor(nextRandom(holder) * (i + 1))
     ;[result[i], result[j]] = [result[j], result[i]]
   }
   return result
 }
 
-export function rollDie(): number {
-  return Math.floor(Math.random() * 6) + 1
-}
-
-export function nextClockwise(position: number, maxSpaces: number): number {
-  return position % maxSpaces + 1
+export function rollDieWith(holder: { rng: number }): number {
+  return Math.floor(nextRandom(holder) * 6) + 1
 }

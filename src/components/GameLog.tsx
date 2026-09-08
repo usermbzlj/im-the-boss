@@ -1,34 +1,28 @@
 // ============================================================
-// GameLog — 游戏日志面板
+// GameLog — 事件日志面板（事件 → 文案由 text/narrate 统一渲染）
 // ============================================================
 
 import { useEffect, useRef } from 'react'
-import type { LogEntry } from '../engine/types'
+import type { GameState } from '../engine/types'
+import { narrate } from '../text/narrate'
 
-interface GameLogProps {
-  log: LogEntry[]
-}
-
-export default function GameLog(props: GameLogProps) {
-  const { log } = props
+export default function GameLog({ state }: { state: GameState }) {
   const listRef = useRef<HTMLDivElement>(null)
+  const last = state.events[state.events.length - 1]?.id
 
-  // 自动滚动到最新日志
+  // 自动滚动到最新
   useEffect(() => {
     const el = listRef.current
-    if (el) {
-      el.scrollTop = el.scrollHeight
-    }
-  }, [log])
+    if (el) el.scrollTop = el.scrollHeight
+  }, [last])
 
   return (
     <div className="log-panel">
       <div className="log-list" ref={listRef}>
-        {log.map((entry) => (
-          <div key={entry.id} className={`log-entry ${entry.type}`}>
-            {entry.text}
-          </div>
-        ))}
+        {state.events.map(e => {
+          const { text, tone } = narrate(state, e)
+          return <div key={e.id} className={`log-entry ${tone}`}>{text}</div>
+        })}
       </div>
     </div>
   )

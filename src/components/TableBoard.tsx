@@ -1,147 +1,124 @@
 // ============================================================
-// TableBoard — 环形桌游版图
+// TableBoard — 16 格环形版图 + 中央景气牌 + 公共区 + 座位
 // ============================================================
 
-import type { GameState, FamilyId } from '../engine/types'
-import FamilyChip from './FamilyChip'
-import PlayerSeat, { PublicMarket } from './PlayerSeat'
+import type { GameState, BoardSpace } from '../engine/types'
 import { FAMILIES } from '../engine/config'
-import { getCurrentDealTile, getGrossDealValue, getEndGameProbability } from '../engine/gameEngine'
+import { getCurrentTile, getGrossValue, getEndProbability, isRequiredGroup, canCompleteAlone } from '../engine/rules'
 import { getActingPlayerId } from '../engine/validator'
-
-const FAMILIES_NAME = (f: FamilyId) => FAMILIES[f].name
+import FamilyChip from './FamilyChip'
+import PlayerSeat from './PlayerSeat'
 
 interface TableBoardProps {
   state: GameState
-  onChooseMarker?: (spaceId: number) => void
+  thinkingId: number | null
+  onPlaceMarker?: (spaceId: number) => void
 }
 
-// 环形布局：上6 右2 下6 左2
-const RING_POSITIONS: Record<number, { row: number; col: number }> = {
-  1: { row: 0, col: 0 }, 2: { row: 0, col: 1 }, 3: { row: 0, col: 2 },
-  4: { row: 0, col: 3 }, 5: { row: 0, col: 4 }, 6: { row: 0, col: 5 },
-  7: { row: 1, col: 5 }, 8: { row: 2, col: 5 },
-  9: { row: 3, col: 5 }, 10: { row: 3, col: 4 }, 11: { row: 3, col: 3 },
-  12: { row: 3, col: 2 }, 13: { row: 3, col: 1 }, 14: { row: 3, col: 0 },
-  15: { row: 2, col: 0 }, 16: { row: 1, col: 0 },
+// 环形：上 6 / 右 2 / 下 6 / 左 2（顺时针）
+const RING: Record<number, { row: number; col: number }> = {
+  1: { row: 1, col: 1 }, 2: { row: 1, col: 2 }, 3: { row: 1, col: 3 }, 4: { row: 1, col: 4 }, 5: { row: 1, col: 5 }, 6: { row: 1, col: 6 },
+  7: { row: 2, col: 6 }, 8: { row: 3, col: 6 },
+  9: { row: 4, col: 6 }, 10: { row: 4, col: 5 }, 11: { row: 4, col: 4 }, 12: { row: 4, col: 3 }, 13: { row: 4, col: 2 }, 14: { row: 4, col: 1 },
+  15: { row: 3, col: 1 }, 16: { row: 2, col: 1 },
 }
 
-export default function TableBoard({ state, onChooseMarker }: TableBoardProps) {
-  const tile = getCurrentDealTile(state)
+function spaceTooltip(space: BoardSpace): string {
+  const parts = space.groups.map(g => isRequiredGroup(g)
+    ? `必需：${g.families.map(f => `${f}·${FAMILIES[f].name}`).join('、')}`
+    : `${g.families.map(f => `${f}·${FAMILIES[f].name}`).join('/')} 中选 ${g.need}`)
+  return `#${space.id}｜${parts.join('｜')}｜${space.dividends} 份分红`
+}
+
+export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBoardProps) {
+  const tile = getCurrentTile(state)
   const nextTile = state.dealTiles[state.dealTileIndex + 1]
-  const gross = getGrossDealValue(state)
-  const endProb = getEndGameProbability(tile)
-  // 反应窗口中的"当前反应者"是引擎从持有阻止牌的玩家里挑出来的（见
-  // gameEngine.ts nextReactorWithStop），高亮这个人等于暴露"谁手里有阻止
-  // 牌"的隐藏信息。除非轮到人类自己反应，否则该阶段不对外暴露具体是谁。
-  const rawActingId = getActingPlayerId(state)
-  const actingId = state.phase === 'REACTION_WINDOW' && rawActingId !== 0 ? null : rawActingId
-  const choosingMarker = state.phase === 'CHOOSE_MARKER_POSITION'
-  const canHumanChoose = choosingMarker && state.markerChooserId === 0
-
-  const seatLayout: Array<{ id: number; pos: 'top' | 'right' | 'bottom' | 'left'; index: number }> = []
-  const n = state.players.length
-  const positions: Array<'top' | 'right' | 'bottom' | 'left'> =
-    n <= 3 ? ['bottom', 'left', 'top'] :
-    n === 4 ? ['bottom', 'left', 'top', 'right'] :
-    ['bottom', 'left', 'top', 'top', 'right', 'right']
-  for (let i = 0; i < n; i++) {
-    const pos = positions[i] ?? 'top'
-    const index = seatLayout.filter(s => s.pos === pos).length
-    seatLayout.push({ id: i, pos, index })
-  }
-
-  const renderSeats = (pos: 'top' | 'right' | 'bottom' | 'left') =>
-    seatLayout.filter(s => s.pos === pos).map(s => (
-      <PlayerSeat
-        key={s.id}
-        state={state}
-        playerId={s.id}
-        position={pos}
-        stackIndex={s.index}
-        stackTotal={seatLayout.filter(x => x.pos === pos).length}
-        isActing={actingId === s.id}
-      />
-    ))
+  const gross = getGrossValue(state)
+  const rawActing = getActingPlayerId(state)
+  // 反应窗口依次询问所有人，但仍不显示当前被询问者：
+  // 持阻止牌者需要真正决策（LLM 耗时更长），显示"谁在想"会暴露手牌
+  const hideActor = state.phase === 'REACTION' && rawActing !== 0
+  const actingId = hideActor ? -1 : rawActing
+  const shownThinking = hideActor ? null : thinkingId
+  const canPlace = state.phase === 'PLACE_MARKER' && state.markerChooserId === 0
+  const neutral = state.investors.filter(inv => inv.ownerId === null)
+  const closedCount = state.board.filter(b => b.closedByTileId != null).length
 
   return (
     <div className="table-board">
-      {renderSeats('top')}
-      {renderSeats('left')}
-
-      <div className="table-center">
-        <div className="deal-pile">
-          <div className="pile-label">当前股价</div>
-          <div className="pile-value">${tile?.shareValue ?? 0}M/股</div>
-          <div className="pile-gross">本格总额 <b>${gross}M</b></div>
-          {nextTile && (
-            <div className="pile-next">下一张: ${nextTile.shareValue}M/股</div>
-          )}
-          {state.completedDeals >= 9 && tile?.endGameFaces && (
-            <div className="pile-endgame">
-              终局骰面: {tile.endGameFaces.join(',')} · 概率 {endProb}%
-            </div>
-          )}
-          {state.dieResult != null && (
-            <div className="die-display">🎲 {state.dieResult}</div>
-          )}
-        </div>
-        <PublicMarket state={state} />
+      <div className="seats-row">
+        {state.players.map(p => (
+          <PlayerSeat key={p.id} state={state} playerId={p.id} isActing={actingId === p.id} isThinking={shownThinking === p.id} />
+        ))}
       </div>
 
-      <div className="ring-grid">
-        {state.board.map(space => {
-          const pos = RING_POSITIONS[space.id]
-          const isCurrent = space.id === state.dollarMarkerPos
-          const clickable = canHumanChoose && !space.isClosed
-          const reqNames = space.requiredFamilies.map(f => `${f}·${FAMILIES_NAME(f)}`).join('、')
-          const optNames = space.optionalFamilies.map(f => `${f}·${FAMILIES_NAME(f)}`).join('、')
-          const tooltip = clickable
-            ? '点击选择起始位置'
-            : `#${space.id}｜必需：${reqNames || '无'}${space.optionalNeed > 0 ? `｜可选（${space.optionalFamilies.length}选${space.optionalNeed}）：${optNames}` : ''}｜${space.dividends}份分红`
-          return (
-            <div
-              key={space.id}
-              className={`ring-cell${isCurrent ? ' current' : ''}${space.isClosed ? ' closed' : ''}${clickable ? ' selectable' : ''}`}
-              style={{ gridRow: pos.row + 1, gridColumn: pos.col + 1 }}
-              onClick={() => clickable && onChooseMarker?.(space.id)}
-              title={tooltip}
-            >
-              {isCurrent && <span className="marker-icon">💰</span>}
-              <div className="cell-top">
-                <span className="cell-id">#{space.id}</span>
-                <span className="cell-div">{space.dividends}份</span>
-                {isCurrent && !space.isClosed && <span className="cell-total">${gross}M</span>}
-              </div>
-              {space.isClosed ? (
-                <span className="cell-closed">✔ 已成交</span>
-              ) : (
-                <>
-                  <div className="cell-req">
-                    <span className="cell-req-label req" title="必需家族：全部要有代表">必</span>
-                    {space.requiredFamilies.map(f => (
-                      <FamilyChip key={`r-${f}`} familyId={f} size="sm" kind="required" />
-                    ))}
+      <div className="ring-wrap">
+        <div className="ring-grid">
+          {state.board.map(space => {
+            const pos = RING[space.id]
+            const isCurrent = space.id === state.markerPos
+            const closed = space.closedByTileId != null
+            const clickable = canPlace && !closed
+            const soloOk = !closed && canCompleteAlone(state, 0, space)
+            return (
+              <div
+                key={space.id}
+                className={`ring-cell${isCurrent ? ' current' : ''}${closed ? ' closed' : ''}${clickable ? ' selectable' : ''}${state.negotiation?.spaceId === space.id ? ' negotiating' : ''}`}
+                style={{ gridRow: pos.row, gridColumn: pos.col }}
+                onClick={() => clickable && onPlaceMarker?.(space.id)}
+                title={clickable ? `点击把金钱标记放在 #${space.id}` : spaceTooltip(space)}
+              >
+                {isCurrent && <span className="marker-icon" title="金钱标记">💰</span>}
+                <div className="cell-top">
+                  <span className="cell-id">#{space.id}</span>
+                  <span className="cell-div">{space.dividends}份</span>
+                  {isCurrent && !closed && <span className="cell-total">${gross}M</span>}
+                  {soloOk && !isCurrent && <span className="cell-solo" title="仅凭你的投资者 + 手中家族卡即可凑齐">✓自足</span>}
+                </div>
+                {closed ? (
+                  <div className="cell-closed">
+                    <span>已成交</span>
+                    <span className="cell-tile">景气牌 #{space.closedByTileId}</span>
                   </div>
-                  {space.optionalNeed > 0 && (
-                    <div className="cell-req">
-                      <span className="cell-req-label opt" title={`可选家族：${space.optionalFamilies.length}个中凑${space.optionalNeed}个`}>
-                        选{space.optionalNeed}
+                ) : (
+                  space.groups.map((g, i) => (
+                    <div key={i} className="cell-group">
+                      <span className={`cell-group-label ${isRequiredGroup(g) ? 'req' : 'opt'}`}>
+                        {isRequiredGroup(g) ? '必' : `选${g.need}`}
                       </span>
-                      {space.optionalFamilies.map(f => (
-                        <FamilyChip key={`o-${f}`} familyId={f} size="sm" kind="optional" />
+                      {g.families.map(f => (
+                        <FamilyChip key={f} familyId={f} size="sm" kind={isRequiredGroup(g) ? 'required' : 'optional'} />
                       ))}
                     </div>
-                  )}
-                </>
-              )}
-            </div>
-          )
-        })}
-      </div>
+                  ))
+                )}
+              </div>
+            )
+          })}
 
-      {renderSeats('right')}
-      {renderSeats('bottom')}
+          <div className="table-center">
+            <div className="deal-pile">
+              <div className="pile-label">景气牌 #{tile?.id ?? '-'} · 当前股价</div>
+              <div className="pile-value">${tile?.shareValue ?? 0}M<span>/份</span></div>
+              <div className="pile-gross">当前格 #{state.markerPos} 总额 <b>${gross}M</b></div>
+              <div className="pile-next">
+                {nextTile ? `下一张 $${nextTile.shareValue}M/份` : '最后一张'}
+                {tile && tile.endFaces.length > 0 && (
+                  <span className="pile-endgame"> · 成交后 {getEndProbability(tile)}% 终局（骰 {tile.endFaces.join('/')}）</span>
+                )}
+              </div>
+              <div className="pile-meta">已成交 {closedCount}/15 · 牌堆 {state.drawPile.length} · 弃牌 {state.discardPile.length}</div>
+              {state.lastDie != null && <div className="die-display">🎲 {state.lastDie}</div>}
+            </div>
+            {neutral.length > 0 && (
+              <div className="public-market" title="4/5 人局多出的投资者：招募三连必须先从这里夺取">
+                <span className="market-title">公共区</span>
+                {neutral.map(inv => <FamilyChip key={inv.familyId} familyId={inv.familyId} size="sm" />)}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

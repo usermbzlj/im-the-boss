@@ -259,7 +259,7 @@ export async function chatCompletion(
   } catch (e) {
     if (e instanceof Error && e.name === 'AbortError') {
       // 无法确定是"用户配置的超时"还是"外部 signal 因为轮到别人而取消"，
-      // 但对日志来说都归为一类即可，具体语义由调用方（llmAgent）自行判断。
+      // 但对日志来说都归为一类即可，具体语义由调用方（llmPolicy）自行判断。
       logFailure(opts.signal?.aborted ? '请求被取消（该AI回合已过期）' : `请求超时（>${timeoutMs}ms，可在设置中调大超时时间）`)
     } else if (!(e instanceof Error && e.message.startsWith('API '))) {
       logFailure(e instanceof Error ? e.message : String(e))

@@ -1,66 +1,74 @@
 # 我是大老板（I'm the Boss!）
 
-基于经典谈判桌游《I'm the Boss!》的网页单机版：1 名人类玩家 + 2~5 名 AI 玩家。
-AI 支持接入任意 OpenAI 兼容接口（LLM 决策 + 台词扮演），未配置时使用内置启发式 AI。
-完整规则设定见 `新.md`。
+Sid Sackson 经典谈判桌游《I'm the Boss!》的网页单机版：1 名人类 + 2–5 名电脑玩家围桌谈判分成。
 
-## 运行
+- 规则按官方版图 / 景气牌 / 98 张影响牌实现，谈判被结构化为有限步的回合制，人类与电脑同桌且对局必定收敛。
+- 电脑玩家可接入任意 OpenAI 兼容接口（LLM 决策 + 人格台词）；未配置或调用失败时由内置启发式策略接管。两者都只能从引擎枚举的合法动作中选择，游戏不会因为 AI 出错而卡住。
+- 无后端、无数据库。对局自动存档在浏览器 `localStorage`；开局可填种子，同一种子的发牌、骰子与启发式决策完全可复现。
+
+## 快速开始
 
 ```bash
 npm install
-npm run dev      # 开发服务器
-npm run build    # 类型检查 + 产物构建（输出 dist/）
+npm run dev          # 开发服务器（http://localhost:3000）
+npm run build        # 类型检查 + 产物构建（dist/）
 ```
 
-无后端、无数据库；对局自动存档在浏览器 localStorage。
+## 怎么玩
 
-## LLM 设置（游戏内 ⚙️ 设置面板）
+1. 开始页选择人数（3–6 人，含你）、名字，可选种子；有存档时可续局。
+2. 顶部引导条告诉你当前阶段与该做什么；底部行动区只显示此刻合法的操作；点手牌可查看并打出这张牌。
+3. 作为 Boss：用方案编辑器挑代表、定分成，等被选用代表的持有者同意后宣布成交；其他玩家有一次最后出牌的机会。
+4. 作为非 Boss：喊话报价、打家族卡入局、用旅行 / 招募 / 老板牌搅局或夺权，或者索要封口费。
+5. 右侧标签页：谈判桌（席位竞价与当前方案）、日志、交易历史（每笔分成与累计现金）。
+6. 点 📖 查看规则速查，点 ⚙️ 配置 LLM。
+
+## LLM 设置（游戏内 ⚙️）
 
 | 配置项 | 说明 |
 | --- | --- |
-| Base URL / API Key / 模型名 | 任意 OpenAI 兼容接口（DeepSeek、Ollama、vLLM 等） |
-| 温度 | 决策类任务建议 0~0.6 |
-| 请求超时（秒） | 默认 60s；thinking/reasoning 模型建议调大。超时后该次决策自动降级为基础 AI，不会卡游戏 |
-| 自定义请求体 | JSON 对象，顶层字段合并进每次请求（同名覆盖默认值）。用于操控模型专有参数，如 DeepSeek 关思考 `{"thinking":{"type":"disabled"}}`、Qwen `{"enable_thinking":false}`、OpenAI `{"reasoning_effort":"low"}`、调大 `{"max_tokens":2000}` |
-| AI 行动节奏 | 仅影响 AI 行动前的停顿观感，不影响请求 |
+| Base URL / API Key / 模型名 | 任意 OpenAI 兼容 `chat/completions` 接口（DeepSeek、OpenAI、Ollama、vLLM…） |
+| 温度 | 决策任务建议 0–0.6（默认 0.5） |
+| 请求超时（秒） | 默认 60；thinking / reasoning 模型建议调大。超时后本次决策自动降级为启发式 |
+| 自定义请求体 | JSON 对象，顶层字段合并进请求。例：DeepSeek 关思考 `{"thinking":{"type":"disabled"}}`、Qwen `{"enable_thinking":false}`、OpenAI `{"reasoning_effort":"low"}` |
+| AI 行动节奏 | 只影响电脑行动前的停顿观感 |
 
-面板底部可查看最近 20 条 LLM 调用日志（用途/耗时/响应预览），便于排查接口问题。
+面板底部可查看最近 20 条调用日志（用途 / 耗时 / 请求与响应预览）。
 
-## 架构
+## 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [docs/rules.md](./docs/rules.md) | 完整规则：组件、开局、回合、交易需求与金额、谈判、影响牌、终局、判例、数字版实现约定 |
+| [docs/architecture.md](./docs/architecture.md) | 代码分层与核心契约：纯函数引擎、事件流、合法动作单一口径、GameSession 运行时、文案层、前端、存档 |
+| [docs/ai.md](./docs/ai.md) | 电脑玩家：Policy 接口、启发式策略与人格参数、LLM 按编号选择协议、回退链、信息边界 |
+| [docs/development.md](./docs/development.md) | 开发指南：脚本、测试体系、仿真回归、目录约定、如何新增动作 / 修改规则 / 变更状态结构 |
+| [docs/refactor-notes.md](./docs/refactor-notes.md) | 重构对照：旧版确认的问题与新版处理方式 |
+
+静态数据（版图、景气牌、牌堆、数值上限）的唯一来源是 `src/engine/config.ts`，文档表格与其保持一致，并由 `tests/config.test.ts` 校验。
+
+## 目录
 
 ```
 src/
-  engine/          纯函数游戏引擎（不依赖 React / AI）
-    types.ts         全部类型与 GameAction 定义
-    config.ts        家族/棋盘格/价值牌/牌堆等静态数据
-    gameEngine.ts    reducer 与全部规则结算逻辑
-    validator.ts     合法动作枚举（UI 与 AI 共用同一份口径）
-    contractBuilder.ts 预生成结构合法的成交方案候选（独吞/均分/满足要价）
-  ai/
-    llmClient.ts     OpenAI 兼容客户端（超时/自定义请求体/调用日志）
-    llmAgent.ts      LLM 决策协议：按编号选动作，引擎反查动作本体
-    prompts.ts       局面序列化（席位竞价视图/出借确认/交易历史等）
-    promptTexts.ts   规则摘要与人格文案（改文案只动这个文件）
-    fallbackAI.ts    启发式兜底 AI（无 LLM / LLM 失败时接管，保证游戏永不冻结）
-  components/      React UI
-  hooks/useGame.ts 异步 AI 管线（stateVersion 驱动 + 看门狗兜底）
-scripts/simulate.ts  自动化对局仿真（冻结/死循环回归测试）
+  engine/       纯函数引擎：types / config / rules / validator / gameEngine（不含任何文案）
+  text/         文案层：narrate（事件 → 文字）、labels（动作 / 卡牌 / 方案 → 文字），UI 与 LLM 提示词共用
+  ai/           电脑玩家：policy（接口）/ heuristic（启发式）/ llmPolicy + prompts + promptTexts + personas / llmClient
+  game/         GameSession：框架无关的对局运行时（持有状态、驱动电脑玩家、节奏停顿、AbortSignal）
+  hooks/        useGameSession：把 GameSession 接进 React
+  components/   React 界面（ActionDock、CardHand、OfferEditor、NegotiationPanel、TableBoard …）
+  sim/          仿真工具：整局运行 + 不变量检查（CLI 与测试共用）
+  utils/        storage：带版本号的 localStorage 存档
+tests/          vitest：静态数据 / 规则场景 / 合法动作性质 / 运行时 / LLM 协议 / 整局仿真
+scripts/        simulate.ts：命令行批量仿真与单局追踪
+docs/           规则、架构、AI、开发指南、重构对照
 ```
 
-## 谈判流程关键设计（与实现一一对应）
-
-- **要价资格**：只有"拥有未被旅行牌打飞、且属于本格需求家族的在场代表"的玩家，正式要价才会被记录（`canPlayerDemand`）。代表被打飞即失去资格（要价同步失效），再打出对应家族成员卡可重新入场；没有代表的玩家可以喊话但无谈判筹码。
-- **竞价**：同一家族存在多方代表时（投资者牌 vs 家族成员卡、或多张家族卡），按"使用成本"排序竞争——Boss 自己的代表免费，其他人取其要价（定向要价优先），没要价的按总额 15% 估默认心理价，拒绝过出借的降权（`getRepCost` / `buildSelectedRepresentatives`）。人类 Boss 在方案编辑器里可手动挑选每个家族用谁的代表、勾选用哪些可选家族；落选者分文不得。
-- **出借确认与拒绝**：方案中被选用代表的玩家逐个确认。拒绝＝否决当前方案（方案作废、回到谈判），代表**留在桌上**（规则 §35.7 家族成员牌打出后不可收回），Boss 可加价重提或改选竞价对手。每任 Boss 最多 3 次提案（含宣布成交时自动生成的"无分成"默认方案）；提案耗尽后再被拒绝，交易直接流局——这是防止"拒绝↔重提"死循环的收敛保证。
-- **方案时效性**：提案后代表若被旅行牌打飞或被招募易主，方案自动作废（`voidContractIfStale`），结算入口处还有一道兜底校验，杜绝"带着失效代表成交"。
-- **信息安全**：反应窗口只询问持有阻止牌的玩家，UI 与提示文案对"当前等谁反应"统一脱敏，避免泄露手牌信息。
-
-## 仿真回归
+## 验证
 
 ```bash
-npx tsx scripts/simulate.ts 200          # fallback/random 各半，混合 3~6 人局
-npx tsx scripts/simulate.ts 4 7 random   # 单局追踪：4人局 seed=7 random 模式
+npm run typecheck          # 严格模式 TypeScript（含 tests/）
+npm test                   # vitest：66 个用例，含 3~6 人整局仿真
+npm run simulate -- 400    # 400 局回归：启发式 / 随机各半，逐步断言不变量
+npm run check              # 以上三项串行
 ```
-
-fallback 模式走真实游戏路径（启发式 AI 决策），断言不冻结、有限步收敛；
-random 模式纯随机选合法动作，仅作极端分支压力测试，收敛步数显著更多（预算按模式区分）。
