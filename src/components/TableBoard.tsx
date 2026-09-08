@@ -1,11 +1,12 @@
 // ============================================================
-// TableBoard — 16 格环形版图 + 中央景气牌 + 公共区 + 座位
+// TableBoard — 环形版图（16 / 24 / 32 格，按变体自适应）+ 中央景气牌 + 公共区 + 座位
 // ============================================================
 
-import type { GameState, BoardSpace } from '../engine/types'
-import { FAMILIES } from '../engine/config'
-import { getCurrentTile, getGrossValue, getEndProbability, isRequiredGroup, canCompleteAlone } from '../engine/rules'
+import type { GameState, BoardSpace, SpaceKind } from '../engine/types'
+import { FAMILIES, ringLayout, getVariant } from '../engine/config'
+import { getCurrentTile, getGrossValue, getEndProbability, isRequiredGroup, canCompleteAlone, effectiveShareValue } from '../engine/rules'
 import { getActingPlayerId } from '../engine/validator'
+import { spaceKindName, spaceKindEffect } from '../text/narrate'
 import FamilyChip from './FamilyChip'
 import PlayerSeat from './PlayerSeat'
 
@@ -15,25 +16,26 @@ interface TableBoardProps {
   onPlaceMarker?: (spaceId: number) => void
 }
 
-// 环形：上 6 / 右 2 / 下 6 / 左 2（顺时针）
-const RING: Record<number, { row: number; col: number }> = {
-  1: { row: 1, col: 1 }, 2: { row: 1, col: 2 }, 3: { row: 1, col: 3 }, 4: { row: 1, col: 4 }, 5: { row: 1, col: 5 }, 6: { row: 1, col: 6 },
-  7: { row: 2, col: 6 }, 8: { row: 3, col: 6 },
-  9: { row: 4, col: 6 }, 10: { row: 4, col: 5 }, 11: { row: 4, col: 4 }, 12: { row: 4, col: 3 }, 13: { row: 4, col: 2 }, 14: { row: 4, col: 1 },
-  15: { row: 3, col: 1 }, 16: { row: 2, col: 1 },
-}
+const KIND_ICON: Record<SpaceKind, string> = { STANDARD: '', LANDMARK: '🏛', PREMIUM: '🔥', BLACK_MARKET: '🕶', HEADHUNT: '🎯' }
 
-function spaceTooltip(space: BoardSpace): string {
+function spaceTooltip(state: GameState, space: BoardSpace): string {
   const parts = space.groups.map(g => isRequiredGroup(g)
     ? `必需：${g.families.map(f => `${f}·${FAMILIES[f].name}`).join('、')}`
     : `${g.families.map(f => `${f}·${FAMILIES[f].name}`).join('/')} 中选 ${g.need}`)
-  return `#${space.id}｜${parts.join('｜')}｜${space.dividends} 份分红`
+  const kind = space.kind !== 'STANDARD' ? `｜${spaceKindName(space.kind)}：${spaceKindEffect(space.kind)}` : ''
+  const landlord = space.landlordId != null ? `｜主人：${state.players[space.landlordId]?.name}` : ''
+  return `#${space.id}｜${parts.join('｜')}｜${space.dividends} 份分红${kind}${landlord}`
 }
 
 export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBoardProps) {
   const tile = getCurrentTile(state)
   const nextTile = state.dealTiles[state.dealTileIndex + 1]
   const gross = getGrossValue(state)
+  const layout = ringLayout(state.board.length)
+  const sizeClass = state.board.length > 24 ? ' ring-xl' : state.board.length > 16 ? ' ring-lg' : ''
+  const currentSpace = state.board.find(b => b.id === state.markerPos)
+  const shareNow = currentSpace ? effectiveShareValue(state, currentSpace) : (tile?.shareValue ?? 0)
+  const variant = getVariant(state.variantId)
   const rawActing = getActingPlayerId(state)
   // 反应窗口依次询问所有人，但仍不显示当前被询问者：
   // 持阻止牌者需要真正决策（LLM 耗时更长），显示"谁在想"会暴露手牌
@@ -53,25 +55,33 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBo
       </div>
 
       <div className="ring-wrap">
-        <div className="ring-grid">
-          {state.board.map(space => {
-            const pos = RING[space.id]
+        <div
+          className={`ring-grid${sizeClass}`}
+          style={{
+            gridTemplateColumns: `repeat(${layout.cols}, minmax(var(--cell-min), 1fr))`,
+            gridTemplateRows: `repeat(${layout.rows}, minmax(var(--cell-min-h), auto))`,
+          }}
+        >
+          {state.board.map((space, idx) => {
+            const pos = layout.cells[idx]
             const isCurrent = space.id === state.markerPos
             const closed = space.closedByTileId != null
             const clickable = canPlace && !closed
             const soloOk = !closed && canCompleteAlone(state, 0, space)
+            const special = space.kind !== 'STANDARD'
             return (
               <div
                 key={space.id}
-                className={`ring-cell${isCurrent ? ' current' : ''}${closed ? ' closed' : ''}${clickable ? ' selectable' : ''}${state.negotiation?.spaceId === space.id ? ' negotiating' : ''}`}
+                className={`ring-cell${isCurrent ? ' current' : ''}${closed ? ' closed' : ''}${clickable ? ' selectable' : ''}${state.negotiation?.spaceId === space.id ? ' negotiating' : ''}${special ? ` kind-${space.kind.toLowerCase()}` : ''}`}
                 style={{ gridRow: pos.row, gridColumn: pos.col }}
                 onClick={() => clickable && onPlaceMarker?.(space.id)}
-                title={clickable ? `点击把金钱标记放在 #${space.id}` : spaceTooltip(space)}
+                title={clickable ? `点击把金钱标记放在 #${space.id}` : spaceTooltip(state, space)}
               >
                 {isCurrent && <span className="marker-icon" title="金钱标记">💰</span>}
                 <div className="cell-top">
                   <span className="cell-id">#{space.id}</span>
                   <span className="cell-div">{space.dividends}份</span>
+                  {special && <span className="cell-kind" title={spaceKindEffect(space.kind)}>{KIND_ICON[space.kind]}{spaceKindName(space.kind)}</span>}
                   {isCurrent && !closed && <span className="cell-total">${gross}M</span>}
                   {soloOk && !isCurrent && <span className="cell-solo" title="仅凭你的投资者 + 手中家族卡即可凑齐">✓自足</span>}
                 </div>
@@ -79,6 +89,7 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBo
                   <div className="cell-closed">
                     <span>已成交</span>
                     <span className="cell-tile">景气牌 #{space.closedByTileId}</span>
+                    {space.landlordId != null && <span className="cell-landlord" title="地标主人：每笔成交收租">🏛 {state.players[space.landlordId]?.name}</span>}
                   </div>
                 ) : (
                   space.groups.map((g, i) => (
@@ -96,10 +107,13 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBo
             )
           })}
 
-          <div className="table-center">
+          <div className="table-center" style={{ gridRow: `2 / span ${layout.rows - 2}`, gridColumn: `2 / span ${layout.cols - 2}` }}>
             <div className="deal-pile">
-              <div className="pile-label">景气牌 #{tile?.id ?? '-'} · 当前股价</div>
-              <div className="pile-value">${tile?.shareValue ?? 0}M<span>/份</span></div>
+              <div className="pile-label">景气牌 #{tile?.id ?? '-'} / {state.dealTiles.length} · 当前股价</div>
+              <div className="pile-value">
+                ${shareNow}M<span>/份</span>
+                {shareNow !== (tile?.shareValue ?? 0) && <span className="pile-adjust" title="景气牌股价 + 抢手格 / 利好 / 利空">（景气牌 ${tile?.shareValue ?? 0}M）</span>}
+              </div>
               <div className="pile-gross">当前格 #{state.markerPos} 总额 <b>${gross}M</b></div>
               <div className="pile-next">
                 {nextTile ? `下一张 $${nextTile.shareValue}M/份` : '最后一张'}
@@ -107,11 +121,11 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBo
                   <span className="pile-endgame"> · 成交后 {getEndProbability(tile)}% 终局（骰 {tile.endFaces.join('/')}）</span>
                 )}
               </div>
-              <div className="pile-meta">已成交 {closedCount}/15 · 牌堆 {state.drawPile.length} · 弃牌 {state.discardPile.length}</div>
+              <div className="pile-meta">{variant.name} · 已成交 {closedCount}/{state.dealTiles.length} · 牌堆 {state.drawPile.length} · 弃牌 {state.discardPile.length}</div>
               {state.lastDie != null && <div className="die-display">🎲 {state.lastDie}</div>}
             </div>
             {neutral.length > 0 && (
-              <div className="public-market" title="4/5 人局多出的投资者：招募三连必须先从这里夺取">
+              <div className="public-market" title="4/5 人局多出的投资者：招募必须先从这里夺取">
                 <span className="market-title">公共区</span>
                 {neutral.map(inv => <FamilyChip key={inv.familyId} familyId={inv.familyId} size="sm" />)}
               </div>

@@ -1,14 +1,15 @@
 // ============================================================
-// StartScreen — 开局设置
+// StartScreen — 开局设置：人数 / 版本（15·16·22·30 笔）/ 种子
 // ============================================================
 
 import { useState } from 'react'
+import type { GameVariantId } from '../engine/types'
 import { hasSavedGame } from '../utils/storage'
 import { isLLMConfigured } from '../ai/llmClient'
-import { AI_ROSTER } from '../engine/config'
+import { AI_ROSTER, VARIANT_LIST, HAND_LIMIT } from '../engine/config'
 
 interface StartScreenProps {
-  onStart: (count: number, name: string, seed?: number) => void
+  onStart: (count: number, name: string, seed?: number, variantId?: GameVariantId) => void
   onContinue: () => void
   onSettings: () => void
 }
@@ -18,13 +19,15 @@ const COUNTS = [3, 4, 5, 6]
 export default function StartScreen({ onStart, onContinue, onSettings }: StartScreenProps) {
   const [playerName, setPlayerName] = useState('')
   const [playerCount, setPlayerCount] = useState(4)
+  const [variantId, setVariantId] = useState<GameVariantId>('classic')
   const [seedText, setSeedText] = useState('')
   const canContinue = hasSavedGame()
   const llmOn = isLLMConfigured()
+  const variant = VARIANT_LIST.find(v => v.id === variantId) ?? VARIANT_LIST[0]
 
   const start = () => {
     const seed = seedText.trim() === '' ? undefined : (Math.abs(Math.floor(Number(seedText))) >>> 0) || undefined
-    onStart(playerCount, playerName.trim() || '你', seed)
+    onStart(playerCount, playerName.trim() || '你', seed, variantId)
   }
 
   return (
@@ -53,6 +56,30 @@ export default function StartScreen({ onStart, onContinue, onSettings }: StartSc
         </div>
 
         <div className="form-group">
+          <label>对局版本</label>
+          <div className="variant-selector">
+            {VARIANT_LIST.map(v => (
+              <button
+                key={v.id}
+                type="button"
+                className={`variant-btn${v.id === variantId ? ' active' : ''}`}
+                onClick={() => setVariantId(v.id)}
+                title={v.blurb}
+              >
+                <span className="variant-name">{v.name}</span>
+                <span className="variant-meta">{v.deals} 笔 · {v.boardSize} 格 · {v.deckSize} 张牌</span>
+              </button>
+            ))}
+          </div>
+          <p className="form-hint">{variant.blurb}</p>
+          <p className="form-hint">
+            {variant.rareCards ? `含稀有牌（利好 / 利空 / 独家协议）· ` : ''}
+            {variant.specialSpaces ? '含特殊格（地标 / 抢手 / 黑市 / 猎头）· ' : ''}
+            股价 $2M → ${variant.maxShare}M · 第 {variant.firstEndDeal} 笔起可能终局 · 手牌上限 {HAND_LIMIT}
+          </p>
+        </div>
+
+        <div className="form-group">
           <label>对局种子（可选，同一种子可复现发牌与骰子）</label>
           <input value={seedText} onChange={e => setSeedText(e.target.value)} placeholder="留空随机" inputMode="numeric" />
         </div>
@@ -65,6 +92,7 @@ export default function StartScreen({ onStart, onContinue, onSettings }: StartSc
       <div className="start-tips">
         <p>💡 用别人的投资者必须给分成，对方可以拒绝；同家族多个代表时 Boss 只选一个</p>
         <p>💡 旅行 / 招募 / 老板牌可被阻止牌取消；宣布成交后其他人还有最后一次出牌机会</p>
+        <p>💡 最后一位常驻投资者被夺走时，你获得"夺回权"：只需 1 张招募牌即可抢回</p>
       </div>
     </div>
   )

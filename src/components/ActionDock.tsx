@@ -73,7 +73,7 @@ export default function ActionDock({ state, legal, act, discardSelection, onOpen
       <span className="status-cash" title="你的现金">💰 ${me.cash}M</span>
       <span className="status-group">
         <span className="status-label">投资者</span>
-        {myInvestors.length === 0 && <span className="status-empty">无（招募三连可夺取）</span>}
+        {myInvestors.length === 0 && <span className="status-empty">无（招募牌可夺取）</span>}
         {myInvestors.map(inv => <FamilyChip key={inv.familyId} familyId={inv.familyId} size="md" travelled={travelled.has(inv.familyId)} />)}
       </span>
       {neg && (
@@ -128,7 +128,7 @@ export default function ActionDock({ state, legal, act, discardSelection, onOpen
         const ready = discardSelection.size === over
         return (
           <div className="dock-actions">
-            <span className="dock-hint red">手牌 {me.hand.length} 张，需弃 {over} 张（已选 {discardSelection.size}）{has('PLAY_RECRUITMENT') ? '；或点招募牌打出三连' : ''}</span>
+            <span className="dock-hint red">手牌 {me.hand.length} 张，需弃 {over} 张（已选 {discardSelection.size}）{has('PLAY_RECRUITMENT') ? '；或点招募牌夺取投资者' : ''}</span>
             <button className="btn btn-danger" disabled={!ready} onClick={() => send({ type: 'DISCARD', playerId: HUMAN_ID, cardIds: [...discardSelection] })}>
               弃掉所选 {discardSelection.size}/{over} 张
             </button>

@@ -2,13 +2,34 @@
 // 手牌一律从牌堆里"抽"出对应类型，保证 98 张卡牌守恒不变量在测试中依然成立。
 
 import { expect } from 'vitest'
-import type { GameState, PlayerAction, FamilyId, CardType, InfluenceCard } from '../src/engine/types'
+import type { GameState, PlayerAction, FamilyId, CardType, InfluenceCard, GameVariantId, SpaceKind, BoardSpace } from '../src/engine/types'
 import { createInitialState, gameReducer } from '../src/engine/gameEngine'
 import { isLegal, getActingPlayerId } from '../src/engine/validator'
 
-export function baseState(playerCount = 4, seed = 1): GameState {
-  const s = createInitialState(playerCount, '测试', seed)
+export function baseState(playerCount = 4, seed = 1, variantId?: GameVariantId): GameState {
+  const s = createInitialState(playerCount, '测试', seed, variantId)
   for (const p of s.players) p.isAI = true
+  return s
+}
+
+/** 找到版图上第一个指定种类的格子 */
+export function spaceOfKind(s: GameState, kind: SpaceKind): BoardSpace {
+  const space = s.board.find(b => b.kind === kind)
+  if (!space) throw new Error(`版图上没有 ${kind} 格`)
+  return space
+}
+
+/** 让 ownerId 拥有某格所需的全部家族投资者（其余家族放公共区），使其可独立成交 */
+export function ownSpaceFamilies(s: GameState, space: BoardSpace, ownerId: number) {
+  for (const inv of s.investors) inv.ownerId = null
+  for (const g of space.groups) for (const f of g.families) s.investors.find(inv => inv.familyId === f)!.ownerId = ownerId
+}
+
+/** Boss 用自己的投资者直接成交（其他人依次放行） */
+export function closeSolo(s: GameState, spaceId: number, bossId: number): GameState {
+  s = toBoss(openDealAt(s, spaceId, bossId))
+  s = step(s, { type: 'CLOSE_DEAL', playerId: bossId })
+  while (s.phase === 'CLOSING') s = step(s, { type: 'PASS_CLOSING', playerId: getActingPlayerId(s) })
   return s
 }
 

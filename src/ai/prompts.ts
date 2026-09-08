@@ -9,20 +9,34 @@
 // 所有文字描述复用 text/ 层（与 UI 展示一致），这里只负责组织结构。
 // ============================================================
 
-import type { GameState, PlayerAction, FamilyId } from '../engine/types'
-import { MAX_OFFERS_PER_BOSS, HAND_LIMIT } from '../engine/config'
+import type { GameState, PlayerAction, FamilyId, SpaceKind } from '../engine/types'
+import { MAX_OFFERS_PER_BOSS, HAND_LIMIT, getVariant, LANDMARK_RENT, BOOM_BONUS, BUST_PENALTY } from '../engine/config'
 import {
   getCurrentSpace, getCurrentTile, getGrossValue, getEndProbability, oneShareOf,
   relevantFamilies, isRequiredGroup, demandOf, offerShareOf, offerOwners, findRep, playerActiveFamilies,
   selectReps, repCost, missingFamilies, soleRepFamilies, rivalReps, leaderIds, endChance, offerConsent,
   payoutTotal, activeRepsOfFamily, groupOfFamily, repPriceOf, commitmentPrice, playerRelevantFamilies, usedFamiliesOf,
+  effectiveShareValue, landmarkRentEstimate, landlords, canReclaim, isBlackMarketDeal, isExclusiveLocked, remainingDeals,
 } from '../engine/rules'
 import { canClose } from '../engine/validator'
-import { narrate, famLabel, famName, playerName } from '../text/narrate'
-import { describeAction, describeCard, describeGroups, describeReactionTarget } from '../text/labels'
+import { narrate, famLabel, famName, playerName, reactionKindName, spaceKindName, spaceKindEffect } from '../text/narrate'
+import { describeAction, describeCard, describeGroups, describeReactionTarget, describeSpaceKind, describeSpaceKindFull, grossAfterDelta } from '../text/labels'
 import { getPersonaForPlayer } from './personas'
 import { estimateDeal } from './heuristic'
-import { GAME_RULES_SUMMARY, DECISION_PROMPTS } from './promptTexts'
+import { buildRulesSummary, DECISION_PROMPTS } from './promptTexts'
+
+/** 本局的规则摘要：按变体拼装（成交笔数、股价上限、稀有牌、版图上实际出现的特殊格） */
+export function rulesSummaryFor(state: GameState): string {
+  const variant = getVariant(state.variantId)
+  const kinds = new Set<SpaceKind>(state.board.map(b => b.kind).filter(k => k !== 'STANDARD'))
+  return buildRulesSummary({
+    variantName: variant.name,
+    deals: state.dealTiles.length,
+    maxShare: state.dealTiles[state.dealTiles.length - 1]?.shareValue ?? variant.maxShare,
+    rareCards: variant.rareCards,
+    specialSpaces: [...kinds].map(k => ({ name: spaceKindName(k), effect: spaceKindEffect(k) })),
+  })
+}
 
 // ---------- 选项：剪枝 / 注释 ----------
 
@@ -87,6 +101,7 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
       notes.push(sel.complete
         ? `你当 Boss 约需付 $${cost}M（${paidTo.length ? paidTo.join('、') : '全用自己的代表'}），净得约 $${gross - (cost ?? 0)}M`
         : '⚠ 桌上代表目前凑不齐，接管后仍需别人出人')
+      if (getCurrentSpace(state)?.kind === 'LANDMARK') notes.push(`地标归成交时的 Boss：拿下即多一份长期租金（估值 ≈ $${landmarkRentEstimate(state, getCurrentSpace(state)!)}M）`)
       break
     }
     case 'PLAY_CLAN': {
@@ -107,9 +122,23 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
     }
     case 'PLAY_RECRUITMENT': {
       const inOffer = neg?.offer?.repKeys.includes(`INV:${a.targetFamilyId}`)
-      notes.push(`永久获得 ${famName(a.targetFamilyId)} 投资者${inOffer ? '；该代表在方案中，方案作废' : ''}`)
+      const cheap = canReclaim(state, actorId, a.targetFamilyId) ? '夺回权：只花 1 张招募牌' : a.cardIds.length < 3 ? `猎头格：只花 ${a.cardIds.length} 张招募牌` : ''
+      notes.push(`永久获得 ${famName(a.targetFamilyId)} 投资者${cheap ? `（${cheap}）` : ''}${inOffer ? '；该代表在方案中，方案作废' : ''}`)
       break
     }
+    case 'PLAY_BOOM': {
+      const after = grossAfterDelta(state, BOOM_BONUS)
+      notes.push(`总额 $${gross}M → $${after}M；已有方案的分成不变，多出的 $${after - gross}M 全归你（可被阻止牌取消）`)
+      break
+    }
+    case 'PLAY_BUST': {
+      const after = grossAfterDelta(state, -BUST_PENALTY)
+      notes.push(`总额 $${gross}M → $${after}M；方案里别人的分成不变，Boss 净得少 $${gross - after}M；你自己拿不到钱，纯粹是砍 Boss（可被阻止牌取消）`)
+      break
+    }
+    case 'PLAY_EXCLUSIVE':
+      notes.push('之后本笔交易里谁都不能再打老板牌 / 旅行牌 / 利空牌（招募仍可），你的方案与 Boss 身份基本稳了（可被阻止牌取消）')
+      break
     case 'SPEAK': {
       if (!neg) break
       const mine = playerRelevantFamilies(state, actorId)
@@ -161,6 +190,13 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
       if (!space) break
       const est = estimateDeal(state, actorId, space)
       notes.push(est.feasible ? (est.buyCount === 0 ? '你自己就能凑齐，可独吞全款' : `约需向他人买 ${est.buyCount} 个代表（每个≈$${share}M）`) : '⚠ 桌上凑不齐需求，大概率流局')
+      if (space.kind === 'LANDMARK') notes.push(`地标：成交后归 Boss，此后每笔成交收 $${LANDMARK_RENT}M（剩余约 ${remainingDeals(state) - 1} 笔，估值 ≈ $${landmarkRentEstimate(state, space)}M）`)
+      else if (space.kind !== 'STANDARD') notes.push(describeSpaceKindFull(space))
+      break
+    }
+    case 'PLACE_MARKER': {
+      const space = state.board.find(s => s.id === a.spaceId)
+      if (space && space.kind !== 'STANDARD') notes.push(describeSpaceKindFull(space))
       break
     }
     default:
@@ -186,9 +222,19 @@ export function describeNotes(state: GameState, playerId: number): string {
 
 function describeBoard(state: GameState): string {
   const rows = state.board.filter(b => b.closedByTileId == null).map(b =>
-    `#${b.id}(${describeGroups(b)}，${b.dividends}份)${b.id === state.markerPos ? '←标记' : ''}`)
+    `#${b.id}${describeSpaceKind(b)}(${describeGroups(b)}，${b.dividends}份)${b.id === state.markerPos ? '←标记' : ''}`)
   const nextTile = state.dealTiles[state.dealTileIndex + 1]
   return `【棋盘概览（未关闭格子）】\n${rows.join(' | ')}\n当前股价 $${getCurrentTile(state)?.shareValue ?? 0}M/份；下一张景气牌：${nextTile ? `$${nextTile.shareValue}M/份${nextTile.endFaces.length ? `（成交后 ${nextTile.endFaces.length}/6 概率终局）` : ''}` : '无'}\n`
+}
+
+/** 地标归属与夺回权：长期资产的现状 */
+function describeAssets(state: GameState): string {
+  const lines: string[] = []
+  const owned = landlords(state)
+  if (owned.length) lines.push(`地标归属（每笔成交各收 $${LANDMARK_RENT}M）：${owned.map(l => `#${l.spaceId}←${playerName(state, l.ownerId)}`).join('、')}`)
+  const reclaims = state.players.filter(p => p.reclaim && canReclaim(state, p.id, p.reclaim))
+  if (reclaims.length) lines.push(`夺回权：${reclaims.map(p => `${playerName(state, p.id)} 可用 1 张招募牌抢回 ${famName(p.reclaim!)}`).join('；')}`)
+  return lines.length ? `【长期资产】\n${lines.map(l => `- ${l}`).join('\n')}\n` : ''
 }
 
 /** 谈判局势摘要：缺口、最省方案、你的筹码、终局态势 */
@@ -198,6 +244,11 @@ export function describeSituation(state: GameState, playerId: number): string {
   if (!neg || !space) return ''
   const gross = getGrossValue(state)
   const lines: string[] = []
+
+  if (space.kind !== 'STANDARD') lines.push(`本格是${describeSpaceKindFull(space)}${space.kind === 'LANDMARK' ? `（剩余约 ${remainingDeals(state) - 1} 笔，租金估值 ≈ $${landmarkRentEstimate(state, space)}M，归成交时的 Boss）` : ''}`)
+  if (isBlackMarketDeal(state)) lines.push('黑市里牌打出即生效：你的干扰牌不会被阻止，别人的也一样')
+  if (isExclusiveLocked(state)) lines.push('独家协议已生效：本笔谁都不能再打老板牌 / 旅行牌 / 利空牌')
+  if (neg.priceDelta !== 0) lines.push(`本笔股价已被${neg.priceDelta > 0 ? '利好抬高' : '利空压低'} $${Math.abs(neg.priceDelta)}M/份`)
 
   const missing = missingFamilies(state)
   lines.push(missing.length ? `需求缺口：${missing.map(famName).join('、')} 目前无人代表（需有人打家族卡 / 招募，否则做不成）` : '需求可凑齐')
@@ -308,8 +359,10 @@ function describePhaseHint(state: GameState, playerId: number): string {
       const pr = state.pendingReaction
       if (!pr) return ''
       const actor = state.players[pr.actorId]?.name
-      const kind = pr.kind === 'TRAVEL' ? '旅行牌' : pr.kind === 'BOSS' ? '老板牌' : '招募三连'
-      const lines = [`${actor} 刚打出【${kind}】，目标：${describeReactionTarget(state, pr)}`]
+      const lines = [`${actor} 刚打出【${reactionKindName(pr.kind)}】，目标：${describeReactionTarget(state, pr)}`]
+      if (pr.kind === 'BOOM' && neg && neg.bossId !== playerId) lines.push('⚠️ 利好只会让 Boss 多拿：方案里你的分成不变')
+      if (pr.kind === 'BUST' && neg?.bossId === playerId) lines.push('⚠️ 砍的是你的净得')
+      if (pr.kind === 'EXCLUSIVE' && neg && neg.bossId !== playerId) lines.push('⚠️ 生效后你手里的老板牌 / 旅行牌 / 利空牌在本笔都作废')
       if (pr.kind === 'TRAVEL' && neg) {
         const rep = findRep(neg, pr.targetRepKey!)
         if (rep?.ownerId === playerId) lines.push('⚠️ 目标是你自己的代表，打飞后你在本笔交易失去这个筹码')
@@ -326,7 +379,7 @@ function describePhaseHint(state: GameState, playerId: number): string {
     }
     case 'HAND_LIMIT': {
       const p = state.players[playerId]
-      return `\n【手牌超限】你有 ${p.hand.length} 张，需弃到 ${HAND_LIMIT} 张（弃 ${p.hand.length - HAND_LIMIT} 张，可用 cardIds 指定），或打出招募三连。\n`
+      return `\n【手牌超限】你有 ${p.hand.length} 张，需弃到 ${HAND_LIMIT} 张（弃 ${p.hand.length - HAND_LIMIT} 张，可用 cardIds 指定），或打出招募牌夺取投资者（常规 3 张；有夺回权时 1 张）。\n`
     }
     case 'PLACE_MARKER':
       return `\n【放置金钱标记】起始玩家是 ${state.players[state.currentId]?.name}，标记放在哪格他就先决定是否交易那格——别把他能独立凑齐的高分格送给他。\n`
@@ -372,12 +425,14 @@ export function buildGameContext(state: GameState, playerId: number): string {
   const others = state.players.filter(p => p.id !== playerId).map(p =>
     `${p.name}（ID=${p.id}）: $${p.cash}M，手牌${p.hand.length}张${state.negotiation?.bossId === p.id ? ' [Boss]' : ''}`).join('\n')
   const hand = player.hand.map(c => `${describeCard(c)}#${c.id}`).join(', ')
+  const shareNow = space ? effectiveShareValue(state, space) : (tile?.shareValue ?? 0)
+  const shareNote = space && shareNow !== (tile?.shareValue ?? 0) ? `（景气牌 $${tile?.shareValue ?? 0}M${space.kind === 'PREMIUM' ? ' + 抢手' : ''}${state.negotiation?.priceDelta ? ' + 利好/利空' : ''}）` : ''
 
-  return `${GAME_RULES_SUMMARY}
+  return `${rulesSummaryFor(state)}
 【你的身份】${player.name}（ID=${playerId}）
-【局面】阶段=${state.phase} | 已成交 ${state.completedDeals}/15 笔 | 金钱标记在 #${state.markerPos}
-当前格 #${space?.id ?? '?'}：${space ? describeGroups(space) : ''} | 股价 $${tile?.shareValue ?? 0}M × ${space?.dividends ?? 0} 份 = $${gross}M | 本笔成交后终局概率 ${getEndProbability(tile)}%
-${BOARD_PHASES.has(state.phase) ? describeBoard(state) : ''}【投资者】${investors}
+【局面】阶段=${state.phase} | 已成交 ${state.completedDeals}/${state.dealTiles.length} 笔 | 金钱标记在 #${state.markerPos}
+当前格 #${space?.id ?? '?'}${space ? describeSpaceKind(space) : ''}：${space ? describeGroups(space) : ''} | 股价 $${shareNow}M${shareNote} × ${space?.dividends ?? 0} 份 = $${gross}M | 本笔成交后终局概率 ${getEndProbability(tile)}%
+${BOARD_PHASES.has(state.phase) ? describeBoard(state) : ''}${describeAssets(state)}【投资者】${investors}
 【你的手牌】(${player.hand.length}张): ${hand || '无'}
 【你的现金】$${player.cash}M
 【其他玩家】

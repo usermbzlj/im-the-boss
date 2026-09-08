@@ -4,13 +4,13 @@
 // ============================================================
 
 import type { GameState, PlayerAction, BoardSpace, InfluenceCard, PendingReaction, Payout } from '../engine/types'
-import { HAND_LIMIT, MAX_OFFERS_PER_BOSS } from '../engine/config'
+import { HAND_LIMIT, MAX_OFFERS_PER_BOSS, BOOM_BONUS, BUST_PENALTY, MIN_SHARE_VALUE } from '../engine/config'
 import {
   getPlayer, getCurrentSpace, getGrossValue, isRequiredGroup, findRep, offerOwners,
-  playerActiveFamilies, type OfferError,
+  playerActiveFamilies, recruitCost, canReclaim, effectiveShareValue, type OfferError,
 } from '../engine/rules'
 import type { OfferCandidate } from '../engine/validator'
-import { famLabel, famName, playerName, describeRepRef, describePayouts } from './narrate'
+import { famLabel, famName, playerName, describeRepRef, describePayouts, spaceKindName, spaceKindEffect, recruitCostName } from './narrate'
 
 export function describeCard(c: InfluenceCard): string {
   switch (c.type) {
@@ -19,6 +19,9 @@ export function describeCard(c: InfluenceCard): string {
     case 'RECRUITMENT': return '招募'
     case 'BOSS': return '老板'
     case 'STOP': return '阻止'
+    case 'BOOM': return '利好(稀有)'
+    case 'BUST': return '利空(稀有)'
+    case 'EXCLUSIVE': return '独家协议(稀有)'
   }
 }
 
@@ -26,6 +29,25 @@ export function describeGroups(space: BoardSpace): string {
   return space.groups.map(g => isRequiredGroup(g)
     ? `必需[${g.families.join('+')}]`
     : `${g.families.join('/')}中选${g.need}`).join(' 且 ')
+}
+
+/** 本笔股价再变动 delta 后的交易总额（利好 / 利空牌的后果） */
+export function grossAfterDelta(state: GameState, delta: number): number {
+  const space = getCurrentSpace(state)
+  if (!space) return 0
+  return Math.max(MIN_SHARE_VALUE, effectiveShareValue(state, space) + delta) * space.dividends
+}
+
+/** 特殊格的短标签："[地标]"；普通格为空串 */
+export function describeSpaceKind(space: Pick<BoardSpace, 'kind'>): string {
+  const name = spaceKindName(space.kind)
+  return name ? `[${name}]` : ''
+}
+
+/** 特殊格的完整说明："地标：成交后归 Boss 所有…"；普通格为空串 */
+export function describeSpaceKindFull(space: Pick<BoardSpace, 'kind'>): string {
+  const name = spaceKindName(space.kind)
+  return name ? `${name}：${spaceKindEffect(space.kind)}` : ''
 }
 
 export function describeReactionTarget(state: GameState, pr: PendingReaction): string {
@@ -41,6 +63,12 @@ export function describeReactionTarget(state: GameState, pr: PendingReaction): s
     }
     case 'BOSS':
       return `${playerName(state, neg?.bossId)} 的 Boss 身份`
+    case 'BOOM':
+      return `本笔股价 +$${BOOM_BONUS}M/份（总额 $${getGrossValue(state)}M → $${grossAfterDelta(state, BOOM_BONUS)}M）`
+    case 'BUST':
+      return `本笔股价 −$${BUST_PENALTY}M/份（总额 $${getGrossValue(state)}M → $${grossAfterDelta(state, -BUST_PENALTY)}M）`
+    case 'EXCLUSIVE':
+      return '锁定本笔交易（老板牌 / 旅行牌 / 利空牌失效）'
   }
 }
 
@@ -99,9 +127,12 @@ export function describeAction(state: GameState, a: PlayerAction): string {
   switch (a.type) {
     case 'PLACE_MARKER': {
       const space = state.board.find(s => s.id === a.spaceId)
-      return `把金钱标记放在 #${a.spaceId}（${space ? `${describeGroups(space)}，${space.dividends} 份分红` : ''}）`
+      return `把金钱标记放在 #${a.spaceId}（${space ? `${describeGroups(space)}，${space.dividends} 份分红${describeSpaceKind(space)}` : ''}）`
     }
-    case 'OPEN_DEAL': return `发起当前格 #${state.markerPos} 的交易（总额 $${getGrossValue(state)}M），成为 Boss`
+    case 'OPEN_DEAL': {
+      const space = getCurrentSpace(state)
+      return `发起当前格 #${state.markerPos}${space ? describeSpaceKind(space) : ''} 的交易（总额 $${getGrossValue(state)}M），成为 Boss`
+    }
     case 'ROLL_MOVE': return '掷骰移动金钱标记'
     case 'DRAW_CARDS': return '抽 3 张影响牌并结束回合'
     case 'DISCARD': return `弃掉 ${a.cardIds.length} 张牌（默认弃价值最低的牌；可用 cardIds 自选）`
@@ -116,10 +147,15 @@ export function describeAction(state: GameState, a: PlayerAction): string {
     }
     case 'PLAY_RECRUITMENT': {
       const owner = state.investors.find(i => i.familyId === a.targetFamilyId)?.ownerId
-      const suffix = state.phase === 'HAND_LIMIT' ? '（顺便减少 3 张手牌）' : ''
-      return `招募三连夺取 ${famLabel(a.targetFamilyId)} 投资者（${owner == null ? '公共区' : `来自 ${playerName(state, owner)}`}）${suffix}`
+      const cost = recruitCost(state, a.playerId, a.targetFamilyId)
+      const verb = canReclaim(state, a.playerId, a.targetFamilyId) ? '夺回' : '夺取'
+      const suffix = state.phase === 'HAND_LIMIT' ? `（顺便减少 ${cost} 张手牌）` : ''
+      return `打出${recruitCostName(cost)}${verb} ${famLabel(a.targetFamilyId)} 投资者（${owner == null ? '公共区' : `来自 ${playerName(state, owner)}`}）${suffix}`
     }
     case 'PLAY_BOSS': return '打出老板牌夺权，接管本笔交易'
+    case 'PLAY_BOOM': return `打出利好牌（稀有）：本笔股价 +$${BOOM_BONUS}M/份`
+    case 'PLAY_BUST': return `打出利空牌（稀有）：本笔股价 −$${BUST_PENALTY}M/份`
+    case 'PLAY_EXCLUSIVE': return '打出独家协议（稀有）：锁定本笔交易，老板牌 / 旅行牌 / 利空牌不能再打'
     case 'PLAY_STOP': return '打出阻止牌，取消这张牌的效果'
     case 'PASS_REACTION': return '不阻止'
     case 'SPEAK': {
@@ -145,10 +181,9 @@ export function handLimitHint(handSize: number): string {
   return `手牌 ${handSize} 张，需弃到 ${HAND_LIMIT} 张（弃 ${handSize - HAND_LIMIT} 张）`
 }
 
-/** 当前格的简述："#12：必需[A+B] 且 C/D中选1 | 股价 $3M × 4 份 = $12M" */
+/** 当前格的简述："#12[地标]：必需[A+B] 且 C/D中选1 | 股价 $3M × 4 份 = $12M" */
 export function describeCurrentDeal(state: GameState): string {
   const space = getCurrentSpace(state)
   if (!space) return ''
-  const tile = state.dealTiles[state.dealTileIndex]
-  return `#${space.id}：${describeGroups(space)} | 股价 $${tile?.shareValue ?? 0}M × ${space.dividends} 份 = $${getGrossValue(state)}M`
+  return `#${space.id}${describeSpaceKind(space)}：${describeGroups(space)} | 股价 $${effectiveShareValue(state, space)}M × ${space.dividends} 份 = $${getGrossValue(state)}M`
 }

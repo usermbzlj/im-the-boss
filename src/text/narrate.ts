@@ -3,8 +3,8 @@
 // UI 日志、座位气泡、LLM 提示词里的"最近发生了什么"都走这一份实现。
 // ============================================================
 
-import type { GameEvent, GameState, FamilyId, Payout, RepRef, ReactionKind, ResolvedQuote } from '../engine/types'
-import { FAMILIES, HAND_LIMIT, MAX_OFFERS_PER_BOSS } from '../engine/config'
+import type { GameEvent, GameState, FamilyId, Payout, RepRef, ReactionKind, ResolvedQuote, SpaceKind, CardType } from '../engine/types'
+import { FAMILIES, HAND_LIMIT, MAX_OFFERS_PER_BOSS, getVariant, LANDMARK_RENT, PREMIUM_BONUS, HEADHUNT_RECRUIT_COST, BOOM_BONUS, BUST_PENALTY } from '../engine/config'
 
 export type EventTone = 'system' | 'action' | 'card' | 'deal' | 'fail' | 'end' | 'speech'
 
@@ -22,7 +22,32 @@ export function playerName(state: GameState, id: number | null | undefined): str
 }
 
 export const reactionKindName = (kind: ReactionKind) =>
-  kind === 'TRAVEL' ? '旅行牌' : kind === 'BOSS' ? '老板牌' : '招募三连'
+  kind === 'TRAVEL' ? '旅行牌' : kind === 'BOSS' ? '老板牌' : kind === 'RECRUITMENT' ? '招募牌'
+    : kind === 'BOOM' ? '利好牌' : kind === 'BUST' ? '利空牌' : '独家协议'
+
+/** 牌种类的中文名 */
+export const cardTypeName = (type: CardType) =>
+  type === 'CLAN' ? '家族成员' : type === 'TRAVEL' ? '旅行' : type === 'RECRUITMENT' ? '招募' : type === 'BOSS' ? '老板'
+    : type === 'STOP' ? '阻止' : type === 'BOOM' ? '利好' : type === 'BUST' ? '利空' : '独家协议'
+
+/** 特殊格名称与一句话效果（STANDARD 返回空串） */
+export const spaceKindName = (kind: SpaceKind) =>
+  kind === 'LANDMARK' ? '地标' : kind === 'PREMIUM' ? '抢手' : kind === 'BLACK_MARKET' ? '黑市' : kind === 'HEADHUNT' ? '猎头' : ''
+
+export const spaceKindEffect = (kind: SpaceKind) => {
+  switch (kind) {
+    case 'LANDMARK': return `成交后归 Boss 所有，此后每笔成交主人从银行收 $${LANDMARK_RENT}M 租金`
+    case 'PREMIUM': return `股价 +$${PREMIUM_BONUS}M/份`
+    case 'BLACK_MARKET': return '打出的牌不经反应窗口直接生效，阻止牌无用'
+    case 'HEADHUNT': return `交易进行中招募只需 ${HEADHUNT_RECRUIT_COST} 张`
+    default: return ''
+  }
+}
+
+/** 招募消耗的说法："招募三连" / "招募两连（猎头价）" / "招募一张（夺回）" */
+export const recruitCostName = (cost: number) => cost >= 3 ? '招募三连' : cost === 2 ? '招募两连（猎头价）' : '1 张招募牌（夺回权）'
+
+export const variantName = (state: GameState) => getVariant(state.variantId).name
 
 const repSourceName = (r: RepRef) => (r.source === 'INVESTOR' ? '投资者' : '家族成员')
 
@@ -54,7 +79,7 @@ export function narrate(state: GameState, e: GameEvent): Narration {
   const n = (id: number | null | undefined) => playerName(state, id)
   switch (e.kind) {
     case 'GAME_STARTED':
-      return { tone: 'system', text: `游戏开始！${e.playerCount} 人局。${n(e.startPlayerId)} 持有字母序最前的投资者，成为起始玩家；由右手边的 ${n(e.markerChooserId)} 放置金钱标记` }
+      return { tone: 'system', text: `游戏开始！${e.playerCount} 人局 · ${getVariant(e.variantId).name}（最多 ${e.deals} 笔成交）。${n(e.startPlayerId)} 持有字母序最前的投资者，成为起始玩家；由右手边的 ${n(e.markerChooserId)} 放置金钱标记` }
     case 'MARKER_PLACED':
       return { tone: 'action', text: `${n(e.playerId)} 把金钱标记放在 #${e.spaceId}。轮到 ${n(e.nextPlayerId)} 行动` }
     case 'DEAL_OPENED':
@@ -66,7 +91,7 @@ export function narrate(state: GameState, e: GameEvent): Narration {
     case 'DECK_RESHUFFLED':
       return { tone: 'system', text: `抽牌堆耗尽，弃牌堆洗成新牌堆（${e.size} 张）` }
     case 'HAND_LIMIT':
-      return { tone: 'system', text: `${n(e.playerId)} 手牌 ${e.handSize} 张，超过 ${HAND_LIMIT} 张上限，须弃牌或打出招募三连` }
+      return { tone: 'system', text: `${n(e.playerId)} 手牌 ${e.handSize} 张，超过 ${HAND_LIMIT} 张上限，须弃牌或打出招募牌` }
     case 'CARDS_DISCARDED':
       return { tone: 'action', text: `${n(e.playerId)} 弃了 ${e.count} 张牌` }
     case 'CLAN_PLAYED':
@@ -74,11 +99,29 @@ export function narrate(state: GameState, e: GameEvent): Narration {
     case 'TRAVEL_PLAYED':
       return { tone: 'card', text: `${n(e.playerId)} 打出${e.wildcard ? '万能' : ''}旅行牌 → ${describeRepRef(state, e.target)}` }
     case 'RECRUITMENT_PLAYED':
-      return { tone: 'card', text: `${n(e.playerId)} 打出招募三连 → ${famName(e.familyId)} 投资者（${e.fromId == null ? '公共区' : n(e.fromId)}）` }
+      return { tone: 'card', text: `${n(e.playerId)} 打出${recruitCostName(e.cost)} → ${famName(e.familyId)} 投资者（${e.fromId == null ? '公共区' : n(e.fromId)}）` }
     case 'BOSS_PLAYED':
       return { tone: 'card', text: `${n(e.playerId)} 打出老板牌，试图从 ${n(e.bossId)} 手中夺取 Boss 身份` }
+    case 'BOOM_PLAYED':
+      return { tone: 'card', text: `${n(e.playerId)} 打出利好牌：本笔股价将 +$${BOOM_BONUS}M/份` }
+    case 'BUST_PLAYED':
+      return { tone: 'card', text: `${n(e.playerId)} 打出利空牌：本笔股价将 −$${BUST_PENALTY}M/份` }
+    case 'EXCLUSIVE_PLAYED':
+      return { tone: 'card', text: `${n(e.playerId)} 打出独家协议：要锁定本笔交易（老板 / 旅行 / 利空牌失效）` }
     case 'STOP_PLAYED':
       return { tone: 'card', text: `${n(e.playerId)} 打出阻止牌！${n(e.actorId)} 的${reactionKindName(e.cancelled)}被取消` }
+    case 'BLACK_MARKET':
+      return { tone: 'system', text: `黑市规矩：${n(e.actorId)} 的${reactionKindName(e.card)}不经反应窗口，直接生效` }
+    case 'RECLAIM_GRANTED':
+      return { tone: 'system', text: `${n(e.playerId)} 失去了最后一位常驻投资者，获得夺回权：只需 1 张招募牌即可把 ${famName(e.familyId)} 投资者抢回来` }
+    case 'PRICE_CHANGED':
+      return { tone: 'card', text: `${e.delta > 0 ? '利好' : '利空'}生效：本笔股价${e.delta > 0 ? '+' : '−'}$${Math.abs(e.delta)}M/份，交易总额变为 $${e.gross}M（已有方案的分成不变，变的是 Boss 净得）` }
+    case 'EXCLUSIVE_RESOLVED':
+      return { tone: 'card', text: `${n(e.playerId)} 的独家协议生效：本笔交易中老板牌、旅行牌、利空牌不能再打` }
+    case 'LANDMARK_CLAIMED':
+      return { tone: 'deal', text: `地标 #${e.spaceId} 归 ${n(e.playerId)} 所有：此后每笔成交从银行收 $${LANDMARK_RENT}M 租金` }
+    case 'RENT_PAID':
+      return { tone: 'deal', text: `地标租金：${e.payments.map(p => `${n(p.playerId)} +$${p.amount}M`).join('、')}` }
     case 'TRAVEL_RESOLVED':
       return e.target.source === 'CLAN'
         ? { tone: 'card', text: `${n(e.target.ownerId)} 的 ${famName(e.target.familyId)} 家族成员被旅行牌打飞，连同旅行牌一起弃置` }

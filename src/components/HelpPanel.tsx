@@ -1,24 +1,35 @@
 // ============================================================
-// HelpPanel — 规则速查（与引擎实现一致）
+// HelpPanel — 规则速查（与引擎实现一致；按当前变体显示扩展规则）
 // ============================================================
+
+import type { GameVariantId } from '../engine/types'
+import {
+  VARIANT_LIST, getVariant, HAND_LIMIT, MAX_OFFERS_PER_BOSS, MAX_SPEECHES_PER_PLAYER,
+  RECRUIT_COST, HEADHUNT_RECRUIT_COST, RECLAIM_RECRUIT_COST, LANDMARK_RENT, PREMIUM_BONUS, BOOM_BONUS, BUST_PENALTY, MIN_SHARE_VALUE,
+} from '../engine/config'
 
 interface HelpPanelProps {
   open: boolean
   onClose: () => void
+  variantId?: GameVariantId
 }
 
-export default function HelpPanel({ open, onClose }: HelpPanelProps) {
+export default function HelpPanel({ open, onClose, variantId }: HelpPanelProps) {
   if (!open) return null
+  const variant = getVariant(variantId)
+  const summary = VARIANT_LIST.find(v => v.id === variant.id) ?? VARIANT_LIST[0]
+  const specials = summary.specialSpaces
+  const rares = variant.rareCards
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="help-panel" onClick={e => e.stopPropagation()}>
-        <h2>📖 规则速查</h2>
+        <h2>📖 规则速查 <span className="muted help-variant">当前：{variant.name}</span></h2>
         <section>
           <h3>回合</h3>
           <ol>
             <li>发起当前格交易，<b>或</b>掷骰顺时针移动金钱标记（跳过已成交格）</li>
             <li>移动后：发起新格交易，<b>或</b>抽 3 张牌结束回合</li>
-            <li>手牌上限 12 张，超出须立刻弃牌或打出招募三连</li>
+            <li>手牌上限 {HAND_LIMIT} 张，超出须立刻弃牌或打出招募牌夺取投资者</li>
             <li>成交或流局后，都由 Boss 左手边的玩家接着行动</li>
           </ol>
         </section>
@@ -27,35 +38,61 @@ export default function HelpPanel({ open, onClose }: HelpPanelProps) {
           <ul>
             <li>每格由若干需求组构成：<b>必需组</b>每个家族都要有代表；<b>N 选 M 组</b>从列出的家族里凑够 M 个</li>
             <li>代表来源：<b>投资者牌</b>（长期持有）或<b>家族成员卡</b>（本笔交易临时代替该家族，被选用成交后弃掉，未用则收回）</li>
-            <li>总额 = 当前景气牌股价 × 该格分红份数；银行全款付给 Boss，Boss 再按方案付钱给代表持有者</li>
-            <li>4/5 人局多出的投资者放在公共区，只能靠招募三连取得（且必须先招公共区）</li>
+            <li>总额 = 当前股价 × 该格分红份数；银行全款付给 Boss，Boss 再按方案付钱给代表持有者</li>
+            <li>4/5 人局多出的投资者放在公共区，只能靠招募牌取得（且必须先招公共区）</li>
           </ul>
         </section>
         <section>
           <h3>谈判流程（像真实桌面一样：叫价 → 拼盘 → 落锤）</h3>
           <ul>
-            <li><b>叫价轮</b>：Boss 开单后，从 Boss 左手边起轮流「报价 / 打家族卡入场 / 出牌 / 跳过」，Boss 在第一轮末位行动；之后继续轮转。每人每笔最多喊话 4 次；连续两轮全员跳过则流局</li>
+            <li><b>叫价轮</b>：Boss 开单后，从 Boss 左手边起轮流「报价 / 打家族卡入场 / 出牌 / 跳过」，Boss 在第一轮末位行动；之后继续轮转。每人每笔最多喊话 {MAX_SPEECHES_PER_PLAYER} 次；连续两轮全员跳过则流局</li>
             <li><b>报价即承诺</b>：你公开报出的出借价（每个代表）对本笔交易有效——Boss 的方案付到这个价，你自动视为同意；付不到才会问你。同意一个方案也会把该金额记为你的承诺价，拒绝时的反报价则是新的承诺价</li>
             <li><b>按家族分开报价</b>：有几个相关代表就有几个价格框，一句话报完各家的价——唯一代表的家族报高、有竞争者的家族报低，留空的不动；Boss 用了你哪几个代表，就按各自的价相加。拒绝方案时也可对每个被选用的代表分别反报价</li>
             <li>Boss <b>提出方案</b>：指定选用哪些代表、给谁多少钱 → 未达承诺价（或没报价）的持有者依次<b>同意 / 拒绝</b>（拒绝可反报价）</li>
             <li>全员同意后 Boss 可<b>宣布成交</b>（"Going once, going twice"）→ 其他玩家依次放行或打最后一张干扰牌（没有干扰牌会自动放行）→ 全员放行即结算</li>
-            <li>每任 Boss 最多 5 次方案；方案中的代表被打飞 / 易主时方案作废，回合回到 Boss；Boss 可随时放弃（流局，家族卡收回）</li>
+            <li>每任 Boss 最多 {MAX_OFFERS_PER_BOSS} 次方案；方案中的代表被打飞 / 易主时方案作废，回合回到 Boss；Boss 可随时放弃（流局，家族卡收回）</li>
             <li>同一家族有多方代表时 Boss 只选其一——落选者一分钱拿不到，可主动压价抢单；Boss 也可以打自己的家族卡替代别人要钱的代表</li>
           </ul>
         </section>
         <section>
-          <h3>五类影响牌（98 张）</h3>
+          <h3>影响牌（本局 {summary.deckSize} 张）</h3>
           <ul>
             <li><b>家族成员 ×24</b> — 每家族 4 张，谈判中打出即成为该家族的临时代表</li>
             <li><b>旅行 ×21</b> — 定向 18 张只能打同家族，万能 3 张任意；让目标代表本笔交易失效（投资者本局结束恢复，家族卡直接弃掉）</li>
-            <li><b>招募 ×33</b> — 三张一组，永久夺取一个投资者</li>
+            <li><b>招募 ×33</b> — {RECRUIT_COST} 张一组，永久夺取一个投资者。<b>夺回权</b>：你的最后一位常驻投资者被夺走时，只需 {RECLAIM_RECRUIT_COST} 张招募牌即可把它抢回（等效 {RECRUIT_COST} 张；招到别的投资者后失效）</li>
             <li><b>老板 ×10</b> — 夺取 Boss 身份接管谈判，原方案作废</li>
-            <li><b>阻止 ×10</b> — 在旅行 / 招募 / 老板牌打出的反应窗口立即取消其效果；不能取消阻止牌与家族成员卡</li>
+            <li><b>阻止 ×10</b> — 在旅行 / 招募 / 老板牌（及稀有牌）打出的反应窗口立即取消其效果；不能取消阻止牌与家族成员卡</li>
+            {rares && (
+              <li><b>稀有牌 ×7</b>（可被阻止）：
+                <b>利好 ×3</b> — 只有 Boss 能打：本笔股价 +${BOOM_BONUS}M/份，已有方案的分成不变，多出来的全归 Boss；
+                <b>利空 ×2</b> — 只有非 Boss 能打：本笔股价 −${BUST_PENALTY}M/份（下限 ${MIN_SHARE_VALUE}M），砍的是 Boss 的净得；
+                <b>独家协议 ×2</b> — 只有 Boss 能打：锁定本笔交易，此后谁都不能再打老板 / 旅行 / 利空牌（招募仍可）
+              </li>
+            )}
+            {variant.supplementPacks > 0 && <li><b>补充包 ×{variant.supplementPacks}</b> — 每包 12 张（家族成员 6、招募 3、万能旅行 1、老板 1、阻止 1），保证长局牌量</li>}
           </ul>
         </section>
+        {specials && (
+          <section>
+            <h3>特殊格</h3>
+            <ul>
+              <li><b>🏛 地标</b> — 成交时的 Boss 成为地标主人；此后每一笔成交（任何格）都由银行付给主人 ${LANDMARK_RENT}M 租金。剩余笔数越多越值钱</li>
+              <li><b>🔥 抢手</b> — 该格股价 +${PREMIUM_BONUS}M/份</li>
+              <li><b>🕶 黑市</b> — 该格交易中出牌没有反应窗口：旅行 / 招募 / 老板 / 稀有牌直接生效，阻止牌无效</li>
+              <li><b>🎯 猎头</b> — 该格交易中招募只需 {HEADHUNT_RECRUIT_COST} 张（夺回权仍是 {RECLAIM_RECRUIT_COST} 张）</li>
+            </ul>
+          </section>
+        )}
         <section>
-          <h3>终局</h3>
-          <p>景气牌股价 $2M → $3M → $4M → $5M 递增。第 10 笔成交起，每次成交后 Boss 掷骰，命中景气牌背面数字（1 / 1-2 / 1-3 / 1-4 / 1-5）即结束；第 15 笔成交必定结束。现金最多者胜。</p>
+          <h3>版本与终局</h3>
+          <ul>
+            {VARIANT_LIST.map(v => (
+              <li key={v.id} className={v.id === variant.id ? 'help-current' : undefined}>
+                <b>{v.name}</b> — {v.boardSize} 格 · 股价 $2M → ${v.maxShare}M · 第 {v.firstEndDeal} 笔成交起 Boss 掷终局骰（1 / 1-2 / … / 1-6），第 {v.deals} 笔必定结束。{v.blurb}
+              </li>
+            ))}
+          </ul>
+          <p>现金最多者胜。</p>
         </section>
         <button className="btn-primary" onClick={onClose}>关闭</button>
       </div>

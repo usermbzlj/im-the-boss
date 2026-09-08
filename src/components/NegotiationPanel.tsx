@@ -5,12 +5,14 @@
 
 import { useEffect, useRef } from 'react'
 import type { GameState, FamilyId, Representative } from '../engine/types'
-import { MAX_OFFERS_PER_BOSS } from '../engine/config'
+import { MAX_OFFERS_PER_BOSS, LANDMARK_RENT } from '../engine/config'
 import {
   getCurrentSpace, getCurrentTile, getGrossValue, oneShareOf, isRequiredGroup,
   activeRepsOfFamily, repPriceOf, offerOwners, findRep, playerActiveFamilies, meetsCommitment,
+  effectiveShareValue, isBlackMarketDeal, isExclusiveLocked,
 } from '../engine/rules'
 import { canClose } from '../engine/validator'
+import { spaceKindName, spaceKindEffect } from '../text/narrate'
 import FamilyChip from './FamilyChip'
 
 const HUMAN_ID = 0
@@ -29,8 +31,16 @@ export default function NegotiationPanel({ state }: { state: GameState }) {
   const tile = getCurrentTile(state)
   const gross = getGrossValue(state)
   const share = oneShareOf(state)
+  const shareNow = effectiveShareValue(state, space)
   const boss = state.players[neg.bossId]
   const offer = neg.offer
+  const badges: Array<{ text: string; tone: 'gold' | 'red' | 'green' | 'muted'; title: string }> = []
+  if (space.kind !== 'STANDARD') badges.push({ text: spaceKindName(space.kind), tone: space.kind === 'BLACK_MARKET' ? 'muted' : 'gold', title: spaceKindEffect(space.kind) })
+  if (space.kind === 'LANDMARK') badges.push({ text: `成交者成为地标主人，此后每笔成交收 $${LANDMARK_RENT}M`, tone: 'gold', title: '地标' })
+  if (isBlackMarketDeal(state)) badges.push({ text: '黑市：出牌无反应窗口，阻止牌无效', tone: 'red', title: '黑市' })
+  if (isExclusiveLocked(state)) badges.push({ text: '🔒 独家协议：老板 / 旅行 / 利空牌已封锁', tone: 'green', title: '独家协议' })
+  if (neg.priceDelta > 0) badges.push({ text: `📈 利好 +$${neg.priceDelta}M/份`, tone: 'green', title: '利好牌生效' })
+  if (neg.priceDelta < 0) badges.push({ text: `📉 利空 −$${-neg.priceDelta}M/份`, tone: 'red', title: '利空牌生效' })
   const name = (id: number) => `${state.players[id]?.name ?? '?'}${id === HUMAN_ID ? '（你）' : ''}`
 
   const priceOf = (r: Representative) => {
@@ -78,10 +88,17 @@ export default function NegotiationPanel({ state }: { state: GameState }) {
       <div className="neg-header">
         <div>
           <div className="boss-tag">👑 {name(neg.bossId)} 是 Boss{neg.openerId !== neg.bossId && <span className="muted">（发起者 {state.players[neg.openerId]?.name}）</span>}</div>
-          <div className="neg-sub">#{neg.spaceId} · {space.dividends} 份 × ${tile?.shareValue}M · 一份 ≈ ${share}M · 方案 {neg.offersMade}/{MAX_OFFERS_PER_BOSS}{turnName ? ` · 轮到 ${turnName}` : ''}</div>
+          <div className="neg-sub">
+            #{neg.spaceId} · {space.dividends} 份 × ${shareNow}M{shareNow !== (tile?.shareValue ?? 0) ? `（景气牌 $${tile?.shareValue}M）` : ''} · 一份 ≈ ${share}M · 方案 {neg.offersMade}/{MAX_OFFERS_PER_BOSS}{turnName ? ` · 轮到 ${turnName}` : ''}
+          </div>
         </div>
         <div className="neg-gross">${gross}M</div>
       </div>
+      {badges.length > 0 && (
+        <div className="neg-badges">
+          {badges.map((b, i) => <span key={i} className={`neg-badge ${b.tone}`} title={b.title}>{b.text}</span>)}
+        </div>
+      )}
 
       <div className="neg-block">
         <div className="neg-block-title">席位与叫价 <span className="muted" title="报价即承诺：Boss 的方案付到承诺价，持有者视为自动同意">同家族多代表时 Boss 只选其一 · 承诺价付到即成</span></div>

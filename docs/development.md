@@ -26,8 +26,9 @@ Node 18+（需要 `structuredClone`、`AbortSignal.any` 可选）。
 | `session.test.ts` | `GameSession`：全员电脑跑到终局且每步不变量成立、人类回合等待、非法 / 抛异常策略回退、无阻止牌自动放行 / 有阻止牌等待、销毁即停、订阅与 `thinkingId` |
 | `llm.test.ts` | LLM 协议：JSON 提取容错、字段宽容解析、编号落成动作（台词 / 要价夹取 / 分成覆盖与退回 / 收款人写错整组放弃 / 反报价 / 指定弃牌）、剪枝（自伤旅行、冗余万能旅行、需同意的独吞方案）、后果注释、默认建议与局势摘要出现在提示词中、谈判阶段不带棋盘概览、不泄露他人手牌、未配置时返回 `null` 并由回退接管、唯一合法动作不请求模型 |
 | `simulation.test.ts` | 整局回归：启发式 3–6 人各 12 局、随机 3 / 6 人各 12 局；GameSession 与同步仿真同种子结果一致；事件流可完整叙述；谈判活跃度（多数交易有公开报价、承诺价自动同意被触发） |
+| `variants.test.ts` | 扩展内容：四个版本的笔数 / 版图 / 牌堆张数、景气牌生成器复现官方 15 张且各版本单调 + 末 6 张终局骰面、所有版图结构约束与特殊格分布、稀有牌与补充包构成、环形布局铺满外圈、按版本开局与存档版本；夺回权（触发 / 1 张抢回 / 失效 / 拉锯 / 手牌超限时使用）；特殊格（抢手股价、猎头 2 张、黑市无反应窗口、地标租金与现金守恒、流局不付租）；稀有牌（利好 / 利空 / 独家协议的资格、效果、封底、阻止与封锁）；每个版本整局仿真、"完整 16 笔"关满版图即结束 |
 
-`tests/helpers.ts` 提供局面搭建工具：`baseState`（全员电脑）、`setInvestors`、`giveCards`（从牌堆"抽"出指定类型的牌，保持 98 张守恒）、`clearHand`、`step`（断言合法并应用）、`rejects`（断言非法且原引用返回）、`openDealAt`、`eventsOf`、`totalCash`。
+`tests/helpers.ts` 提供局面搭建工具：`baseState(count, seed, variantId?)`（全员电脑）、`setInvestors`、`giveCards`（从牌堆"抽"出指定类型的牌，保持牌堆张数守恒）、`clearHand`、`step`（断言合法并应用）、`rejects`（断言非法且原引用返回）、`openDealAt`、`toBoss`（叫价轮其他人跳过直到 Boss）、`spaceOfKind` / `ownSpaceFamilies` / `closeSolo`（找特殊格、让某人独立凑齐并成交）、`eventsOf`、`totalCash`。
 
 写新测试的原则：
 
@@ -40,17 +41,20 @@ Node 18+（需要 `structuredClone`、`AbortSignal.any` 可选）。
 ## 3. 仿真（`scripts/simulate.ts` → `src/sim/harness.ts`）
 
 ```bash
-npm run simulate -- 400            # 400 局：heuristic / random 各半，3~6 人轮换
+npm run simulate -- 400            # 400 局：heuristic / random 各半，3~6 人轮换，四个版本轮换
 npm run simulate -- 4 7 random     # 单局追踪：4 人局 seed=7 random 模式，打印全部事件叙述
+npm run simulate -- 4 7 heuristic marathon   # 单局追踪指定版本
 SIM_MODE=heuristic npm run simulate -- 100
+SIM_VARIANT=expansion npm run simulate -- 100   # 只跑某个版本（classic / full / expansion / marathon）
 SIM_MAX_STEPS=50000 npm run simulate -- 50
 SIM_SESSION=20 npm run simulate -- 100   # 额外用 GameSession 运行时跑 20 局
 ```
 
-每步断言：合法动作非空且被 reducer 接受、有限步内结束、98 张卡牌守恒且 id 唯一、玩家总现金 = 成交总额之和、无负现金、手牌 ≤ 12、已关闭格数 = 成交数 = 景气牌下标、金钱标记不落在已关闭格、GAME_OVER 必有胜者。
-任何失败都打印种子、人数、模式、原因与最近 20 步摘要，用单局追踪即可精确复现。
+每步断言：合法动作非空且被 reducer 接受、有限步内结束、该版本牌堆张数守恒且 id 唯一、玩家总现金 = 成交总额 + 地标租金之和、无负现金、手牌 ≤ 12、已关闭格数 = 成交数 = 景气牌下标、金钱标记不落在已关闭格（终局后除外）、地标主人只在已关闭的地标格上、持夺回权者没有投资者、GAME_OVER 必有胜者。
+任何失败都打印种子、人数、模式、版本、原因与最近 20 步摘要，用单局追踪即可精确复现。
 
-参考数据（当前版本）：heuristic 平均约 150–200 步 / 局，random 约 1500–2500 步 / 局；random 模式流局多、成交慢，但同样必定在 10–15 笔成交后结束。
+参考数据（当前版本，heuristic / random）：经典约 120 / 1000 步、成交 11.6 笔；完整 16 笔约 300 / 1700 步、13 笔；扩张 22 笔约 200–400 / 1600 步、18.7 笔；马拉松 30 笔约 550 / 3300 步、27 笔。random 模式流局多、成交慢，但同样必定在最后 6 张景气牌内结束。
+`runGame` 的 `onEvent` 回调能拿到一局的全部事件，适合写临时统计脚本（例如各版本里稀有牌 / 夺回权 / 地标租金的出现频率、各人物胜率）。
 
 ---
 
@@ -74,7 +78,10 @@ src/sim/         仿真与不变量；被 scripts/ 与 tests/ 共用
 
 | 想做的事 | 改哪里 |
 | --- | --- |
-| 调整版图 / 景气牌 / 牌堆数量 | `engine/config.ts`；`docs/rules.md` 表格同步；`tests/config.test.ts` 会校验结构约束 |
+| 调整版图 / 景气牌 / 牌堆数量 | `engine/config.ts`；`docs/rules.md` 表格同步；`tests/config.test.ts` / `tests/variants.test.ts` 会校验结构约束 |
+| 新增一个对局版本 | `types.ts` 的 `GameVariantId` → `config.ts` 的 `VARIANTS`（笔数、末张股价、`SpaceSpec[]`、是否含稀有牌、补充包数）与 `VARIANT_IDS`；版图格数须能排成外圈（`ringLayout`：偶数且 ≥ 8）；开局页、帮助页、提示词规则摘要都从 `VARIANT_LIST` / `getVariant` 读取，无需改动 |
+| 新增一种特殊格 | `types.ts` 的 `SpaceKind` → 规则效果放进 `rules.ts`（如 `effectiveShareValue` / `recruitCost` / `isBlackMarketDeal`）与 `gameEngine.ts` → `text/narrate.spaceKindName / spaceKindEffect`、`labels.describeSpaceKind` → `TableBoard` 的 `KIND_ICON` 与 CSS `kind-*` → `ai/heuristic.ts` 估值 → `promptTexts.buildRulesSummary` |
+| 新增一种稀有牌 | `types.ts` 的 `CardType` / `ReactionKind` / `PlayerAction` → `config.RARE_CARDS` → `validator.cardPlayOptions / bossCardOptions / isLegal` → `gameEngine` 的动作分支 + `resolveReaction` → `labels.describeCard / describeAction`、`narrate` → `CardHand` 的 `TYPE_LABEL / TYPE_ICON / TYPE_SHORT` 与弹层 → 启发式与提示词注释 |
 | 调整谈判上限（喊话、提案、僵局） | `engine/config.ts` 常量；界面与提示词里的数字来自同一常量 |
 | 新增一种动作 | ① `types.ts` 加到 `PlayerAction` → ② `validator.ts` 的 `getLegalActions` + `isLegal` → ③ `gameEngine.ts` 的 `apply`（需要叙事则加 `GameEvent` 并 `emit`）→ ④ `text/labels.describeAction` / `text/narrate` → ⑤ 界面按钮（`ActionDock` / `CardHand`）→ ⑥ `ai/heuristic.ts` 分支 → ⑦ 跑 `npm run check`（validator 性质测试会自动覆盖新动作） |
 | 新增判定逻辑 | 放在 `engine/rules.ts`（纯函数，UI / AI / 引擎共用），不要写进组件或策略 |

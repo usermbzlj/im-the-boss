@@ -4,8 +4,9 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { InfluenceCard, GameState, PlayerAction, FamilyId } from '../engine/types'
-import { FAMILIES, HAND_LIMIT } from '../engine/config'
-import { findRep, oneShareOf } from '../engine/rules'
+import { FAMILIES, HAND_LIMIT, BOOM_BONUS, BUST_PENALTY } from '../engine/config'
+import { findRep, oneShareOf, canReclaim, recruitCost, getGrossValue } from '../engine/rules'
+import { grossAfterDelta } from '../text/labels'
 
 interface CardHandProps {
   state: GameState
@@ -17,8 +18,15 @@ interface CardHandProps {
 }
 
 const HUMAN_ID = 0
-const TYPE_LABEL: Record<InfluenceCard['type'], string> = { CLAN: '家族成员', TRAVEL: '旅行', RECRUITMENT: '招募', BOSS: '老板', STOP: '阻止' }
-const TYPE_ICON: Record<InfluenceCard['type'], string> = { CLAN: '👤', TRAVEL: '✈️', RECRUITMENT: '📋', BOSS: '👑', STOP: '🛑' }
+const TYPE_LABEL: Record<InfluenceCard['type'], string> = {
+  CLAN: '家族成员', TRAVEL: '旅行', RECRUITMENT: '招募', BOSS: '老板', STOP: '阻止', BOOM: '利好·稀有', BUST: '利空·稀有', EXCLUSIVE: '独家协议·稀有',
+}
+const TYPE_ICON: Record<InfluenceCard['type'], string> = {
+  CLAN: '👤', TRAVEL: '✈️', RECRUITMENT: '📋', BOSS: '👑', STOP: '🛑', BOOM: '📈', BUST: '📉', EXCLUSIVE: '🔒',
+}
+const TYPE_SHORT: Partial<Record<InfluenceCard['type'], string>> = {
+  TRAVEL: '万能', RECRUITMENT: '×3 成组', BOSS: '夺权', STOP: '取消', BOOM: `+$${BOOM_BONUS}M/份`, BUST: `−$${BUST_PENALTY}M/份`, EXCLUSIVE: '锁定交易',
+}
 
 function actionsForCard(legal: PlayerAction[], card: InfluenceCard): PlayerAction[] {
   return legal.filter(action => {
@@ -26,6 +34,9 @@ function actionsForCard(legal: PlayerAction[], card: InfluenceCard): PlayerActio
       case 'PLAY_CLAN': return action.cardId === card.id
       case 'PLAY_TRAVEL': return action.cardId === card.id
       case 'PLAY_BOSS': return action.cardId === card.id
+      case 'PLAY_BOOM': return action.cardId === card.id
+      case 'PLAY_BUST': return action.cardId === card.id
+      case 'PLAY_EXCLUSIVE': return action.cardId === card.id
       case 'PLAY_RECRUITMENT': return action.cardIds.includes(card.id)
       case 'PLAY_STOP': return card.type === 'STOP'
       default: return false
@@ -131,24 +142,58 @@ export default function CardHand({ state, legal, act, discardMode, discardSelect
             </div>
           </div>
         )
-      case 'RECRUITMENT':
+      case 'RECRUITMENT': {
+        const costs = openActions.map(a => a.type === 'PLAY_RECRUITMENT' ? a.cardIds.length : 3)
+        const minCost = Math.min(...costs)
         return (
           <div className="popover-body">
-            <div className="popover-title">招募三连：选择要夺取的投资者（消耗 3 张招募牌）</div>
+            <div className="popover-title">
+              招募：选择要夺取的投资者（{minCost === 1 ? '夺回权：只需 1 张' : minCost === 2 ? '猎头格：只需 2 张' : '消耗 3 张招募牌'}）
+            </div>
             <div className="popover-targets">
               {openActions.map((a, i) => {
                 if (a.type !== 'PLAY_RECRUITMENT') return null
                 const f: FamilyId = a.targetFamilyId
                 const owner = state.investors.find(inv => inv.familyId === f)?.ownerId
+                const cost = recruitCost(state, HUMAN_ID, f)
+                const reclaim = canReclaim(state, HUMAN_ID, f)
                 return (
                   <button key={i} className="btn target-btn" style={{ borderColor: FAMILIES[f].color }} onClick={() => fire(a)}>
-                    {FAMILIES[f].name}<em>{owner == null ? '公共区' : `来自 ${state.players[owner]?.name}`}</em>
+                    {FAMILIES[f].name}<em>{owner == null ? '公共区' : `来自 ${state.players[owner]?.name}`} · {reclaim ? '夺回 · 1 张' : `${cost} 张`}</em>
                   </button>
                 )
               })}
             </div>
           </div>
         )
+      }
+      case 'BOOM': {
+        const a = openActions.find(x => x.type === 'PLAY_BOOM')
+        return a ? (
+          <div className="popover-body">
+            <div className="popover-title">利好：本笔股价 +${BOOM_BONUS}M/份，总额 ${getGrossValue(state)}M → ${grossAfterDelta(state, BOOM_BONUS)}M（已有方案的分成不变，多出的全归你）</div>
+            <button className="btn btn-success" onClick={() => fire(a)}>打出利好</button>
+          </div>
+        ) : null
+      }
+      case 'BUST': {
+        const a = openActions.find(x => x.type === 'PLAY_BUST')
+        return a ? (
+          <div className="popover-body">
+            <div className="popover-title">利空：本笔股价 −${BUST_PENALTY}M/份，总额 ${getGrossValue(state)}M → ${grossAfterDelta(state, -BUST_PENALTY)}M（砍的是 Boss 的净得，方案里别人的分成不变）</div>
+            <button className="btn btn-danger" onClick={() => fire(a)}>打出利空</button>
+          </div>
+        ) : null
+      }
+      case 'EXCLUSIVE': {
+        const a = openActions.find(x => x.type === 'PLAY_EXCLUSIVE')
+        return a ? (
+          <div className="popover-body">
+            <div className="popover-title">独家协议：锁定本笔交易——之后谁都不能再打老板牌 / 旅行牌 / 利空牌（招募仍可）</div>
+            <button className="btn btn-success" onClick={() => fire(a)}>签独家协议</button>
+          </div>
+        ) : null
+      }
       case 'BOSS': {
         const a = openActions.find(x => x.type === 'PLAY_BOSS')
         return a ? (
@@ -182,6 +227,7 @@ export default function CardHand({ state, legal, act, discardMode, discardSelect
         <span>你的手牌 {player.hand.length}/{HAND_LIMIT}</span>
         {discardMode && <span className="red">点选要弃的牌</span>}
         {recruitCount > 0 && recruitCount < 3 && <span className="muted">招募 {recruitCount}/3</span>}
+        {player.reclaim && <span className="gold" title="你的最后一位常驻投资者被夺走了：只需 1 张招募牌即可抢回">夺回权：{FAMILIES[player.reclaim].name}</span>}
       </div>
       <div className="hand-cards">
         {player.hand.map(card => {
@@ -203,7 +249,7 @@ export default function CardHand({ state, legal, act, discardMode, discardSelect
                 <div className="card-type">{TYPE_ICON[card.type]} {TYPE_LABEL[card.type]}</div>
                 <div className="card-name" style={color ? { color } : undefined}>
                   {card.familyId ? <><span className="card-letter" style={{ background: color }}>{card.familyId}</span>{FAMILIES[card.familyId].name}</>
-                    : card.type === 'TRAVEL' ? '万能' : card.type === 'RECRUITMENT' ? '×3 成组' : card.type === 'BOSS' ? '夺权' : '取消'}
+                    : TYPE_SHORT[card.type] ?? ''}
                 </div>
                 {selected && <div className="card-discard-mark">弃</div>}
               </div>

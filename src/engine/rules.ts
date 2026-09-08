@@ -7,7 +7,9 @@ import type {
   GameState, BoardSpace, DealGroup, DealTile, FamilyId, Negotiation,
   Representative, Offer, Payout, Player, InfluenceCard, Demand, Quote, ResolvedQuote,
 } from './types'
-import { FAMILY_IDS } from './config'
+import {
+  FAMILY_IDS, RECRUIT_COST, HEADHUNT_RECRUIT_COST, RECLAIM_RECRUIT_COST, PREMIUM_BONUS, MIN_SHARE_VALUE, LANDMARK_RENT,
+} from './config'
 
 // ---------- 基础查询 ----------
 
@@ -43,11 +45,58 @@ export function getCurrentTile(state: GameState): DealTile | undefined {
   return state.dealTiles[state.dealTileIndex]
 }
 
-export function getGrossValue(state: GameState): number {
+/**
+ * 当前格每份的实际股价：景气牌股价 + 抢手格加成 + 本笔利好 / 利空牌的累计变动，不低于下限。
+ * 谈判外（标记所在格）同样计入抢手加成，这样开单前看到的总额就是开单后的总额。
+ */
+export function effectiveShareValue(state: GameState, space?: BoardSpace): number {
   const tile = getCurrentTile(state)
+  const sp = space ?? getCurrentSpace(state)
+  if (!tile || !sp) return 0
+  const delta = state.negotiation && state.negotiation.spaceId === sp.id ? state.negotiation.priceDelta : 0
+  return Math.max(MIN_SHARE_VALUE, tile.shareValue + (sp.kind === 'PREMIUM' ? PREMIUM_BONUS : 0) + delta)
+}
+
+export function getGrossValue(state: GameState): number {
   const space = getCurrentSpace(state)
-  if (!tile || !space) return 0
-  return tile.shareValue * space.dividends
+  if (!space || !getCurrentTile(state)) return 0
+  return effectiveShareValue(state, space) * space.dividends
+}
+
+/** 某格若现在开单的交易总额（用于评估版图上的其他格子） */
+export function grossValueOf(state: GameState, space: BoardSpace): number {
+  if (!getCurrentTile(state)) return 0
+  return effectiveShareValue(state, space) * space.dividends
+}
+
+/** 还剩几张景气牌可成交（含当前这张） */
+export function remainingDeals(state: GameState): number {
+  return Math.max(0, state.dealTiles.length - state.dealTileIndex)
+}
+
+/** 当前交易所在格是否为某种特殊格（谈判外按标记所在格） */
+export function currentSpaceKind(state: GameState): BoardSpace['kind'] {
+  return getCurrentSpace(state)?.kind ?? 'STANDARD'
+}
+
+/** 黑市：本格交易中打出的牌不经反应窗口 */
+export function isBlackMarketDeal(state: GameState): boolean {
+  return !!state.negotiation && getCurrentSpace(state)?.kind === 'BLACK_MARKET'
+}
+
+/** 已被人拿下的地标（收租人 → 格子） */
+export function landlords(state: GameState): Array<{ spaceId: number; ownerId: number }> {
+  return state.board.filter(b => b.kind === 'LANDMARK' && b.landlordId != null).map(b => ({ spaceId: b.id, ownerId: b.landlordId! }))
+}
+
+/**
+ * 拿下某地标格预期还能收多少租：此后每笔成交 $1M，按剩余景气牌张数估（本笔之后还剩几张），
+ * 再打个折扣——不是每张景气牌都会成交、游戏也可能提前终局。
+ */
+export function landmarkRentEstimate(state: GameState, space: BoardSpace): number {
+  if (space.kind !== 'LANDMARK') return 0
+  const left = Math.max(0, remainingDeals(state) - 1)
+  return Math.round(left * LANDMARK_RENT * 0.7)
 }
 
 export function getEndProbability(tile: DealTile | undefined): number {
@@ -498,12 +547,47 @@ export function hasStop(player: Player | undefined): boolean {
   return !!player?.hand.some(c => c.type === 'STOP')
 }
 
-/** 招募合法目标：有公共区投资者时必须先招公共区，否则可夺任意他人投资者 */
+/** 玩家对某家族的有效夺回权：有夺回权、目标正是那个家族、且它现在在别人手里 */
+export function canReclaim(state: GameState, playerId: number, familyId: FamilyId): boolean {
+  const player = getPlayer(state, playerId)
+  if (!player || player.reclaim !== familyId) return false
+  const inv = state.investors.find(i => i.familyId === familyId)
+  return !!inv && inv.ownerId != null && inv.ownerId !== playerId
+}
+
+/**
+ * 招募某家族要几张招募牌：夺回权 1 张；本格交易进行中（谈判 / 倒计时）且是猎头格 2 张；否则 3 张。
+ * 手牌上限阶段不在任何交易里，按常规价。
+ */
+export function recruitCost(state: GameState, playerId: number, familyId: FamilyId): number {
+  if (canReclaim(state, playerId, familyId)) return RECLAIM_RECRUIT_COST
+  const inDeal = !!state.negotiation && (state.phase === 'NEGOTIATION' || state.phase === 'CLOSING' || state.phase === 'REACTION')
+  if (inDeal && getCurrentSpace(state)?.kind === 'HEADHUNT') return HEADHUNT_RECRUIT_COST
+  return RECRUIT_COST
+}
+
+/**
+ * 招募合法目标：有公共区投资者时必须先招公共区，否则可夺任意他人投资者；
+ * 夺回权的目标家族不受"先招公共区"限制——那是抢回自己的人。
+ */
 export function recruitTargets(state: GameState, playerId: number): FamilyId[] {
   const neutral = state.investors.filter(inv => inv.ownerId === null)
   const pool = neutral.length > 0 ? neutral : state.investors.filter(inv => inv.ownerId !== null && inv.ownerId !== playerId)
   const set = new Set(pool.map(inv => inv.familyId))
+  const reclaim = getPlayer(state, playerId)?.reclaim
+  if (reclaim && canReclaim(state, playerId, reclaim)) set.add(reclaim)
   return FAMILY_IDS.filter(f => set.has(f))
+}
+
+/** 玩家手里的招募牌够不够招某家族 */
+export function canAffordRecruit(state: GameState, playerId: number, familyId: FamilyId): boolean {
+  const player = getPlayer(state, playerId)
+  return !!player && countCards(player.hand, 'RECRUITMENT') >= recruitCost(state, playerId, familyId)
+}
+
+/** 独家协议生效中：老板牌 / 旅行牌 / 利空牌不能再打 */
+export function isExclusiveLocked(state: GameState): boolean {
+  return !!state.negotiation?.exclusive
 }
 
 /** 未关闭格子里每个家族出现的次数（评估投资者长期价值） */

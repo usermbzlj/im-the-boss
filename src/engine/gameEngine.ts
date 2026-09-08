@@ -8,8 +8,14 @@
 //   持有者进入 OFFER_RESPONSE 依次同意 / 拒绝（拒绝可反报价 = 更新承诺价）→ 回到 Boss
 //   CLOSE_DEAL（须方案全员同意）→ CLOSING（"going once, going twice"：其他人依次
 //   可打干扰牌或放行）→ 全员放行即结算；有牌生效则回到谈判
-//   旅行 / 招募 / 老板牌打出后进入 REACTION，按座位顺序逐个询问其他玩家是否打阻止牌
+//   旅行 / 招募 / 老板 / 利好 / 利空 / 独家协议牌打出后进入 REACTION，按座位顺序逐个询问其他玩家是否打阻止牌
 //   （无阻止牌者只能放行；询问所有人是为了不暴露谁持有阻止牌）；方案被打掉则回合回到 Boss
+//   黑市格的交易没有反应窗口：牌打出即生效
+//
+// 扩展规则（变体与特殊格见 config.ts / docs/rules.md §11）：
+//   · 夺回权：最后一位常驻投资者被招募夺走 → 1 张招募牌即可抢回该家族
+//   · 猎头格：交易进行中招募只需 2 张；地标格：成交归 Boss，此后每笔成交收 $1M 租金
+//   · 抢手格：股价 +$1M/份；利好 / 利空牌改变本笔股价；独家协议锁定本笔交易
 //
 // 契约：
 //   · reducer 只接受通过 validator.isLegal 的动作；被拒绝的动作原样返回旧状态
@@ -18,22 +24,23 @@
 // ============================================================
 
 import type {
-  GameState, GameAction, PlayerAction, Player, InfluenceCard, Negotiation, Offer,
+  GameState, GameAction, PlayerAction, Player, InfluenceCard, Negotiation, Offer, GameVariantId,
   GameEvent, FamilyId, Payout, Representative, RepRef, ReactionKind, FailReason, Quote, ResolvedQuote,
 } from './types'
 import {
-  FAMILY_IDS, BOARD_SPACES, DEAL_TILES, AI_ROSTER,
-  HAND_LIMIT, CARDS_PER_DRAW, STARTING_HAND, TOTAL_DEALS, MAX_STALEMATE_ROUNDS, MAX_EVENTS,
-  createInfluenceDeck, shuffleWith, rollDieWith, randomSeed,
+  FAMILY_IDS, AI_ROSTER,
+  HAND_LIMIT, CARDS_PER_DRAW, STARTING_HAND, MAX_STALEMATE_ROUNDS, MAX_EVENTS,
+  LANDMARK_RENT, BOOM_BONUS, BUST_PENALTY,
+  getVariant, buildBoard, makeDealTiles, createDeckFor, shuffleWith, rollDieWith, randomSeed,
 } from './config'
 import {
   getPlayer, nextPlayerId, prevPlayerId, othersFrom, getSpace, getCurrentTile,
   getGrossValue, offerOwners, findRep, selectReps, investorRepKey, clanRepKey, payoutTotal, offerShareOf, meetsCommitment, repsUsedOf,
-  commitmentPrice, playerRelevantFamilies, usedFamiliesOf, resolveQuotes,
+  commitmentPrice, playerRelevantFamilies, usedFamiliesOf, resolveQuotes, recruitCost, isBlackMarketDeal, landlords,
 } from './rules'
 import { isLegal } from './validator'
 
-export const SAVE_VERSION = 8
+export const SAVE_VERSION = 9
 
 // ---------- 工具 ----------
 
@@ -132,8 +139,9 @@ function markDisruptor(neg: Negotiation, playerId: number) {
 
 // ---------- 初始化 ----------
 
-export function createInitialState(playerCount: number, humanName: string, seed?: number): GameState {
+export function createInitialState(playerCount: number, humanName: string, seed?: number, variantId?: GameVariantId): GameState {
   const count = Math.min(6, Math.max(3, playerCount))
+  const variant = getVariant(variantId)
   const holder = { rng: seed ?? randomSeed() }
   const roster = shuffleWith(holder, AI_ROSTER)
 
@@ -150,7 +158,7 @@ export function createInitialState(playerCount: number, humanName: string, seed?
     ownerId: count === 3 ? Math.floor(idx / 2) : idx < count ? idx : null,
   }))
 
-  const drawPile = shuffleWith(holder, createInfluenceDeck())
+  const drawPile = shuffleWith(holder, createDeckFor(variant))
   for (const p of players) for (let j = 0; j < STARTING_HAND; j++) p.hand.push(drawPile.pop()!)
 
   // 起始玩家：持有字母序最靠前投资者的人（投资者已随机分配，等价于随机起始）；其右手边玩家放置金钱标记
@@ -162,11 +170,12 @@ export function createInitialState(playerCount: number, humanName: string, seed?
 
   const s: GameState = {
     saveVersion: SAVE_VERSION,
+    variantId: variant.id,
     phase: 'PLACE_MARKER',
     players,
     investors,
-    board: BOARD_SPACES.map(b => ({ ...b, groups: b.groups.map(g => ({ ...g, families: [...g.families] })), closedByTileId: null })),
-    dealTiles: DEAL_TILES.map(t => ({ ...t, endFaces: [...t.endFaces] })),
+    board: buildBoard(variant.spaces),
+    dealTiles: makeDealTiles(variant.deals, variant.maxShare),
     dealTileIndex: 0,
     drawPile,
     discardPile: [],
@@ -185,8 +194,17 @@ export function createInitialState(playerCount: number, humanName: string, seed?
     nextId: 1,
   }
   s.markerChooserId = prevPlayerId(s, startId)
-  emit(s, { kind: 'GAME_STARTED', playerCount: count, startPlayerId: startId, markerChooserId: s.markerChooserId })
+  emit(s, { kind: 'GAME_STARTED', playerCount: count, startPlayerId: startId, markerChooserId: s.markerChooserId, variantId: variant.id, deals: variant.deals })
   return s
+}
+
+/** 金钱标记顺时针移到下一个未关闭格（版图长度由变体决定） */
+function advanceMarker(s: GameState) {
+  const n = s.board.length
+  for (let i = 0; i < n; i++) {
+    s.markerPos = (s.markerPos % n) + 1
+    if (getSpace(s, s.markerPos)!.closedByTileId == null) return
+  }
 }
 
 // ---------- 谈判 ----------
@@ -213,6 +231,8 @@ function openNegotiation(s: GameState, bossId: number) {
     closingOrder: [],
     closingIndex: 0,
     disruptors: [],
+    priceDelta: 0,
+    exclusive: false,
   }
   for (const inv of s.investors) {
     if (inv.ownerId === null) continue
@@ -245,6 +265,12 @@ function beginReaction(s: GameState, actorId: number, kind: ReactionKind, cards:
     targetRepKey: target.targetRepKey, targetFamilyId: target.targetFamilyId,
   }
   s.phase = 'REACTION'
+  // 黑市：没有反应窗口，牌打出即生效（也就没有阻止牌的用武之地）
+  if (isBlackMarketDeal(s) && returnPhase !== 'HAND_LIMIT') {
+    emit(s, { kind: 'BLACK_MARKET', actorId, card: kind })
+    resolveReaction(s)
+    return
+  }
   const first = nextReactor(s, actorId, new Set([actorId]))
   if (first === null) resolveReaction(s)
   else s.pendingReaction.reactorId = first
@@ -290,6 +316,17 @@ function resolveReaction(s: GameState) {
     inv.ownerId = pr.actorId
     s.discardPile.push(...pr.cards)
     emit(s, { kind: 'RECRUITMENT_RESOLVED', playerId: pr.actorId, familyId: f, fromId })
+    // 重新有了常驻投资者 → 夺回权用掉 / 失效
+    const actor = getPlayer(s, pr.actorId)
+    if (actor?.reclaim) actor.reclaim = null
+    // 被夺走的是对方最后一位常驻投资者 → 他获得夺回权（1 张招募牌即可抢回这个家族）
+    if (fromId != null && !s.investors.some(i => i.ownerId === fromId)) {
+      const victim = getPlayer(s, fromId)
+      if (victim) {
+        victim.reclaim = f
+        emit(s, { kind: 'RECLAIM_GRANTED', playerId: fromId, familyId: f })
+      }
+    }
     if (neg) {
       const key = investorRepKey(f)
       const rep = findRep(neg, key)
@@ -297,11 +334,22 @@ function resolveReaction(s: GameState) {
       else neg.reps.push({ key, familyId: f, source: 'INVESTOR', ownerId: pr.actorId, travelled: neg.travelledInvestors.includes(f) })
       voidOfferIfTouched(s, key, 'RECRUITED')
     }
+  } else if ((pr.kind === 'BOOM' || pr.kind === 'BUST') && neg) {
+    neg.priceDelta += pr.kind === 'BOOM' ? BOOM_BONUS : -BUST_PENALTY
+    s.discardPile.push(...pr.cards)
+    emit(s, { kind: 'PRICE_CHANGED', playerId: pr.actorId, delta: pr.kind === 'BOOM' ? BOOM_BONUS : -BUST_PENALTY, gross: getGrossValue(s) })
+  } else if (pr.kind === 'EXCLUSIVE' && neg) {
+    neg.exclusive = true
+    s.discardPile.push(...pr.cards)
+    emit(s, { kind: 'EXCLUSIVE_RESOLVED', playerId: pr.actorId })
   } else {
     s.discardPile.push(...pr.cards)
   }
   afterReaction(s, false, hadOffer && !s.negotiation?.offer)
 }
+
+/** Boss 自己打的"拼方案"牌（利好 / 独家协议）：窗口结束后回合仍在 Boss，他紧接着就该提案 / 成交 */
+const BOSS_OWN_KINDS = new Set<ReactionKind>(['BOOM', 'EXCLUSIVE'])
 
 /**
  * 反应窗口结束后回到原阶段。
@@ -339,6 +387,7 @@ function afterReaction(s: GameState, cancelled: boolean, offerVoided = false) {
   neg.passStreak = 0
   if (!cancelled && pr.kind === 'BOSS') neg.turnId = pr.actorId
   else if (offerVoided) neg.turnId = neg.bossId
+  else if (pr.actorId === neg.bossId && BOSS_OWN_KINDS.has(pr.kind)) neg.turnId = neg.bossId
   else neg.turnId = nextPlayerId(s, pr.actorId)
 }
 
@@ -386,24 +435,37 @@ function finalizeDeal(s: GameState) {
   space.closedByTileId = tile.id
   s.dealTileIndex++
   s.completedDeals++
+
+  // 地标：先给已有的地标主人发租金，再把这一格记到本笔 Boss 名下（本格的租金从下一笔起算）
+  const rents: Payout[] = []
+  for (const { ownerId } of landlords(s)) {
+    const owner = getPlayer(s, ownerId)
+    if (!owner) continue
+    owner.cash += LANDMARK_RENT
+    const line = rents.find(r => r.playerId === ownerId)
+    if (line) line.amount += LANDMARK_RENT
+    else rents.push({ playerId: ownerId, amount: LANDMARK_RENT })
+  }
+  if (space.kind === 'LANDMARK') {
+    space.landlordId = boss.id
+    emit(s, { kind: 'LANDMARK_CLAIMED', playerId: boss.id, spaceId: space.id })
+  }
+
   s.dealHistory.push({
     id: s.nextId++, dealNumber: s.completedDeals, spaceId: space.id, bossId: neg.bossId, openerId: neg.openerId,
-    success: true, grossValue: gross, payouts: finalPayouts, disruptors: [...neg.disruptors],
+    success: true, grossValue: gross, payouts: finalPayouts, rents, disruptors: [...neg.disruptors],
   })
   emit(s, { kind: 'DEAL_CLOSED', dealNumber: s.completedDeals, spaceId: space.id, tileId: tile.id, bossId: boss.id, gross, payouts: finalPayouts, bossKeep: gross - paid })
+  if (rents.length) emit(s, { kind: 'RENT_PAID', payments: rents })
 
   // 金钱标记移到顺时针下一个未关闭格
-  for (let i = 0; i < 16; i++) {
-    const next = (s.markerPos % 16) + 1
-    s.markerPos = next
-    if (getSpace(s, next)!.closedByTileId == null) break
-  }
+  advanceMarker(s)
 
   const bossId = neg.bossId
   s.negotiation = null
   clearSpeeches(s)
 
-  if (s.completedDeals >= TOTAL_DEALS) {
+  if (s.completedDeals >= s.dealTiles.length) {
     finishGame(s)
   } else if (tile.endFaces.length > 0) {
     s.phase = 'END_ROLL'
@@ -422,7 +484,7 @@ function failDeal(s: GameState, reason: FailReason) {
   }
   s.dealHistory.push({
     id: s.nextId++, dealNumber: s.completedDeals + 1, spaceId: neg.spaceId, bossId: neg.bossId, openerId: neg.openerId,
-    success: false, grossValue: getGrossValue(s), payouts: [], disruptors: [...neg.disruptors], failReason: reason,
+    success: false, grossValue: getGrossValue(s), payouts: [], rents: [], disruptors: [...neg.disruptors], failReason: reason,
   })
   emit(s, { kind: 'DEAL_FAILED', spaceId: neg.spaceId, bossId: neg.bossId, reason })
   const bossId = neg.bossId
@@ -442,7 +504,7 @@ function finishGame(s: GameState) {
 // ---------- reducer ----------
 
 export function gameReducer(state: GameState | null, action: GameAction): GameState | null {
-  if (action.type === 'START_GAME') return createInitialState(action.playerCount, action.humanName, action.seed)
+  if (action.type === 'START_GAME') return createInitialState(action.playerCount, action.humanName, action.seed, action.variantId)
   if (action.type === 'LOAD_GAME') return action.state.saveVersion === SAVE_VERSION ? structuredClone(action.state) : state
   if (!state) return state
   if (!isLegal(state, action)) return state
@@ -477,11 +539,7 @@ function apply(s: GameState, action: PlayerAction) {
     case 'ROLL_MOVE': {
       const die = rollDieWith(s)
       s.lastDie = die
-      let moved = 0
-      while (moved < die) {
-        s.markerPos = (s.markerPos % 16) + 1
-        if (getSpace(s, s.markerPos)!.closedByTileId == null) moved++
-      }
+      for (let moved = 0; moved < die; moved++) advanceMarker(s)
       s.phase = 'AFTER_MOVE'
       emit(s, { kind: 'MARKER_MOVED', playerId: player.id, die, spaceId: s.markerPos, gross: getGrossValue(s) })
       return
@@ -524,9 +582,10 @@ function apply(s: GameState, action: PlayerAction) {
     }
 
     case 'PLAY_RECRUITMENT': {
+      const cost = recruitCost(s, player.id, action.targetFamilyId)
       const cards = takeFromHand(player, action.cardIds)
       const fromId = s.investors.find(i => i.familyId === action.targetFamilyId)?.ownerId ?? null
-      emit(s, { kind: 'RECRUITMENT_PLAYED', playerId: player.id, familyId: action.targetFamilyId, fromId })
+      emit(s, { kind: 'RECRUITMENT_PLAYED', playerId: player.id, familyId: action.targetFamilyId, fromId, cost })
       beginReaction(s, player.id, 'RECRUITMENT', cards, { targetFamilyId: action.targetFamilyId })
       return
     }
@@ -535,6 +594,27 @@ function apply(s: GameState, action: PlayerAction) {
       const cards = takeFromHand(player, [action.cardId])
       emit(s, { kind: 'BOSS_PLAYED', playerId: player.id, bossId: neg!.bossId })
       beginReaction(s, player.id, 'BOSS', cards, {})
+      return
+    }
+
+    case 'PLAY_BOOM': {
+      const cards = takeFromHand(player, [action.cardId])
+      emit(s, { kind: 'BOOM_PLAYED', playerId: player.id })
+      beginReaction(s, player.id, 'BOOM', cards, {})
+      return
+    }
+
+    case 'PLAY_BUST': {
+      const cards = takeFromHand(player, [action.cardId])
+      emit(s, { kind: 'BUST_PLAYED', playerId: player.id })
+      beginReaction(s, player.id, 'BUST', cards, {})
+      return
+    }
+
+    case 'PLAY_EXCLUSIVE': {
+      const cards = takeFromHand(player, [action.cardId])
+      emit(s, { kind: 'EXCLUSIVE_PLAYED', playerId: player.id })
+      beginReaction(s, player.id, 'EXCLUSIVE', cards, {})
       return
     }
 

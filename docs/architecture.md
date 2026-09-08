@@ -21,7 +21,7 @@
 ├────────────────────────────────────────────────────────────────────┤
 │ engine/  纯函数，不依赖 React / DOM / 网络，不含任何文案                          │
 │   types.ts       状态、事件、动作类型                                          │
-│   config.ts      静态数据、数值上限、带种子的随机数                                │
+│   config.ts      静态数据（版图 / 景气牌生成器 / 牌堆 / 四个版本）、数值上限、带种子的随机数 │
 │   rules.ts       只读查询与判定（需求满足、代表选择、方案校验、可招募目标 …）          │
 │   validator.ts   getActingPlayerId / getLegalActions / isLegal / 方案候选 / 默认弃牌 │
 │   gameEngine.ts  createInitialState / gameReducer（emit 事件）                    │
@@ -65,7 +65,7 @@ isLegal(state, action): boolean                  // 判定：reducer 入口
 ### 2.4 确定性
 
 所有随机性（洗牌、掷骰）来自 `state.rng`（mulberry32 状态），通过 `nextRandom / shuffleWith / rollDieWith` 推进。
-`createInitialState(playerCount, name, seed)` 传入相同种子即得到相同发牌与骰子；启发式策略的随机也由 `stateVersion + rng` 派生。
+`createInitialState(playerCount, name, seed, variantId?)` 传入相同种子与版本即得到相同发牌与骰子；启发式策略的随机也由 `stateVersion + rng` 派生。
 因此一局游戏 = 初始种子 + 动作序列，可完整回放；`tests/simulation.test.ts` 验证同种子经由 GameSession 与直接驱动 reducer 结果一致。
 
 ### 2.5 状态里只放游戏事实，引擎不产生文字
@@ -82,12 +82,13 @@ isLegal(state, action): boolean                  // 判定：reducer 入口
 | 字段 | 含义 |
 | --- | --- |
 | `phase` | 见第 4 节状态机 |
-| `players[]` | `id / name / isAI / cash / hand / personaId / lastSpeech / notes`（`notes`：电脑玩家写给自己的私人笔记，最多 8 条，只回灌到它自己的提示词） |
+| `variantId` | 对局版本 `classic / full / expansion / marathon`（`config.getVariant` 给出笔数、版图、股价上限、牌堆构成） |
+| `players[]` | `id / name / isAI / cash / hand / personaId / lastSpeech / notes / reclaim`（`notes`：电脑玩家写给自己的私人笔记，最多 8 条，只回灌到它自己的提示词；`reclaim`：夺回权指向的家族，无则 `null`） |
 | `investors[]` | 6 张投资者牌的归属，`ownerId: null` 表示公共区 |
-| `board[]` | 16 格：`groups: DealGroup[]`（`families` + `need`）、`dividends`、`closedByTileId` |
-| `dealTiles[]` / `dealTileIndex` | 15 张景气牌与当前下标 |
-| `drawPile / discardPile` | 牌堆 |
-| `markerPos` | 金钱标记位置（1–16） |
+| `board[]` | 16 / 24 / 32 格（按版本）：`groups: DealGroup[]`（`families` + `need`）、`dividends`、`kind`（`STANDARD / LANDMARK / PREMIUM / BLACK_MARKET / HEADHUNT`）、`closedByTileId`、`landlordId`（地标主人） |
+| `dealTiles[]` / `dealTileIndex` | 15 / 16 / 22 / 30 张景气牌（`makeDealTiles(count, maxShare)` 生成）与当前下标；`dealTiles.length` 就是终局笔数 |
+| `drawPile / discardPile` | 牌堆（98 / 105 / 117 / 129 张，`createDeckFor(variant)`） |
+| `markerPos` | 金钱标记位置（1–`board.length`） |
 | `currentId` | TURN / AFTER_MOVE / HAND_LIMIT / END_ROLL 的行动者 |
 | `markerChooserId` | PLACE_MARKER 阶段的放置者 |
 | `negotiation` | 当前交易（见下），无交易时为 `null` |
@@ -105,6 +106,7 @@ isLegal(state, action): boolean                  // 判定：reducer 入口
 - `responseQueue / responseIndex` —— OFFER_RESPONSE 的应答顺序；`closingOrder / closingIndex` —— CLOSING 的询问顺序。
 - `demands: Demand[]` —— 公开报价，**按 (玩家, 家族) 记录**：`familyId` 有值 = 该家族代表每个的出借价；无值 = 通用价（没有相关代表时是封口费，有代表但该家族没单独报价时作兜底）。同一玩家可有多条，各家族互不覆盖。查询用 `rules.demandOf(neg, playerId, familyId?)` / `repPriceOf(neg, rep)` / `commitmentPrice(neg, offer, playerId)`（= 方案中所用其代表各自价之和）。
 - `speeches / speakCounts / disruptors / openerId / travelledInvestors` —— 供界面、AI 与结算使用的谈判记录。
+- `priceDelta / exclusive` —— 稀有牌对本笔交易的影响：股价增减（利好 +2 / 利空 −1，`rules.effectiveShareValue` 还叠加抢手格 +1 并以 $1M 封底）与独家协议锁定。成交后随 `negotiation` 一起消失，不影响景气牌。
 
 ### 3.1 事件（`GameEvent`）
 
@@ -112,10 +114,10 @@ isLegal(state, action): boolean                  // 判定：reducer 入口
 
 | 分组 | 事件 |
 | --- | --- |
-| 流程 | `GAME_STARTED` `MARKER_PLACED` `MARKER_MOVED` `DEAL_OPENED` `CARDS_DRAWN` `DECK_RESHUFFLED` `HAND_LIMIT` `CARDS_DISCARDED` |
-| 出牌 | `CLAN_PLAYED` `TRAVEL_PLAYED` `RECRUITMENT_PLAYED` `BOSS_PLAYED` `STOP_PLAYED` `TRAVEL_RESOLVED` `RECRUITMENT_RESOLVED` `BOSS_RESOLVED` |
+| 流程 | `GAME_STARTED`（含 `variantId / deals`）`MARKER_PLACED` `MARKER_MOVED` `DEAL_OPENED` `CARDS_DRAWN` `DECK_RESHUFFLED` `HAND_LIMIT` `CARDS_DISCARDED` |
+| 出牌 | `CLAN_PLAYED` `TRAVEL_PLAYED` `RECRUITMENT_PLAYED`（含 `cost`）`BOSS_PLAYED` `STOP_PLAYED` `BOOM_PLAYED` `BUST_PLAYED` `EXCLUSIVE_PLAYED` `BLACK_MARKET`（黑市格跳过反应窗口）`TRAVEL_RESOLVED` `RECRUITMENT_RESOLVED` `RECLAIM_GRANTED` `BOSS_RESOLVED` `PRICE_CHANGED` `EXCLUSIVE_RESOLVED` |
 | 谈判 | `SPEECH` `DEMAND` `STALEMATE_ROUND` `OFFER_PROPOSED` `OFFER_ACCEPTED` `OFFER_DECLINED` `OFFER_RESOLVED` `OFFER_VOIDED` `CLOSING_STARTED` `CLOSING_INTERRUPTED` |
-| 结算 | `DEAL_CLOSED` `DEAL_FAILED` `END_ROLL_DUE` `END_ROLL` `GAME_OVER` |
+| 结算 | `DEAL_CLOSED` `LANDMARK_CLAIMED` `RENT_PAID` `DEAL_FAILED` `END_ROLL_DUE` `END_ROLL` `GAME_OVER` |
 
 `RepRef` 是代表在事件发生时刻的快照（家族 / 持有者 / 来源），因为代表随后可能失效或易主。
 
@@ -133,7 +135,9 @@ HAND_LIMIT ──PLAY_RECRUITMENT──► REACTION ──► (仍>12 ? HAND_LIM
 
 NEGOTIATION（turnId 轮转；开局 turnId = Boss 左手边 ⇒ 叫价轮，Boss 在第一轮末位）
   ├─SPEAK / PASS / PLAY_CLAN ──► NEGOTIATION（下一位；Boss 打自己的家族卡则仍是 Boss 行动，可紧接着提案 / 成交）
-  ├─PLAY_TRAVEL / PLAY_RECRUITMENT / PLAY_BOSS ──► REACTION ──► NEGOTIATION（方案被作废 ? 回到 Boss : 下一位）
+  ├─PLAY_TRAVEL / PLAY_RECRUITMENT / PLAY_BOSS / PLAY_BUST ──► REACTION ──► NEGOTIATION（方案被作废 ? 回到 Boss : 下一位）
+  ├─PLAY_BOOM / PLAY_EXCLUSIVE（Boss）──► REACTION ──► NEGOTIATION（仍是 Boss 行动）
+  │   （黑市格：以上出牌跳过 REACTION 直接生效；独家协议生效后 PLAY_BOSS / PLAY_TRAVEL / PLAY_BUST 不再合法）
   ├─PROPOSE_OFFER（Boss）──► 付到承诺价者自动 OFFER_ACCEPTED(auto)
   │     ├─ 全员已同意 ──► NEGOTIATION（Boss，可 CLOSE_DEAL）
   │     └─ 否则 ──► OFFER_RESPONSE（未自动同意者逐个 ACCEPT/DECLINE）──► NEGOTIATION（回到 Boss）
@@ -141,8 +145,8 @@ NEGOTIATION（turnId 轮转；开局 turnId = Boss 左手边 ⇒ 叫价轮，Bos
   └─ABANDON_DEAL（Boss）/ 僵局 ──► 流局 ──► 下一位 TURN
 
 CLOSING（closingOrder 依次）
-  ├─PASS_CLOSING ──► 全员放行 ⇒ 结算 ──► (第10笔起 END_ROLL | 下一位 TURN | GAME_OVER)
-  └─PLAY_TRAVEL / PLAY_RECRUITMENT / PLAY_BOSS ──► REACTION ──► 被阻止 ? CLOSING（同一人继续）: NEGOTIATION
+  ├─PASS_CLOSING ──► 全员放行 ⇒ 结算 ──► (景气牌带终局骰面 ? END_ROLL | 下一位 TURN | 景气牌用完 ⇒ GAME_OVER)
+  └─PLAY_TRAVEL / PLAY_RECRUITMENT / PLAY_BOSS / PLAY_BUST ──► REACTION ──► 被阻止 ? CLOSING（同一人继续）: NEGOTIATION
 
 REACTION（按座位顺序询问出牌者以外的所有人）
   ├─PLAY_STOP ──► 取消，回到 returnPhase
@@ -179,11 +183,12 @@ END_ROLL ──ROLL_END──► 命中 ? GAME_OVER : 下一位 TURN
 
 `finalizeDeal` / `failDeal` 保证以下不变量（`sim/harness.ts` 的 `checkInvariants`，仿真每步断言、运行时测试每次变化断言）：
 
-- **卡牌守恒**：手牌 + 桌面家族卡（未打飞）+ 待反应的牌 + 抽牌堆 + 弃牌堆 = 98，且 id 唯一。
-  被打飞的家族卡在打飞时立即入弃牌堆；被阻止的牌连同阻止牌入弃牌堆；招募三连必须是 3 张不同的招募牌。
-- **现金守恒**：所有玩家现金之和 = 历次成交总额之和；无负现金。
+- **卡牌守恒**：手牌 + 桌面家族卡（未打飞）+ 待反应的牌 + 抽牌堆 + 弃牌堆 = 该版本牌堆张数（`totalCardsOf`：98 / 105 / 117 / 129），且 id 唯一。
+  被打飞的家族卡在打飞时立即入弃牌堆；被阻止的牌连同阻止牌入弃牌堆；招募必须是 `recruitCost` 张（3 / 猎头 2 / 夺回 1）不同的招募牌。
+- **现金守恒**：所有玩家现金之和 = 历次成交总额之和 + 历次地标租金之和（`DealRecord.rents`）；无负现金。
 - **手牌上限**：除 HAND_LIMIT / REACTION 过程外任何人手牌 ≤ 12。
-- **版图一致**：已关闭格数 = 成交数 = 景气牌下标；金钱标记永远在未关闭格上。
+- **版图一致**：已关闭格数 = 成交数 = 景气牌下标；金钱标记永远在未关闭格上（"完整 16 笔"把 16 格全部关闭时游戏已结束，例外）；地标主人只出现在已关闭的地标格上。
+- **夺回权一致**：持有夺回权的玩家此刻没有任何投资者；经典变体不会出现股价变动。
 - **终局**：GAME_OVER 必有胜者。
 
 ---
@@ -228,13 +233,13 @@ destroy()                       // 中止进行中的决策，之后不再推进
 | --- | --- |
 | `App.tsx` | 布局与全局状态：开始页 / 牌桌、侧栏标签、帮助与设置弹层、方案编辑器开关、终局结果卡（可关闭后复盘、可再打开） |
 | `PhaseGuide` | 顶部引导条：阶段、行动者、该做什么 |
-| `TableBoard` + `PlayerSeat` | 16 格版图、中央景气牌、座位（现金 / 投资者 / 手牌数 / 台词气泡 / 思考中） |
+| `TableBoard` + `PlayerSeat` | 环形版图（`config.ringLayout` 按格数排成 6×4 / 8×6 / 10×8 外圈，特殊格带色条与徽标，地标格显示主人）、中央景气牌（有效股价 / 版本 / 进度）、座位（现金 / 投资者 / 夺回权 / 地标数 / 手牌数 / 台词气泡 / 思考中） |
 | `ActionDock` | 人类的行动区：状态摘要 + 按当前阶段与 `getLegalActions` 渲染的按钮 |
-| `CardHand` | 手牌；可打的牌由合法动作列表决定，点牌弹出目标 / 参数选择；手牌上限时切换为弃牌多选 |
+| `CardHand` | 手牌；可打的牌由合法动作列表决定，点牌弹出目标 / 参数选择（招募弹层按 `recruitCost` 标注 3 / 2 / 夺回 1 张；稀有牌弹层给出股价变化）；手牌上限时切换为弃牌多选 |
 | `OfferEditor` | Boss 的方案编辑器：每个需求组挑选代表、可选池勾选、逐人分成、预设方案（`buildOfferCandidates`）、实时校验（`validateOfferShape` + `describeOfferError`） |
-| `NegotiationPanel` | 谈判桌只读视图：席位竞价（每个家族的多方代表与报价）、当前方案与应答、喊话记录 |
+| `NegotiationPanel` | 谈判桌只读视图：本格特殊效果 / 独家协议 / 股价变动徽标、席位竞价（每个家族的多方代表与报价）、当前方案与应答、喊话记录 |
 | `GameLog` / `DealHistoryPanel` | 事件流渲染（`narrate`）；每笔交易的结算明细与累计现金 |
-| `StartScreen` / `SettingsPanel` / `HelpPanel` | 开局（人数 / 名字 / 种子 / 续档）、LLM 设置与调用日志、规则速查 |
+| `StartScreen` / `SettingsPanel` / `HelpPanel` | 开局（人数 / 版本 / 名字 / 种子 / 续档）、LLM 设置与调用日志、规则速查（按当前版本显示扩展规则） |
 
 界面从不自行判断规则：按钮出现与否只看 `getLegalActions`，参数合法性由 `rules.ts` 的查询函数给出结构化结果、`text/labels.ts` 转成提示文本。
 
@@ -249,7 +254,7 @@ destroy()                       // 中止进行中的决策，之后不再推进
 
 ## 8. 存档
 
-`utils/storage.ts` 把整个 `GameState` 存进 `localStorage`。`GameState.saveVersion` 必须等于 `gameEngine.SAVE_VERSION`（当前 8），否则读取时丢弃。
+`utils/storage.ts` 把整个 `GameState` 存进 `localStorage`。`GameState.saveVersion` 必须等于 `gameEngine.SAVE_VERSION`（当前 9），否则读取时丢弃。
 任何改变 `GameState` 结构的修改都要把 `SAVE_VERSION + 1`。
 
 ---
@@ -258,8 +263,8 @@ destroy()                       // 中止进行中的决策，之后不再推进
 
 | 函数 | 用途 |
 | --- | --- |
-| `runGame({ playerCount, seed, mode, maxSteps?, trace? })` | 同步驱动 reducer 跑一局；`mode: 'heuristic'` 走真实策略，`'random'` 纯随机选合法动作压极端分支；每步断言不变量 |
-| `runGameViaSession({ playerCount, seed, policy? })` | 通过 `GameSession` 跑一局，验证运行时本身（调度、回退、终止） |
+| `runGame({ playerCount, seed, mode, variantId?, maxSteps?, trace?, onEvent? })` | 同步驱动 reducer 跑一局；`mode: 'heuristic'` 走真实策略，`'random'` 纯随机选合法动作压极端分支；每步断言不变量；`onEvent` 能拿到全部事件（状态里只留最近 300 条），供统计脚本用 |
+| `runGameViaSession({ playerCount, seed, policy?, variantId? })` | 通过 `GameSession` 跑一局，验证运行时本身（调度、回退、终止） |
 | `checkInvariants(state)` | 第 5 节不变量，返回违反描述或 `null` |
 | `narrateGame(state)` | 把事件流讲成文字（追踪 / 调试） |
 

@@ -3,7 +3,7 @@
 // ============================================================
 
 import type { GameState } from '../engine/types'
-import { HAND_LIMIT, FAMILIES } from '../engine/config'
+import { HAND_LIMIT, FAMILIES, LANDMARK_RENT } from '../engine/config'
 import FamilyChip from './FamilyChip'
 import { getPersonaForPlayer } from '../ai/personas'
 
@@ -35,6 +35,7 @@ export default function PlayerSeat({ state, playerId, isActing, isThinking }: Pl
   const demandLabel = demands.length === 0 ? null
     : demands.length === 1 ? `要价 $${demands[0].amount}M`
       : demands.map(d => `${d.familyId ? FAMILIES[d.familyId].name : '封口'} $${d.amount}M`).join(' · ')
+  const landmarks = state.board.filter(b => b.landlordId === playerId)
 
   return (
     <div className={`player-seat${isActing ? ' acting' : ''}${isBoss ? ' is-boss' : ''}${player.isAI ? '' : ' is-human'}`}>
@@ -62,6 +63,16 @@ export default function PlayerSeat({ state, playerId, isActing, isThinking }: Pl
         {myClanReps.map(r => (
           <FamilyChip key={r.key} familyId={r.familyId} size="sm" kind="optional" />
         ))}
+        {player.reclaim && (
+          <span className="seat-reclaim" title={`最后一位常驻投资者被夺走：只需 1 张招募牌即可抢回 ${FAMILIES[player.reclaim].name}`}>
+            夺回权 {player.reclaim}
+          </span>
+        )}
+        {landmarks.length > 0 && (
+          <span className="seat-landmark" title={`地标主人：${landmarks.map(b => `#${b.id}`).join('、')}，每笔成交各收 $${LANDMARK_RENT}M`}>
+            🏛×{landmarks.length}
+          </span>
+        )}
       </div>
       <div className="seat-row seat-meta">
         <span>手牌 {player.hand.length}/{HAND_LIMIT}</span>

@@ -12,13 +12,13 @@
 // ============================================================
 
 import type { GameState, PlayerAction, FamilyId, BoardSpace, Representative } from '../engine/types'
-import { FAMILIES, MAX_OFFERS_PER_BOSS } from '../engine/config'
+import { FAMILIES, MAX_OFFERS_PER_BOSS, BOOM_BONUS } from '../engine/config'
 import {
   getPlayer, getCurrentSpace, getGrossValue, oneShareOf, spaceInvestorCount,
   selectReps, tableCanComplete, canCompleteAlone, playerCoverableFamilies, playerActiveFamilies,
   activeRepsOfFamily, findRep, offerShareOf, offerOwners, repCost, payoutTotal, repsUsedOf,
   familyDemandOnBoard, groupOfFamily, soleRepFamilies, leaderIds, endChance, grudgeCount,
-  commitmentPrice, repPriceOf, hasDemand,
+  commitmentPrice, repPriceOf, hasDemand, landmarkRentEstimate, canReclaim, isBlackMarketDeal, isExclusiveLocked,
 } from '../engine/rules'
 import { getActingPlayerId, getLegalActions, isLegal, buildOfferCandidates, canClose, type OfferCandidate } from '../engine/validator'
 import type { Policy } from './policy'
@@ -117,9 +117,11 @@ function placeMarker(state: GameState, id: number, legal: PlayerAction[]): Playe
   for (const a of legal) {
     if (a.type !== 'PLACE_MARKER') continue
     const space = state.board.find(s => s.id === a.spaceId)!
-    const mine = canCompleteAlone(state, id, space) ? space.dividends : 0
-    const theirs = canCompleteAlone(state, starter, space) ? space.dividends : 0
-    const score = mine * 2 - theirs * 3 - space.dividends * 0.1 + rand(state, space.id) * 0.5
+    // 格子的分量：分红份数 + 地标未来租金折算成份数（别把能独立凑齐的地标送给起始玩家）
+    const weight = space.dividends + landmarkRentEstimate(state, space) / 2
+    const mine = canCompleteAlone(state, id, space) ? weight : 0
+    const theirs = canCompleteAlone(state, starter, space) ? weight : 0
+    const score = mine * 2 - theirs * 3 - weight * 0.1 + rand(state, space.id) * 0.5
     if (score > bestScore) { bestScore = score; best = a }
   }
   return best ?? legal[0]
@@ -145,16 +147,18 @@ function wantsToOpen(state: GameState, id: number, afterMove: boolean): boolean 
   const space = getCurrentSpace(state)
   if (!space) return false
   const gross = getGrossValue(state)
+  // 地标格：这单的价值还包括此后每笔成交的租金
+  const value = gross + landmarkRentEstimate(state, space)
   const share = Math.max(1, Math.round(gross / (spaceInvestorCount(space) + 1)))
   const hand = getPlayer(state, id)!.hand.length
   const est = estimateDeal(state, id, space)
   if (!est.feasible) return false
-  const expectedProfit = gross - est.buyCount * share * 1.2
+  const expectedProfit = value - est.buyCount * share * 1.2
   const end = endChance(state)
   const leader = leaderIds(state).includes(id)
   // 终局：领先者只要有得赚就想开单（成交后掷骰可能直接赢）
   const minProfit = leader && end > 0 ? 1 : Math.max(4, gross * 0.3)
-  if (afterMove && hand <= 4 && expectedProfit < gross * 0.6 && !(leader && end > 0)) return false // 手牌太少先补牌
+  if (afterMove && hand <= 4 && expectedProfit < value * 0.6 && !(leader && end > 0)) return false // 手牌太少先补牌
   if (est.buyCount === 0) return true
   return expectedProfit >= minProfit && rand(state, 7) < 0.85
 }
@@ -163,6 +167,7 @@ function handLimit(state: GameState, id: number, legal: PlayerAction[]): PlayerA
   return bestRecruit(state, id, legal) ?? legal.find(a => a.type === 'DISCARD') ?? legal[0]
 }
 
+/** 招募目标评分：版图需求、抢富人的、补本格缺口、掀掉排除我的方案；夺回自己的人（1 张）与猎头价（2 张）更划算 */
 function bestRecruit(state: GameState, id: number, legal: PlayerAction[]): PlayerAction | null {
   const options = legal.filter(a => a.type === 'PLAY_RECRUITMENT')
   if (options.length === 0) return null
@@ -179,9 +184,16 @@ function bestRecruit(state: GameState, id: number, legal: PlayerAction[]): Playe
     if (owner === richest.id && owner !== id) score += 1.5
     if (neg && groupOfFamily(getCurrentSpace(state)!, f)) score += 2
     if (neg?.offer?.repKeys.includes(`INV:${f}`) && offerShareOf(neg.offer, id) === 0) score += 2 // 顺手掀了排除我的方案
+    if (canReclaim(state, id, f)) score += 5                          // 一张牌换回常驻投资者，没有不做的道理
+    else if (a.cardIds.length < 3) score += 1.5                       // 猎头价
     if (score > bestScore) { bestScore = score; best = a }
   }
   return best
+}
+
+/** 夺回权可用就立刻用：1 张招募牌换回一位常驻投资者 */
+function reclaimOption(state: GameState, id: number, legal: PlayerAction[]): PlayerAction | null {
+  return legal.find(a => a.type === 'PLAY_RECRUITMENT' && canReclaim(state, id, a.targetFamilyId)) ?? null
 }
 
 // ---------- Boss ----------
@@ -206,7 +218,19 @@ function bossTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerAc
   const p = persona(state, id)
   const st = stance(state, id)
 
-  if (canClose(state)) return { type: 'CLOSE_DEAL', playerId: id }
+  // 夺回权：1 张牌换回常驻投资者，任何时候都先做
+  const reclaim = reclaimOption(state, id, legal)
+  if (reclaim) return reclaim
+
+  if (canClose(state)) {
+    // 落锤前的"拼方案"牌：独家协议先把桌子锁上（别人手牌多、这单值钱时），利好再把盘子做大（分成已定，多出的全归我）
+    const exclusive = legal.find(a => a.type === 'PLAY_EXCLUSIVE')
+    const threat = state.players.some(q => q.id !== id && q.hand.length >= 3)
+    if (exclusive && threat && gross >= 10 && !isBlackMarketDeal(state) && rand(state, 83) < 0.8) return exclusive
+    const boom = legal.find(a => a.type === 'PLAY_BOOM')
+    if (boom && rand(state, 89) < 0.9) return boom
+    return { type: 'CLOSE_DEAL', playerId: id }
+  }
 
   if (!tableCanComplete(state)) {
     const space = getCurrentSpace(state)!
@@ -373,12 +397,18 @@ function otherTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerA
   const relevantMine = [...mine].filter(f => groupOfFamily(space, f))
   const excluded = neg.offer ? !myRepUsed(state, id) && myShare === 0 : false
   const underpaid = neg.offer ? myShare < (commitmentPrice(neg, neg.offer, id) ?? share * Math.max(1, repsUsedOf(neg, neg.offer, id))) : false
+  // 地标格：当上 Boss 还能拿到此后每笔的租金，夺权更值
+  const prize = gross + landmarkRentEstimate(state, space)
+
+  // 0. 夺回权：1 张牌换回常驻投资者，任何时候都先做
+  const reclaim = reclaimOption(state, id, legal)
+  if (reclaim) return reclaim
 
   // 1. 夺权：交易值钱、我当 Boss 也能凑齐，且（被排除/分太少 | 我不用花钱就能独吞 | 拦领先者的终局单）
   const bossOpt = legal.find(a => a.type === 'PLAY_BOSS')
-  if (bossOpt && gross >= 9 && canCompleteAsBoss(state, id)) {
+  if (bossOpt && prize >= 9 && canCompleteAsBoss(state, id)) {
     const cost = myBossCost(state, id)
-    const strong = !neg.offer && cost <= share && gross - cost >= gross * 0.6
+    const strong = !neg.offer && cost <= share && prize - cost >= prize * 0.6
     const reason = (neg.offer && (excluded || underpaid)) || strong || st.blockLeader
     if (reason && rand(state, 11) < disruptChance(state, id, 0.45) + (strong ? 0.25 : 0) + (st.blockLeader ? 0.3 * st.end : 0)) return bossOpt
   }
@@ -441,17 +471,21 @@ function otherTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerA
     }
   }
 
-  // 4. 被排除 / 没份：搅局
+  // 4. 被排除 / 没份：搅局（黑市里没人能阻止我，出手更果断）
   if ((excluded || (relevantMine.length === 0 && myShare === 0)) && gross >= 8) {
-    if (rand(state, 19) < disruptChance(state, id, neg.offer ? 1 : 0.5)) {
+    const chance = disruptChance(state, id, neg.offer ? 1 : 0.5) * (isBlackMarketDeal(state) ? 1.3 : 1)
+    if (rand(state, 19) < chance) {
       const travel = bestTravel(state, id, legal)
       if (travel) return travel
+      // 利空：打不掉这单就砍 Boss 的净得——领先的 Boss、或坑过我的人，才值得花这张稀有牌
+      const bust = legal.find(a => a.type === 'PLAY_BUST')
+      if (bust && gross >= 12 && (st.bossIsLeader || grudgeCount(state, id, neg.bossId) > 0) && rand(state, 97) < 0.7) return bust
     }
   }
 
-  // 5. 招募：长期资产，手里有三连就找机会用
+  // 5. 招募：长期资产，手里有三连就找机会用（猎头格两张就够，更要抓住）
   const recruit = bestRecruit(state, id, legal)
-  if (recruit && rand(state, 23) < 0.7) return recruit
+  if (recruit && rand(state, 23) < (recruit.type === 'PLAY_RECRUITMENT' && recruit.cardIds.length < 3 ? 0.9 : 0.7)) return recruit
 
   // 6. 封口费：没代表也想分一口
   if (canSpeak && relevantMine.length === 0 && !hasDemand(neg, id) && p.bribe && gross >= 12 && rand(state, 29) < 0.4) {
@@ -460,8 +494,8 @@ function otherTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerA
     return { type: 'SPEAK', playerId: id, say, quotes: [{ amount: ask }] }
   }
 
-  // 7. 跳过（被排除时偶尔放狠话——有牌是威胁，没牌是虚张声势）
-  const hasTeeth = getPlayer(state, id)!.hand.some(c => c.type === 'BOSS' || c.type === 'TRAVEL')
+  // 7. 跳过（被排除时偶尔放狠话——有牌是威胁，没牌是虚张声势；桌子被独家协议锁了就没牌可威胁）
+  const hasTeeth = !isExclusiveLocked(state) && getPlayer(state, id)!.hand.some(c => c.type === 'BOSS' || c.type === 'TRAVEL' || c.type === 'BUST')
   if ((excluded || (relevantMine.length === 0 && myShare === 0)) && gross >= 8 && rand(state, 67) < (hasTeeth ? 0.35 : p.bluff * 0.5)) {
     const say = neg.offer
       ? pick(['方案里没我的份？Boss 你可想清楚了。', '我手里的牌可不是摆设。', '不带我玩，这单怕是成不了。'], rand(state, 71))
@@ -551,6 +585,21 @@ function reaction(state: GameState, id: number, legal: PlayerAction[]): PlayerAc
     const richest = [...state.players].sort((a, b) => b.cash - a.cash)[0]
     if (actor.id === richest.id && gross >= 12 && r < 0.3) return stop
   }
+  if (pr.kind === 'BOOM' && neg) {
+    // 利好只肥 Boss：他领先 / 终局阶段就别让他多拿
+    if (!iAmBoss && (st.bossIsLeader || st.end > 0) && r < p.protect * 0.8) return stop
+    return pass
+  }
+  if (pr.kind === 'BUST' && neg) {
+    if (iAmBoss) return r < 0.85 ? stop : pass // 砍的是我的钱
+    return pass
+  }
+  if (pr.kind === 'EXCLUSIVE' && neg) {
+    // 桌子一锁我的老板 / 旅行 / 利空牌就废了：被排除、手里又有牙齿时拦下
+    const teeth = getPlayer(state, id)!.hand.some(c => c.type === 'BOSS' || c.type === 'TRAVEL' || c.type === 'BUST')
+    if (!iAmBoss && teeth && myShare === 0 && r < p.protect) return stop
+    return pass
+  }
   return pass
 }
 
@@ -560,16 +609,20 @@ function closing(state: GameState, id: number, legal: PlayerAction[]): PlayerAct
   const myShare = offerShareOf(neg.offer, id)
   const pass: PlayerAction = { type: 'PASS_CLOSING', playerId: id }
   if (myShare > 0) return pass
+  const st = stance(state, id)
   const chance = disruptChance(state, id, gross >= 12 ? 0.8 : 0.5)
   const r = rand(state, 41)
 
   const bossOpt = legal.find(a => a.type === 'PLAY_BOSS')
-  if (bossOpt && gross >= 9 && canCompleteAsBoss(state, id) && r < chance) return bossOpt
+  if (bossOpt && gross + landmarkRentEstimate(state, getCurrentSpace(state)!) >= 9 && canCompleteAsBoss(state, id) && r < chance) return bossOpt
   if (r < chance) {
     const travel = bestTravel(state, id, legal)
     if (travel) return travel
     const recruit = legal.find(a => a.type === 'PLAY_RECRUITMENT' && neg.offer?.repKeys.includes(`INV:${a.targetFamilyId}`))
     if (recruit) return recruit
+    // 最后一手：利空砍掉领先 Boss 的净得（稀有牌，只在终局 / 对领先者用）
+    const bust = legal.find(a => a.type === 'PLAY_BUST')
+    if (bust && gross >= 12 && (st.bossIsLeader || st.end > 0) && r < chance * 0.6) return bust
   }
   return pass
 }
@@ -592,7 +645,15 @@ export function heuristicSpeech(state: GameState, action: PlayerAction): string 
     }
     case 'PLAY_BOSS': return pick(['I\'m the Boss！这单换我做主。', '让一让，现在我是老板。'], r)
     case 'PLAY_TRAVEL': return pick(['不好意思，有人得出个差。', '这位投资人临时有事，走不开。'], r)
-    case 'PLAY_RECRUITMENT': return pick(['来，这位投资人跟我走。', '挖个人，不介意吧？'], r)
+    case 'PLAY_RECRUITMENT':
+      return canReclaim(state, action.playerId, action.targetFamilyId)
+        ? pick(['我的人，我领回去了。', '一张牌就够——这位投资人本来就是我的。'], r)
+        : action.cardIds.length < 3
+          ? pick(['猎头价，这位投资人我带走了。', '这地方挖人便宜，不客气了。'], r)
+          : pick(['来，这位投资人跟我走。', '挖个人，不介意吧？'], r)
+    case 'PLAY_BOOM': return pick([`利好消息：这单每份再加 $${BOOM_BONUS}M——多出来的，归我。`, '行情看涨，这盘子我做大一点。'], r)
+    case 'PLAY_BUST': return pick(['利空消息。这单，不值那个价了。', '不带我玩？那这单就没那么香了。'], r)
+    case 'PLAY_EXCLUSIVE': return pick(['独家协议，签了。这单谁也别想再翻。', '桌子我锁上了，各位收好手里的牌。'], r)
     case 'PLAY_STOP': return pick(['想都别想！', '这招对我没用。'], r)
     case 'ACCEPT_OFFER': return pick(['成交，我同意出人。', '这个价可以，合作愉快。'], r)
     case 'DECLINE_OFFER': {

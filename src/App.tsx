@@ -18,6 +18,7 @@ import PhaseGuide from './components/PhaseGuide'
 import HelpPanel from './components/HelpPanel'
 import SettingsPanel from './components/SettingsPanel'
 import { getCurrentTile, getEndProbability } from './engine/rules'
+import { getVariant } from './engine/config'
 import { getLegalActions } from './engine/validator'
 import { loadSavedGame, clearSavedGame } from './utils/storage'
 
@@ -55,7 +56,7 @@ export default function App() {
     return (
       <>
         <StartScreen
-          onStart={(count, name, seed) => start(count, name, seed)}
+          onStart={(count, name, seed, variantId) => start(count, name, seed, variantId)}
           onContinue={() => { const saved = loadSavedGame(); if (saved) load(saved) }}
           onSettings={() => setShowSettings(true)}
         />
@@ -77,7 +78,8 @@ export default function App() {
       <header className="app-header">
         <h1>I'm the Boss!</h1>
         <div className="header-info">
-          <span>成交 {state.completedDeals}/15</span>
+          <span className="variant-tag" title={getVariant(state.variantId).blurb}>{getVariant(state.variantId).name}</span>
+          <span>成交 {state.completedDeals}/{state.dealTiles.length}</span>
           <span>股价 ${tile?.shareValue ?? 0}M</span>
           {tile && tile.endFaces.length > 0 && <span className="endgame-tag">终局 {getEndProbability(tile)}%</span>}
           <span className="muted">牌堆 {state.drawPile.length}</span>
@@ -146,7 +148,7 @@ export default function App() {
         </div>
       )}
 
-      <HelpPanel open={showHelp} onClose={() => setShowHelp(false)} />
+      <HelpPanel open={showHelp} onClose={() => setShowHelp(false)} variantId={state.variantId} />
       <SettingsPanel open={showSettings} onClose={() => setShowSettings(false)} />
     </div>
   )

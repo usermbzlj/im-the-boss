@@ -15,7 +15,13 @@ export interface Family {
   textColor: string
 }
 
-export type CardType = 'CLAN' | 'TRAVEL' | 'RECRUITMENT' | 'BOSS' | 'STOP'
+/**
+ * 影响牌种类。前五种是官方牌；后三种是扩展稀有牌（经典变体不含）：
+ *   · BOOM 利好：Boss 打出，本笔股价 +$2M/份（方案分成不变，多出的全归 Boss）
+ *   · BUST 利空：非 Boss 打出，本笔股价 −$1M/份（最低 $1M/份；砍的是 Boss 的净得）
+ *   · EXCLUSIVE 独家协议：Boss 打出，本笔交易锁定——老板牌 / 旅行牌 / 利空牌不再能打（招募仍可）
+ */
+export type CardType = 'CLAN' | 'TRAVEL' | 'RECRUITMENT' | 'BOSS' | 'STOP' | 'BOOM' | 'BUST' | 'EXCLUSIVE'
 
 export interface InfluenceCard {
   id: number
@@ -23,6 +29,18 @@ export interface InfluenceCard {
   /** CLAN / 定向 TRAVEL 才有；万能旅行牌没有 familyId */
   familyId?: FamilyId
 }
+
+/** 对局变体：按景气牌张数（成交笔数上限）命名 */
+export type GameVariantId = 'classic' | 'full' | 'expansion' | 'marathon'
+
+/**
+ * 交易格种类（经典版图全部为 STANDARD；扩展版图混入特殊格）：
+ *   · LANDMARK 地标：成交后归 Boss 所有，此后每笔成交其主人从银行收 $1M 租金
+ *   · PREMIUM 抢手：本格股价 +$1M/份
+ *   · BLACK_MARKET 黑市：本格交易中打出的牌不经反应窗口，阻止牌无用
+ *   · HEADHUNT 猎头：本格交易进行中招募只需 2 张
+ */
+export type SpaceKind = 'STANDARD' | 'LANDMARK' | 'PREMIUM' | 'BLACK_MARKET' | 'HEADHUNT'
 
 /**
  * 交易格的一组需求：从 families 中凑够 need 个不同家族。
@@ -39,8 +57,11 @@ export interface BoardSpace {
   groups: DealGroup[]
   /** 分红份数 = 所需投资者总数 + 1 */
   dividends: number
+  kind: SpaceKind
   /** 成交后盖在格子上的景气牌 id，null 表示未关闭 */
   closedByTileId: number | null
+  /** 地标格成交后的主人（收租人）；其他格恒为 null */
+  landlordId: number | null
 }
 
 export interface DealTile {
@@ -70,6 +91,11 @@ export interface Player {
    * 只回灌到它自己的提示词里，界面与其他玩家都看不到。保留最近若干条。
    */
   notes: string[]
+  /**
+   * 夺回权：最后一位常驻投资者被招募夺走时获得，只需 1 张招募牌即可把该家族的投资者抢回
+   * （无论现在在谁手里）。重新拥有任何投资者后失效。
+   */
+  reclaim?: FamilyId | null
 }
 
 export type RepSource = 'INVESTOR' | 'CLAN'
@@ -183,16 +209,20 @@ export interface Negotiation {
   /** CLOSING 阶段：最后出牌窗口的询问顺序 */
   closingOrder: number[]
   closingIndex: number
-  /** 打出过干扰牌（旅行/招募/老板，含被阻止的）的非 Boss 玩家 */
+  /** 打出过干扰牌（旅行/招募/老板/利空，含被阻止的）的非 Boss 玩家 */
   disruptors: number[]
+  /** 利好 / 利空牌累计的每份股价增减（本笔有效） */
+  priceDelta: number
+  /** 独家协议生效：本笔不再能打老板牌 / 旅行牌 / 利空牌 */
+  exclusive: boolean
 }
 
-export type ReactionKind = 'TRAVEL' | 'BOSS' | 'RECRUITMENT'
+export type ReactionKind = 'TRAVEL' | 'BOSS' | 'RECRUITMENT' | 'BOOM' | 'BUST' | 'EXCLUSIVE'
 
 export interface PendingReaction {
   actorId: number
   kind: ReactionKind
-  /** 已从手牌移出的牌（旅行/老板 1 张，招募 3 张） */
+  /** 已从手牌移出的牌（旅行/老板/利好/利空/独家 1 张，招募 1~3 张） */
   cards: InfluenceCard[]
   /** 旅行牌目标代表 */
   targetRepKey?: string
@@ -216,6 +246,8 @@ export interface DealRecord {
   success: boolean
   grossValue: number
   payouts: Payout[]
+  /** 本笔成交时银行付给各地标主人的租金（现金守恒：总现金 = Σ成交总额 + Σ租金） */
+  rents: Payout[]
   disruptors: number[]
   failReason?: FailReason
 }
@@ -223,7 +255,7 @@ export interface DealRecord {
 // ---------- 事件 ----------
 
 export type GameEvent =
-  | { kind: 'GAME_STARTED'; playerCount: number; startPlayerId: number; markerChooserId: number }
+  | { kind: 'GAME_STARTED'; playerCount: number; startPlayerId: number; markerChooserId: number; variantId: GameVariantId; deals: number }
   | { kind: 'MARKER_PLACED'; playerId: number; spaceId: number; nextPlayerId: number }
   | { kind: 'DEAL_OPENED'; playerId: number; spaceId: number; gross: number }
   | { kind: 'MARKER_MOVED'; playerId: number; die: number; spaceId: number; gross: number }
@@ -233,12 +265,23 @@ export type GameEvent =
   | { kind: 'CARDS_DISCARDED'; playerId: number; count: number }
   | { kind: 'CLAN_PLAYED'; playerId: number; familyId: FamilyId }
   | { kind: 'TRAVEL_PLAYED'; playerId: number; wildcard: boolean; target: RepRef }
-  | { kind: 'RECRUITMENT_PLAYED'; playerId: number; familyId: FamilyId; fromId: number | null }
+  /** cost：本次消耗的招募牌张数（3 常规 / 2 猎头格 / 1 夺回权） */
+  | { kind: 'RECRUITMENT_PLAYED'; playerId: number; familyId: FamilyId; fromId: number | null; cost: number }
   | { kind: 'BOSS_PLAYED'; playerId: number; bossId: number }
+  | { kind: 'BOOM_PLAYED'; playerId: number }
+  | { kind: 'BUST_PLAYED'; playerId: number }
+  | { kind: 'EXCLUSIVE_PLAYED'; playerId: number }
   | { kind: 'STOP_PLAYED'; playerId: number; actorId: number; cancelled: ReactionKind }
+  /** 黑市格：打出的牌不经反应窗口直接生效 */
+  | { kind: 'BLACK_MARKET'; actorId: number; card: ReactionKind }
   | { kind: 'TRAVEL_RESOLVED'; target: RepRef }
   | { kind: 'RECRUITMENT_RESOLVED'; playerId: number; familyId: FamilyId; fromId: number | null }
+  /** 夺回权：最后一位常驻投资者被夺走，1 张招募牌即可抢回该家族 */
+  | { kind: 'RECLAIM_GRANTED'; playerId: number; familyId: FamilyId }
   | { kind: 'BOSS_RESOLVED'; playerId: number; previousBossId: number }
+  /** 股价变动：delta 为本次每份增减，gross 为变动后的交易总额 */
+  | { kind: 'PRICE_CHANGED'; playerId: number; delta: number; gross: number }
+  | { kind: 'EXCLUSIVE_RESOLVED'; playerId: number }
   | { kind: 'OFFER_VOIDED'; reason: 'TRAVELLED' | 'RECRUITED' }
   | { kind: 'SPEECH'; playerId: number; text: string }
   /** 一次报价落成的结果：每条 familyIds 为空 = 封口费；否则是这些家族代表各自的出借价（每个代表） */
@@ -253,6 +296,10 @@ export type GameEvent =
   | { kind: 'CLOSING_STARTED'; bossId: number }
   | { kind: 'CLOSING_INTERRUPTED' }
   | { kind: 'DEAL_CLOSED'; dealNumber: number; spaceId: number; tileId: number; bossId: number; gross: number; payouts: Payout[]; bossKeep: number }
+  /** 地标：成交后归 Boss 所有 */
+  | { kind: 'LANDMARK_CLAIMED'; playerId: number; spaceId: number }
+  /** 银行付给地标主人的租金 */
+  | { kind: 'RENT_PAID'; payments: Payout[] }
   | { kind: 'DEAL_FAILED'; spaceId: number; bossId: number; reason: FailReason }
   | { kind: 'END_ROLL_DUE'; playerId: number; faces: number[] }
   | { kind: 'END_ROLL'; playerId: number; die: number; hit: boolean }
@@ -265,6 +312,8 @@ export type LoggedEvent = GameEvent & { id: number }
 
 export interface GameState {
   saveVersion: number
+  /** 对局变体（版图 / 景气牌 / 牌堆由它决定，开局时已落成到下面的字段里） */
+  variantId: GameVariantId
   phase: GamePhase
   players: Player[]
   investors: InvestorPlacard[]
@@ -312,8 +361,12 @@ export type PlayerAction =
   | (ActionBase & { type: 'DISCARD'; cardIds: number[] })
   | (ActionBase & { type: 'PLAY_CLAN'; cardId: number; demand?: number })
   | (ActionBase & { type: 'PLAY_TRAVEL'; cardId: number; targetRepKey: string })
+  /** cardIds 张数必须等于 recruitCost（3 常规 / 2 猎头格 / 1 夺回权） */
   | (ActionBase & { type: 'PLAY_RECRUITMENT'; cardIds: number[]; targetFamilyId: FamilyId })
   | (ActionBase & { type: 'PLAY_BOSS'; cardId: number })
+  | (ActionBase & { type: 'PLAY_BOOM'; cardId: number })
+  | (ActionBase & { type: 'PLAY_BUST'; cardId: number })
+  | (ActionBase & { type: 'PLAY_EXCLUSIVE'; cardId: number })
   | (ActionBase & { type: 'PLAY_STOP' })
   | (ActionBase & { type: 'PASS_REACTION' })
   /**
@@ -335,6 +388,6 @@ export type PlayerAction =
 export type PlayerActionType = PlayerAction['type']
 
 export type GameAction =
-  | { type: 'START_GAME'; playerCount: number; humanName: string; seed?: number }
+  | { type: 'START_GAME'; playerCount: number; humanName: string; seed?: number; variantId?: GameVariantId }
   | { type: 'LOAD_GAME'; state: GameState }
   | PlayerAction

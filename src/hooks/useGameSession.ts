@@ -5,7 +5,7 @@
 // ============================================================
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { GameState, PlayerAction } from '../engine/types'
+import type { GameState, PlayerAction, GameVariantId } from '../engine/types'
 import { createInitialState } from '../engine/gameEngine'
 import { GameSession, type SessionSnapshot } from '../game/session'
 import { withFallback } from '../ai/policy'
@@ -44,8 +44,8 @@ export function useGameSession() {
     setGeneration(g => g + 1)
   }, [])
 
-  const start = useCallback((playerCount: number, humanName: string, seed?: number) => {
-    replaceSession(createSession(createInitialState(playerCount, humanName, seed)))
+  const start = useCallback((playerCount: number, humanName: string, seed?: number, variantId?: GameVariantId) => {
+    replaceSession(createSession(createInitialState(playerCount, humanName, seed, variantId)))
   }, [replaceSession])
 
   const load = useCallback((state: GameState) => {

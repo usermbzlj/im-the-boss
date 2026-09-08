@@ -13,7 +13,7 @@ import {
   playableClanCards, travelTargets, recruitTargets, findRep,
   selectReps, tableCanComplete, offerOwners, isOfferAgreed, offerStillValid, offerDecliners,
   validateOfferShape, repPriceOf, hasStop, payoutTotal, endChance, leaderIds,
-  playerRelevantFamilies, usedFamiliesOf, validQuotes,
+  playerRelevantFamilies, usedFamiliesOf, validQuotes, recruitCost, isExclusiveLocked,
 } from './rules'
 
 export function getActingPlayerId(state: GameState): number {
@@ -42,9 +42,12 @@ export function defaultDiscardIds(state: GameState, playerId: number): number[] 
   for (const s of state.board) if (s.closedByTileId == null) for (const g of s.groups) for (const f of g.families) openFamilies.add(f)
   const value = (c: InfluenceCard): number => {
     switch (c.type) {
-      case 'RECRUITMENT': return recruitCount >= 3 ? 4 : 1
+      case 'RECRUITMENT': return recruitCount >= 3 || player.reclaim ? 4 : 1
       case 'CLAN': return c.familyId && openFamilies.has(c.familyId) ? 3 : 0
       case 'TRAVEL': return c.familyId ? (openFamilies.has(c.familyId) ? 3 : 0) : 5
+      case 'BUST': return 4
+      case 'BOOM': return 5
+      case 'EXCLUSIVE': return 5
       case 'BOSS': return 6
       case 'STOP': return 7
     }
@@ -134,15 +137,21 @@ export function buildOfferCandidates(state: GameState): OfferCandidate[] {
   return out.filter(c => validateOfferShape(state, c.repKeys, c.payouts) === null)
 }
 
-/** 谈判 / 成交倒计时中可打的干扰牌（旅行 / 老板 / 招募） */
+/**
+ * 谈判 / 成交倒计时中可打的干扰牌（旅行 / 老板 / 招募 / 利空；利好与独家协议是 Boss 在谈判中打的，见 getLegalActions）。
+ * 独家协议生效后老板 / 旅行 / 利空牌都不能再打。
+ */
 function cardPlayOptions(state: GameState, playerId: number): PlayerAction[] {
   const neg = state.negotiation
   const player = getPlayer(state, playerId)
   if (!neg || !player) return []
   const out: PlayerAction[] = []
+  const locked = isExclusiveLocked(state)
   const seenTravel = new Set<string>()
   let bossListed = false
+  let bustListed = false
   for (const card of player.hand) {
+    if (locked) break
     if (card.type === 'TRAVEL') {
       for (const rep of travelTargets(state, card)) {
         const sig = `${card.familyId ?? '*'}|${rep.key}`
@@ -155,18 +164,41 @@ function cardPlayOptions(state: GameState, playerId: number): PlayerAction[] {
       bossListed = true
       out.push({ type: 'PLAY_BOSS', playerId, cardId: card.id })
     }
+    if (card.type === 'BUST' && neg.bossId !== playerId && !bustListed) {
+      bustListed = true
+      out.push({ type: 'PLAY_BUST', playerId, cardId: card.id })
+    }
   }
   out.push(...recruitOptions(state, playerId))
   return out
 }
 
+/** Boss 在谈判中可打的"拼方案"牌：利好（抬高本笔股价）、独家协议（锁定交易，且只能生效一次） */
+function bossCardOptions(state: GameState, playerId: number): PlayerAction[] {
+  const neg = state.negotiation
+  const player = getPlayer(state, playerId)
+  if (!neg || !player || neg.bossId !== playerId) return []
+  const out: PlayerAction[] = []
+  const boom = player.hand.find(c => c.type === 'BOOM')
+  if (boom) out.push({ type: 'PLAY_BOOM', playerId, cardId: boom.id })
+  const exclusive = player.hand.find(c => c.type === 'EXCLUSIVE')
+  if (exclusive && !neg.exclusive) out.push({ type: 'PLAY_EXCLUSIVE', playerId, cardId: exclusive.id })
+  return out
+}
+
+/** 招募：每个可招的家族一个选项，牌数按 recruitCost（3 常规 / 2 猎头格 / 1 夺回权） */
 function recruitOptions(state: GameState, playerId: number): PlayerAction[] {
   const player = getPlayer(state, playerId)
   if (!player) return []
   const recruits = player.hand.filter(c => c.type === 'RECRUITMENT')
-  if (recruits.length < 3) return []
-  const cardIds = recruits.slice(0, 3).map(c => c.id)
-  return recruitTargets(state, playerId).map(f => ({ type: 'PLAY_RECRUITMENT', playerId, cardIds, targetFamilyId: f }))
+  if (recruits.length === 0) return []
+  const out: PlayerAction[] = []
+  for (const f of recruitTargets(state, playerId)) {
+    const cost = recruitCost(state, playerId, f)
+    if (recruits.length < cost) continue
+    out.push({ type: 'PLAY_RECRUITMENT', playerId, cardIds: recruits.slice(0, cost).map(c => c.id), targetFamilyId: f })
+  }
+  return out
 }
 
 /**
@@ -201,6 +233,7 @@ export function getLegalActions(state: GameState, playerId: number): PlayerActio
       if ((neg.speakCounts[playerId] ?? 0) < MAX_SPEECHES_PER_PLAYER) out.push({ type: 'SPEAK', playerId, say: '…' })
       for (const card of playableClanCards(state, playerId)) out.push({ type: 'PLAY_CLAN', playerId, cardId: card.id })
       out.push(...cardPlayOptions(state, playerId))
+      out.push(...bossCardOptions(state, playerId))
       if (isBoss) {
         if (neg.offersMade < MAX_OFFERS_PER_BOSS && tableCanComplete(state)) {
           for (const c of buildOfferCandidates(state)) out.push({ type: 'PROPOSE_OFFER', playerId, repKeys: c.repKeys, payouts: c.payouts })
@@ -275,7 +308,7 @@ export function isLegal(state: GameState, action: PlayerAction): boolean {
         playableClanCards(state, action.playerId).some(c => c.id === action.cardId) &&
         isValidDemand(state, action.demand)
     case 'PLAY_TRAVEL': {
-      if (!neg || (state.phase !== 'NEGOTIATION' && state.phase !== 'CLOSING')) return false
+      if (!neg || (state.phase !== 'NEGOTIATION' && state.phase !== 'CLOSING') || isExclusiveLocked(state)) return false
       const card = player.hand.find(c => c.id === action.cardId)
       if (!card || card.type !== 'TRAVEL') return false
       const rep = findRep(neg, action.targetRepKey)
@@ -283,12 +316,22 @@ export function isLegal(state: GameState, action: PlayerAction): boolean {
     }
     case 'PLAY_RECRUITMENT':
       return (state.phase === 'NEGOTIATION' || state.phase === 'CLOSING' || state.phase === 'HAND_LIMIT') &&
-        distinctCardsOfType(state, action.playerId, action.cardIds, 'RECRUITMENT', 3) &&
-        recruitTargets(state, action.playerId).includes(action.targetFamilyId)
+        recruitTargets(state, action.playerId).includes(action.targetFamilyId) &&
+        distinctCardsOfType(state, action.playerId, action.cardIds, 'RECRUITMENT', recruitCost(state, action.playerId, action.targetFamilyId))
     case 'PLAY_BOSS':
-      return !!neg && (state.phase === 'NEGOTIATION' || state.phase === 'CLOSING') &&
+      return !!neg && (state.phase === 'NEGOTIATION' || state.phase === 'CLOSING') && !isExclusiveLocked(state) &&
         neg.bossId !== action.playerId &&
         player.hand.some(c => c.id === action.cardId && c.type === 'BOSS')
+    case 'PLAY_BUST':
+      return !!neg && (state.phase === 'NEGOTIATION' || state.phase === 'CLOSING') && !isExclusiveLocked(state) &&
+        neg.bossId !== action.playerId &&
+        player.hand.some(c => c.id === action.cardId && c.type === 'BUST')
+    case 'PLAY_BOOM':
+      return !!neg && state.phase === 'NEGOTIATION' && neg.bossId === action.playerId &&
+        player.hand.some(c => c.id === action.cardId && c.type === 'BOOM')
+    case 'PLAY_EXCLUSIVE':
+      return !!neg && state.phase === 'NEGOTIATION' && neg.bossId === action.playerId && !neg.exclusive &&
+        player.hand.some(c => c.id === action.cardId && c.type === 'EXCLUSIVE')
     case 'PROPOSE_OFFER':
       return state.phase === 'NEGOTIATION' && !!neg && neg.bossId === action.playerId &&
         neg.offersMade < MAX_OFFERS_PER_BOSS &&

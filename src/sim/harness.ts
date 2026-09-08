@@ -3,10 +3,10 @@
 // 被 scripts/simulate.ts（命令行）与 vitest 回归测试共用
 // ============================================================
 
-import type { GameState, PlayerAction } from '../engine/types'
+import type { GameState, PlayerAction, GameVariantId, LoggedEvent } from '../engine/types'
 import { createInitialState, gameReducer } from '../engine/gameEngine'
 import { getActingPlayerId, getLegalActions, isLegal } from '../engine/validator'
-import { HAND_LIMIT } from '../engine/config'
+import { HAND_LIMIT, getVariant, createDeckFor } from '../engine/config'
 import { heuristicAction, heuristicPolicy } from '../ai/heuristic'
 import type { Policy } from '../ai/policy'
 import { GameSession } from '../game/session'
@@ -18,9 +18,12 @@ export interface SimOptions {
   playerCount: number
   seed: number
   mode: SimMode
+  variantId?: GameVariantId
   maxSteps?: number
   /** 记录每步摘要（失败时打印） */
   trace?: boolean
+  /** 每个新事件回调（统计脚本用；状态里只保留最近 MAX_EVENTS 条，这里能拿到全部） */
+  onEvent?: (event: LoggedEvent, state: GameState) => void
 }
 
 export interface SimResult {
@@ -30,6 +33,7 @@ export interface SimResult {
   playerCount: number
   mode: SimMode
   seed: number
+  variantId: GameVariantId
   deals: number
   failedDeals: number
   cash: number[]
@@ -37,7 +41,13 @@ export interface SimResult {
   final: GameState
 }
 
+/** 兼容旧引用：经典牌堆张数 */
 export const TOTAL_CARDS = 98
+
+/** 该局牌堆总张数（由变体决定：经典 98、完整 105、扩张 117、马拉松 129） */
+export function totalCardsOf(s: GameState): number {
+  return createDeckFor(getVariant(s.variantId)).length
+}
 
 function mulberry(seed: number) {
   let a = seed >>> 0
@@ -56,7 +66,8 @@ export function checkInvariants(s: GameState): string | null {
   const onTable = s.negotiation?.reps.filter(r => r.source === 'CLAN' && !r.travelled).length ?? 0
   const pending = s.pendingReaction?.cards.length ?? 0
   const total = inHands + onTable + pending + s.drawPile.length + s.discardPile.length
-  if (total !== TOTAL_CARDS) return `卡牌不守恒：${total} ≠ ${TOTAL_CARDS}（手牌${inHands} 桌面${onTable} 待反应${pending} 牌堆${s.drawPile.length} 弃牌${s.discardPile.length}）`
+  const expected = totalCardsOf(s)
+  if (total !== expected) return `卡牌不守恒：${total} ≠ ${expected}（手牌${inHands} 桌面${onTable} 待反应${pending} 牌堆${s.drawPile.length} 弃牌${s.discardPile.length}）`
   const ids = new Set<number>()
   const seen = (id: number) => { if (ids.has(id)) return true; ids.add(id); return false }
   for (const p of s.players) for (const c of p.hand) if (seen(c.id)) return `重复卡牌 id ${c.id}`
@@ -64,11 +75,21 @@ export function checkInvariants(s: GameState): string | null {
   for (const c of s.discardPile) if (seen(c.id)) return `重复卡牌 id ${c.id}`
   for (const r of s.negotiation?.reps ?? []) if (r.source === 'CLAN' && !r.travelled && seen(r.cardId!)) return `重复卡牌 id ${r.cardId}`
   for (const c of s.pendingReaction?.cards ?? []) if (seen(c.id)) return `重复卡牌 id ${c.id}`
-  if (s.board.find(b => b.id === s.markerPos)?.closedByTileId != null) return `金钱标记落在已关闭格 #${s.markerPos}`
+  // 终局后允许标记停在已关闭格（"完整 16 笔"变体会把 16 格全部关闭）
+  if (s.phase !== 'GAME_OVER' && s.board.find(b => b.id === s.markerPos)?.closedByTileId != null) return `金钱标记落在已关闭格 #${s.markerPos}`
   const cash = s.players.reduce((n, p) => n + p.cash, 0)
-  const paidOut = s.dealHistory.filter(d => d.success).reduce((n, d) => n + d.grossValue, 0)
-  if (cash !== paidOut) return `现金不守恒：玩家总现金 ${cash} ≠ 成交总额 ${paidOut}`
+  const paidOut = s.dealHistory.filter(d => d.success).reduce((n, d) => n + d.grossValue + d.rents.reduce((m, r) => m + r.amount, 0), 0)
+  if (cash !== paidOut) return `现金不守恒：玩家总现金 ${cash} ≠ 成交总额 + 地标租金 ${paidOut}`
   if (s.players.some(p => p.cash < 0)) return '出现负现金'
+  for (const b of s.board) {
+    if (b.kind !== 'LANDMARK' && b.landlordId != null) return `非地标格 #${b.id} 却有主人`
+    if (b.kind === 'LANDMARK' && b.closedByTileId != null && b.landlordId == null) return `地标 #${b.id} 已成交却无主`
+    if (b.landlordId != null && b.closedByTileId == null) return `地标 #${b.id} 未成交却有主`
+  }
+  for (const p of s.players) {
+    if (p.reclaim && s.investors.some(i => i.ownerId === p.id)) return `${p.name} 已有投资者却仍持有夺回权`
+  }
+  if (s.negotiation && s.negotiation.priceDelta !== 0 && !getVariant(s.variantId).rareCards) return '经典变体出现股价变动'
   if (s.phase !== 'HAND_LIMIT' && s.phase !== 'REACTION' && s.players.some(p => p.hand.length > HAND_LIMIT)) {
     return `手牌超限：${s.players.map(p => p.hand.length).join(',')} phase=${s.phase}`
   }
@@ -94,7 +115,7 @@ function summarize(state: GameState, steps: number, legal: PlayerAction[]): stri
 
 function finish(opts: SimOptions, state: GameState, steps: number, trace: string[], reason?: string): SimResult {
   return {
-    ok: !reason, steps, reason, playerCount: opts.playerCount, mode: opts.mode, seed: opts.seed,
+    ok: !reason, steps, reason, playerCount: opts.playerCount, mode: opts.mode, seed: opts.seed, variantId: state.variantId,
     deals: state.completedDeals, failedDeals: state.dealHistory.filter(d => !d.success).length,
     cash: state.players.map(p => p.cash), trace, final: state,
   }
@@ -104,7 +125,7 @@ function finish(opts: SimOptions, state: GameState, steps: number, trace: string
 export function runGame(opts: SimOptions): SimResult {
   const maxSteps = opts.maxSteps ?? 30000
   const rng = mulberry(opts.seed * 7919 + 17)
-  let state = allAI(createInitialState(opts.playerCount, '测试玩家', opts.seed))
+  let state = allAI(createInitialState(opts.playerCount, '测试玩家', opts.seed, opts.variantId))
   const trace: string[] = []
   let steps = 0
 
@@ -121,6 +142,10 @@ export function runGame(opts: SimOptions): SimResult {
 
     const next = gameReducer(state, action)
     if (!next || next.stateVersion === state.stateVersion) return finish(opts, state, steps, trace, `第${steps}步 reducer 拒绝了合法动作：${JSON.stringify(action)} phase=${state.phase}`)
+    if (opts.onEvent) {
+      const lastId = state.events.length ? state.events[state.events.length - 1].id : 0
+      for (const e of next.events) if (e.id > lastId) opts.onEvent(e, next)
+    }
     state = next
     const bad = checkInvariants(state)
     if (bad) return finish(opts, state, steps, trace, `第${steps}步 ${bad}（action=${action.type}）`)
@@ -130,9 +155,9 @@ export function runGame(opts: SimOptions): SimResult {
 }
 
 /** 通过 GameSession 运行时跑一局（验证运行时本身：调度、兜底、终止） */
-export async function runGameViaSession(opts: { playerCount: number; seed: number; policy?: Policy; maxSteps?: number }): Promise<SimResult> {
+export async function runGameViaSession(opts: { playerCount: number; seed: number; policy?: Policy; maxSteps?: number; variantId?: GameVariantId }): Promise<SimResult> {
   const maxSteps = opts.maxSteps ?? 30000
-  const initial = allAI(createInitialState(opts.playerCount, '测试玩家', opts.seed))
+  const initial = allAI(createInitialState(opts.playerCount, '测试玩家', opts.seed, opts.variantId))
   const errors: string[] = []
   let steps = 0
   let violation: string | null = null
@@ -147,7 +172,7 @@ export async function runGameViaSession(opts: { playerCount: number; seed: numbe
     session.runUntil(s => s.phase === 'GAME_OVER' || steps >= maxSteps || violation != null),
     new Promise<GameState>((_, reject) => { timer = setTimeout(() => reject(new Error('session 超时')), 60_000) }),
   ]).finally(() => { clearTimeout(timer); session.destroy() })
-  const simOpts: SimOptions = { playerCount: opts.playerCount, seed: opts.seed, mode: 'heuristic' }
+  const simOpts: SimOptions = { playerCount: opts.playerCount, seed: opts.seed, mode: 'heuristic', variantId: opts.variantId }
   const reason = violation ?? (errors.length ? errors[0] : final.phase !== 'GAME_OVER' ? `超过 ${maxSteps} 步未结束` : undefined)
   return finish(simOpts, final, steps, [], reason)
 }
