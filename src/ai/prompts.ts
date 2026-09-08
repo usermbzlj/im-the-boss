@@ -156,7 +156,7 @@ export function buildGameContext(state: GameState, playerId: number): string {
   const investors = state.investors.map(inv =>
     `${famLabel(inv.familyId)}(${inv.ownerId == null ? '公共区' : state.players[inv.ownerId]?.name})${travelled.has(inv.familyId) ? '[本局失效]' : ''}`).join('; ')
   const others = state.players.filter(p => p.id !== playerId).map(p =>
-    `${p.name}: $${p.cash}M，手牌${p.hand.length}张${state.negotiation?.bossId === p.id ? ' [Boss]' : ''}`).join('\n')
+    `${p.name}（ID=${p.id}）: $${p.cash}M，手牌${p.hand.length}张${state.negotiation?.bossId === p.id ? ' [Boss]' : ''}`).join('\n')
   const hand = player.hand.map(c => `${describeCard(c)}#${c.id}`).join(', ')
 
   return `${GAME_RULES_SUMMARY}

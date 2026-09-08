@@ -10,7 +10,7 @@ import {
 } from '../engine/rules'
 import { canClose } from '../engine/validator'
 import { describeReactionTarget } from '../text/labels'
-import { reactionKindName } from '../text/narrate'
+import { reactionKindName, describePayouts } from '../text/narrate'
 import FamilyChip from './FamilyChip'
 
 interface ActionDockProps {
@@ -169,9 +169,13 @@ export default function ActionDock({ state, legal, act, discardSelection, onOpen
       case 'OFFER_RESPONSE': {
         const myShare = offerShareOf(neg!.offer, HUMAN_ID)
         const myAsk = demandOf(neg!, HUMAN_ID)
+        const toOthers = neg!.offer?.payouts.filter(p => p.playerId !== HUMAN_ID && p.amount > 0) ?? []
         return (
           <div className="dock-actions">
-            <span className="dock-hint">Boss {state.players[neg!.bossId]?.name} 要用你的代表，分给你 <b className="gold">${myShare}M</b>{myAsk != null ? `（你要价 $${myAsk}M）` : ''}</span>
+            <span className="dock-hint">
+              Boss {state.players[neg!.bossId]?.name} 要用你的代表，分给你 <b className="gold">${myShare}M</b>{myAsk != null ? `（你要价 $${myAsk}M）` : ''}
+              {toOthers.length > 0 && <span className="muted">；另付 {describePayouts(state, toOthers)}</span>}
+            </span>
             <button className="btn btn-success" onClick={() => send({ type: 'ACCEPT_OFFER', playerId: HUMAN_ID })}>✓ 同意出借（拿 ${myShare}M）</button>
             <input className="demand-input" type="number" min={0} max={gross} value={counter} placeholder="反报价" onChange={e => setCounter(e.target.value)} />
             <button className="btn btn-danger" onClick={() => send({ type: 'DECLINE_OFFER', playerId: HUMAN_ID, counter: counter.trim() === '' ? undefined : Math.max(0, Math.floor(Number(counter) || 0)) })}>✗ 拒绝</button>

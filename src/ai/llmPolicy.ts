@@ -7,12 +7,12 @@
 // 由 withFallback 交给启发式策略——LLM 永远不会让游戏卡住。
 // ============================================================
 
-import type { GameState, PlayerAction, Payout } from '../engine/types'
+import type { GameState, Negotiation, PlayerAction, Payout } from '../engine/types'
 import { chatCompletion, isLLMConfigured, type LLMConfig } from './llmClient'
 import { buildDecisionPrompt } from './prompts'
 import { DECISION_PROMPTS } from './promptTexts'
 import { getActingPlayerId, getLegalActions, isLegal } from '../engine/validator'
-import { getGrossValue, playerActiveFamilies } from '../engine/rules'
+import { getGrossValue, playerActiveFamilies, offerOwners, demandOf } from '../engine/rules'
 import { heuristicSpeech } from './heuristic'
 import type { Policy } from './policy'
 
@@ -50,11 +50,17 @@ export function createLLMPolicy(getConfig: () => LLMConfig): Policy {
   }
 }
 
+/** 模型写的分成条目：收款人可以是玩家 ID，也可以是玩家名（模型更习惯用名字） */
+export interface RawPayout {
+  playerId: number | string
+  amount: number
+}
+
 interface ChoiceResponse {
   choice: number
   speech?: string
   demand?: number
-  payouts?: Payout[]
+  payouts?: RawPayout[]
   cardIds?: number[]
 }
 
@@ -84,6 +90,13 @@ function toInt(v: unknown): number | undefined {
   return typeof n === 'number' && Number.isFinite(n) ? Math.floor(n) : undefined
 }
 
+/** 收款人：数字（或数字串）当 ID，其余非空字符串当玩家名 */
+function toPayee(v: unknown): number | string | undefined {
+  const n = toInt(v)
+  if (n != null) return n
+  return typeof v === 'string' && v.trim() ? v.trim() : undefined
+}
+
 export function parseChoiceResponse(raw: string): ChoiceResponse | null {
   try {
     const text = extractJsonObject(raw)
@@ -92,11 +105,17 @@ export function parseChoiceResponse(raw: string): ChoiceResponse | null {
     const choice = toInt(obj.choice)
     if (choice == null || choice < 1) return null
     const demand = obj.demand && typeof obj.demand === 'object' ? toInt(obj.demand.amount) : toInt(obj.demand)
+    // 分成条目任一残缺则整组作废：宁可沿用候选方案，也不能把"给某人 $2M"悄悄变成"谁都不给"
+    // （空数组同样视为"不覆盖"——"独吞"本身就是一个独立的编号选项）
     const rawPayouts = obj.payouts ?? obj.payout
-    const payouts = Array.isArray(rawPayouts)
-      ? rawPayouts.map((p: Record<string, unknown>) => ({ playerId: toInt(p?.playerId), amount: toInt(p?.amount) }))
-        .filter((p: { playerId?: number; amount?: number }): p is Payout => p.playerId != null && p.amount != null)
-      : undefined
+    let payouts: RawPayout[] | undefined
+    if (Array.isArray(rawPayouts) && rawPayouts.length > 0) {
+      const list = rawPayouts.map((p: Record<string, unknown> | null) => ({
+        playerId: toPayee(p?.playerId ?? p?.player ?? p?.name ?? p?.to),
+        amount: toInt(p?.amount),
+      }))
+      payouts = list.every((p): p is RawPayout => p.playerId != null && p.amount != null) ? list : undefined
+    }
     const cardIds = Array.isArray(obj.cardIds) ? obj.cardIds.map(toInt).filter((n: number | undefined): n is number => n != null) : undefined
     return { choice, speech: typeof obj.speech === 'string' ? obj.speech : undefined, demand, payouts, cardIds }
   } catch {
@@ -138,10 +157,11 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
       break
     }
     case 'PROPOSE_OFFER': {
-      if (parsed.payouts && state.negotiation) {
-        const bossId = state.negotiation.bossId
-        const candidate: PlayerAction = { ...action, payouts: parsed.payouts.filter(p => p.playerId !== bossId && p.amount >= 0) }
-        if (isLegal(state, candidate)) action = candidate
+      const neg = state.negotiation
+      const payouts = parsed.payouts && neg ? resolvePayees(state, parsed.payouts) : null
+      if (payouts && neg) {
+        const candidate = { ...action, payouts: payouts.filter(p => p.playerId !== neg.bossId && p.amount >= 0) }
+        if (payoutsPlausible(neg, candidate) && isLegal(state, candidate)) action = candidate
       }
       break
     }
@@ -156,4 +176,30 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
 
   if (action.type !== 'SPEAK') action.say = speech || heuristicSpeech(state, action) || undefined
   return isLegal(state, action) ? action : null
+}
+
+/** 把"玩家 ID 或玩家名"落成 ID；任一条目无法唯一对应则整组放弃（调用方沿用候选方案的分成） */
+export function resolvePayees(state: GameState, raw: RawPayout[]): Payout[] | null {
+  const out: Payout[] = []
+  for (const p of raw) {
+    let id: number | undefined
+    if (typeof p.playerId === 'number') id = state.players[p.playerId] ? p.playerId : undefined
+    else {
+      const matches = state.players.filter(pl => pl.name === p.playerId)
+      id = matches.length === 1 ? matches[0].id : undefined
+    }
+    if (id == null) return null
+    out.push({ playerId: id, amount: p.amount })
+  }
+  return out
+}
+
+/**
+ * 分成只能付给方案中代表的持有者，或已公开要价（封口费）的人。
+ * 付钱给一个既不出人也没开口的旁观者，几乎一定是模型把收款人弄错了——
+ * 这种方案若放行，台词里承诺的钱就会落到别人头上，被用代表的人反而拿 $0。
+ */
+function payoutsPlausible(neg: Negotiation, action: { repKeys: string[]; payouts: Payout[] }): boolean {
+  const owners = new Set(offerOwners(neg, action))
+  return action.payouts.every(p => owners.has(p.playerId) || demandOf(neg, p.playerId) != null)
 }

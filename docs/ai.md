@@ -72,10 +72,13 @@ decide(state, signal)
 | `choice` | 全部 | 1 起编号，越界即失败 |
 | `speech` | 全部 | 去空白、截到 120 字，写入动作的 `say`；`SPEAK` 无内容时用默认台词，其他动作无内容时用启发式台词 |
 | `demand` | `SPEAK` / `PLAY_CLAN` / `DECLINE_OFFER` | 夹到 `[0, 总额]`；`SPEAK` 时若有相关代表则同时记为该家族的出借价，否则为封口费；`DECLINE_OFFER` 时作为反报价 |
-| `payouts` | `PROPOSE_OFFER` | 覆盖候选方案的分成；过滤给 Boss 自己与负数的项；整体需通过 `isLegal`，否则保留候选方案原分成 |
+| `payouts` | `PROPOSE_OFFER` | 覆盖候选方案的分成。收款人可写玩家 ID 或玩家名（`resolvePayees`，名字须唯一对应）；过滤给 Boss 自己与负数的项；**只允许付给方案中代表的持有者或已公开要价的人**（付给旁观者几乎一定是收款人写错了，会让台词里承诺的钱落到别人头上）；整体需通过 `isLegal`。任一条不满足即整组放弃，保留候选方案原分成 |
 | `cardIds` | `DISCARD` | 指定弃哪几张；数量或归属不对则退回默认弃牌 |
 
-解析容错（`extractJsonObject` / `parseChoiceResponse`）：剥离 `<think>…</think>` 与代码围栏后，用括号配对提取第一个完整 JSON 对象；数字字段接受字符串；`demand` 接受 `{amount}` 对象；`payout` / `payouts` 均可；非法条目逐项过滤而非整体失败。
+解析容错（`extractJsonObject` / `parseChoiceResponse`）：剥离 `<think>…</think>` 与代码围栏后，用括号配对提取第一个完整 JSON 对象；数字字段接受字符串；`demand` 接受 `{amount}` 对象；`payout` / `payouts` 均可，收款人字段接受 `playerId / player / name / to`；`cardIds` 非法项逐项过滤。
+`payouts` 则相反：任一条目残缺或空数组都视为"不覆盖"——把"给某人 $2M"悄悄变成"谁都不给"比整组放弃更糟。
+
+为此提示词里每位其他玩家都标注 `（ID=n）`，模型才有可能写对收款人；`payouts` 的字段说明也要求台词承诺的金额与实际分成一致。
 最终动作再过一次 `isLegal`，不合法返回 `null`。以上均有 `tests/llm.test.ts` 覆盖。
 
 ### 2.3 为什么不让模型直接输出动作

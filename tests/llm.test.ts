@@ -18,12 +18,18 @@ describe('回复解析', () => {
     expect(extractJsonObject('{"未闭合": 1')).toBeNull()
   })
 
-  it('字段宽容：字符串数字、demand 对象、payout 单数、非法项过滤', () => {
-    expect(parseChoiceResponse('{"choice": "3", "demand": {"amount": "2"}, "payout": [{"playerId": 1, "amount": 2}, {"playerId": "x"}]}'))
-      .toEqual({ choice: 3, speech: undefined, demand: 2, payouts: [{ playerId: 1, amount: 2 }], cardIds: undefined })
+  it('字段宽容：字符串数字、demand 对象、payout 单数、收款人可为名字', () => {
+    expect(parseChoiceResponse('{"choice": "3", "demand": {"amount": "2"}, "payout": [{"playerId": "1", "amount": 2}, {"player": "钱多多", "amount": "1"}]}'))
+      .toEqual({ choice: 3, speech: undefined, demand: 2, payouts: [{ playerId: 1, amount: 2 }, { playerId: '钱多多', amount: 1 }], cardIds: undefined })
     expect(parseChoiceResponse('{"choice": 0}')).toBeNull()
     expect(parseChoiceResponse('{"speech": "没选"}')).toBeNull()
     expect(parseChoiceResponse('{"choice": 1, "cardIds": [3, "4", null, "x"]}')!.cardIds).toEqual([3, 4])
+  })
+
+  it('分成条目任一残缺 → 整组作废，而不是悄悄丢掉那一条', () => {
+    expect(parseChoiceResponse('{"choice": 1, "payouts": [{"playerId": 1, "amount": 2}, {"playerId": 2}]}')!.payouts).toBeUndefined()
+    expect(parseChoiceResponse('{"choice": 1, "payouts": [{"amount": 2}]}')!.payouts).toBeUndefined()
+    expect(parseChoiceResponse('{"choice": 1, "payouts": []}')!.payouts).toBeUndefined()
   })
 })
 
@@ -72,6 +78,36 @@ describe('落成动作', () => {
     expect(self.type === 'PROPOSE_OFFER' && self.payouts).toEqual([{ playerId: 1, amount: 1 }])
   })
 
+  it('PROPOSE_OFFER 分成：收款人可写名字；写错对象或付给旁观者则沿用候选方案', () => {
+    // #1 需要 A+B：Boss 0 自有 A，B 的持有者是 1；2、3 是与方案无关的旁观者
+    const s = bossTurn()
+    const legal = getLegalActions(s, 0)
+    const idx = legal.findIndex(a => a.type === 'PROPOSE_OFFER')
+    const original = (legal[idx] as { payouts: unknown }).payouts
+
+    const byName = resolveChoice(`{"choice": ${idx + 1}, "payouts": [{"playerId": "${s.players[1].name}", "amount": 3}]}`, legal, s)!
+    expect(byName.type === 'PROPOSE_OFFER' && byName.payouts).toEqual([{ playerId: 1, amount: 3 }])
+
+    // 名字对不上任何人 → 整组放弃
+    const unknown = resolveChoice(`{"choice": ${idx + 1}, "payouts": [{"playerId": "路人甲", "amount": 3}]}`, legal, s)!
+    expect(unknown.type === 'PROPOSE_OFFER' && unknown.payouts).toEqual(original)
+
+    // 截图里的事故：模型想给 1 号 $2M，却把 ID 写成了 2（旁观者）→ 不能让钱落到别人头上
+    const wrongId = resolveChoice(`{"choice": ${idx + 1}, "speech": "分你 2M，成交吧", "payouts": [{"playerId": 2, "amount": 2}]}`, legal, s)!
+    expect(wrongId.type === 'PROPOSE_OFFER' && wrongId.payouts).toEqual(original)
+    expect(wrongId.type === 'PROPOSE_OFFER' && wrongId.payouts.some(p => p.playerId === 2)).toBe(false)
+
+    // 旁观者若已公开索要封口费，则付给他是合理的
+    const bribed = step(s, { type: 'PASS', playerId: 0 })
+    const spoke = step(bribed, { type: 'SPEAK', playerId: 1, say: '出个价' })
+    const asked = step(spoke, { type: 'SPEAK', playerId: 2, say: '给我 1M 我就不捣乱', demand: 1 })
+    const back = step(asked, { type: 'PASS', playerId: 3 })
+    const legal2 = getLegalActions(back, 0)
+    const idx2 = legal2.findIndex(a => a.type === 'PROPOSE_OFFER')
+    const hush = resolveChoice(`{"choice": ${idx2 + 1}, "payouts": [{"playerId": 1, "amount": 2}, {"playerId": 2, "amount": 1}]}`, legal2, back)!
+    expect(hush.type === 'PROPOSE_OFFER' && hush.payouts).toEqual([{ playerId: 1, amount: 2 }, { playerId: 2, amount: 1 }])
+  })
+
   it('DECLINE_OFFER 可附反报价；DISCARD 可指定弃牌', () => {
     let s = bossTurn()
     s = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: [investorRepKey('A'), investorRepKey('B')], payouts: [{ playerId: 1, amount: 1 }] })
@@ -108,6 +144,8 @@ describe('提示词与策略', () => {
     expect(user).toContain('【你的身份】')
     expect(user).not.toContain('阻止牌#') // 3 号的阻止牌不能出现在 0 号的提示词里
     expect(user).toContain('手牌1张')
+    // 分成要按 playerId 指定收款人，所以每位其他玩家都必须带 ID
+    for (const p of s.players) if (p.id !== 0) expect(user).toContain(`${p.name}（ID=${p.id}）`)
   })
 
   it('未配置 LLM 时策略返回 null，withFallback 交给启发式；唯一合法动作不请求模型', async () => {
