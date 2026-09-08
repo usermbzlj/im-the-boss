@@ -1,9 +1,9 @@
 // ============================================================
 // LLM 策略 — "按编号选择"协议
 //
-// 合法动作由 validator 枚举、经 prompts.pruneForLLM 剪枝并附上后果注释与启发式
-// 默认建议后编号成列表；模型只回复序号，至多用 speech / demand / payouts / cardIds
-// 微调台词、金额或选牌。
+// 合法动作由 validator 枚举、经 prompts.pruneForLLM 剪枝并附上后果注释后编号成列表；
+// 模型回复序号，用 speech / demand / payouts / cardIds 定台词、金额或选牌，
+// 可附 thought（内心盘算，只用于让它想清楚，不落地）与 note（写给下回合自己的私人笔记，存入 Player.notes）。
 // 解析出的动作必须通过 isLegal，否则重试一次；仍失败返回 null，
 // 由 withFallback 交给启发式策略——LLM 永远不会让游戏卡住。
 // ============================================================
@@ -19,6 +19,7 @@ import { heuristicSpeech } from './heuristic'
 import type { Policy } from './policy'
 
 const SPEECH_MAX_LEN = 120
+const NOTE_MAX_LEN = 80
 
 export function createLLMPolicy(getConfig: () => LLMConfig): Policy {
   return {
@@ -68,6 +69,8 @@ interface ChoiceResponse {
   demandFamily?: FamilyId
   payouts?: RawPayout[]
   cardIds?: number[]
+  /** 写给下回合自己的私人笔记 */
+  note?: string
 }
 
 /** 剥离 <think> 与代码围栏后，用括号配对提取第一个完整 JSON 对象 */
@@ -126,7 +129,9 @@ export function parseChoiceResponse(raw: string): ChoiceResponse | null {
       payouts = list.every((p): p is RawPayout => p.playerId != null && p.amount != null) ? list : undefined
     }
     const cardIds = Array.isArray(obj.cardIds) ? obj.cardIds.map(toInt).filter((n: number | undefined): n is number => n != null) : undefined
-    return { choice, speech: typeof obj.speech === 'string' ? obj.speech : undefined, demand, demandFamily, payouts, cardIds }
+    const note = typeof obj.note === 'string' && obj.note.trim() ? obj.note.trim() : undefined
+    // thought 字段是模型自己的盘算，读过即弃：既不落地也不展示
+    return { choice, speech: typeof obj.speech === 'string' ? obj.speech : undefined, demand, demandFamily, payouts, cardIds, note }
   } catch {
     return null
   }
@@ -184,6 +189,7 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
   }
 
   if (action.type !== 'SPEAK') action.say = speech || heuristicSpeech(state, action) || undefined
+  if (parsed.note) action.note = parsed.note.slice(0, NOTE_MAX_LEN)
   return isLegal(state, action) ? action : null
 }
 

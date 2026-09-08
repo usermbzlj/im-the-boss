@@ -86,16 +86,23 @@ export function createInfluenceDeck(): InfluenceCard[] {
 
 export interface AIRosterEntry {
   name: string
-  personaId: 'greedy' | 'grudge' | 'steady' | 'smile' | 'stingy'
+  /** 人物 id，设定见 ai/personas.ts */
+  personaId: string
 }
 
-/** 名字与人格绑定，整体打乱后分配座位，保证 UI 显示名与 AI 自称一致 */
+/**
+ * 牌桌上的常客：名字与人物绑定（人物的角色卡与行为参数在 ai/personas.ts），
+ * 开局整体打乱后按座位分配，一局最多 5 位电脑玩家，因此每局的对手组合都不同。
+ */
 export const AI_ROSTER: AIRosterEntry[] = [
-  { name: '妙算子', personaId: 'smile' },
-  { name: '钱多多', personaId: 'greedy' },
-  { name: '稳如山', personaId: 'steady' },
-  { name: '笑面虎', personaId: 'grudge' },
-  { name: '铁公鸡', personaId: 'stingy' },
+  { name: '沈砚青', personaId: 'shen' },
+  { name: '陆峥', personaId: 'lu' },
+  { name: '顾曼宁', personaId: 'gu' },
+  { name: '何烬', personaId: 'he' },
+  { name: '周慕言', personaId: 'zhou' },
+  { name: '苏澜', personaId: 'su' },
+  { name: '程亦舟', personaId: 'cheng' },
+  { name: '白珩', personaId: 'bai' },
 ]
 
 // ---------- 确定性随机数（mulberry32） ----------

@@ -1,14 +1,16 @@
 // LLM 策略的"按编号选择"协议：解析容错 + 落成合法动作 + 失败时安全兜底
-// 以及提示词工程：剪枝、后果注释、默认建议、局势摘要
+// 以及提示词工程：剪枝、后果注释、局势摘要、角色卡、私人笔记
 
 import { describe, it, expect } from 'vitest'
 import { extractJsonObject, parseChoiceResponse, resolveChoice, createLLMPolicy } from '../src/ai/llmPolicy'
-import { buildDecisionPrompt, pruneForLLM, annotateOption, sameAction } from '../src/ai/prompts'
+import { buildDecisionPrompt, pruneForLLM, annotateOption } from '../src/ai/prompts'
 import { getActingPlayerId, getLegalActions } from '../src/engine/validator'
 import { investorRepKey, clanRepKey } from '../src/engine/rules'
 import { withFallback } from '../src/ai/policy'
 import { DEFAULT_LLM_CONFIG } from '../src/ai/llmClient'
-import { heuristicPolicy, heuristicAction } from '../src/ai/heuristic'
+import { heuristicPolicy } from '../src/ai/heuristic'
+import { PERSONAS, PERSONA_IDS, getPersonaForPlayer } from '../src/ai/personas'
+import { AI_ROSTER } from '../src/engine/config'
 import { baseState, setInvestors, openDealAt, step, clearHand, giveCards, toBoss } from './helpers'
 
 describe('回复解析', () => {
@@ -132,7 +134,7 @@ describe('落成动作', () => {
 })
 
 describe('选项剪枝与后果注释', () => {
-  it('剪掉打飞自己代表的旅行牌、与定向旅行同目标的万能旅行、需他人同意却一分不给的独吞', () => {
+  it('只剪机械冗余：打飞自己代表的旅行牌、与定向旅行同目标的万能旅行；一分不给的"求人情"方案保留但注明后果', () => {
     let s = baseState(4, 36)
     setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
     for (let i = 0; i < 4; i++) clearHand(s, i)
@@ -152,8 +154,10 @@ describe('选项剪枝与后果注释', () => {
 
     const b = toBoss(s)
     const bossLegal = getLegalActions(b, 0)
-    expect(bossLegal.some(a => a.type === 'PROPOSE_OFFER' && a.payouts.length === 0)).toBe(true) // 引擎允许独吞
-    expect(pruneForLLM(b, 0, bossLegal).some(a => a.type === 'PROPOSE_OFFER' && a.payouts.length === 0)).toBe(false) // 但不给模型看
+    const favor = bossLegal.find(a => a.type === 'PROPOSE_OFFER' && a.payouts.length === 0)!
+    expect(favor).toBeTruthy() // 引擎允许一分不给
+    expect(pruneForLLM(b, 0, bossLegal)).toContain(favor) // 模型也看得到：做人情是角色的权利
+    expect(annotateOption(b, 0, favor)).toContain('求人情') // 但后果写明
   })
 
   it('注释说明后果：方案作废 / 失去的钱 / 自动同意 / 唯一选择', () => {
@@ -178,7 +182,7 @@ describe('选项剪枝与后果注释', () => {
 })
 
 describe('提示词与策略', () => {
-  it('决策提示词包含编号列表、默认建议、局势摘要、人格与规则摘要；谈判中不带棋盘概览；不泄露他人手牌', () => {
+  it('决策提示词包含编号列表、局势摘要、角色卡与规则摘要，没有默认答案；谈判中不带棋盘概览；不泄露他人手牌', () => {
     let s = baseState(4, 33)
     setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
     for (let i = 0; i < 4; i++) clearHand(s, i)
@@ -186,28 +190,85 @@ describe('提示词与策略', () => {
     s = toBoss(openDealAt(s, 1, 0))
     const legal = getLegalActions(s, 0)
     const { system, user, options } = buildDecisionPrompt(s, 0, legal)
-    expect(system.length).toBeGreaterThan(50)
-    expect(system).toContain('决策常识')
+    expect(system).toContain('【怎么玩这个人】')
+    expect(system).toContain('【桌面的现实】')
+    expect(system).not.toContain('决策常识') // 不再给行为戒律
     expect(options.length).toBeLessThanOrEqual(legal.length)
     for (let i = 1; i <= options.length; i++) expect(user).toContain(`${i}. `)
     expect(user).not.toContain(`${options.length + 1}. `)
     expect(user).toContain('【你的身份】')
     expect(user).toContain('【局势摘要】')
-    expect(user).toContain('【默认建议】第 ')
+    expect(user).not.toContain('默认建议') // 判断留给模型
+    expect(user).toContain('"thought"')
+    expect(user).toContain('"note"')
     expect(user).not.toContain('【棋盘概览')
     expect(user).not.toContain('阻止牌#') // 3 号的阻止牌不能出现在 0 号的提示词里
     expect(user).toContain('手牌1张')
     // 分成要按 playerId 指定收款人，所以每位其他玩家都必须带 ID
     for (const p of s.players) if (p.id !== 0) expect(user).toContain(`${p.name}（ID=${p.id}）`)
 
-    // 默认建议指向的编号就是启发式会选的动作
-    const m = user.match(/【默认建议】第 (\d+) 项/)!
-    expect(sameAction(options[Number(m[1]) - 1], heuristicAction(s)!)).toBe(true)
-
     // 回合阶段才带棋盘概览
     const t = baseState(4, 33)
     t.phase = 'TURN'; t.currentId = 0; t.markerChooserId = null
     expect(buildDecisionPrompt(t, 0, getLegalActions(t, 0)).user).toContain('【棋盘概览')
+  })
+
+  it('每位电脑玩家的 system 提示是它自己的角色卡：以真名开场、带身份与软肋、{{name}} 全部替换', () => {
+    const s = baseState(6, 39)
+    const seen = new Set<string>()
+    expect(s.players.filter(p => p.personaId)).toHaveLength(5)
+    for (const p of s.players.filter(p => p.personaId)) {
+      const persona = getPersonaForPlayer(p.personaId)
+      expect(PERSONA_IDS).toContain(persona.id)
+      expect(persona.name).toBe(p.name)
+      seen.add(persona.id)
+      const { system } = buildDecisionPrompt(s, p.id, getLegalActions(s, p.id))
+      expect(system.startsWith(`你是${p.name}，`)).toBe(true)
+      expect(system).toContain('软肋')
+      expect(system).not.toContain('{{name}}')
+      expect(system).toContain(`用${p.name}的方式去赢`)
+    }
+    expect(seen.size).toBe(5) // 六人局的五位电脑玩家互不重复
+    // 花名册与人物一一对应，每个人都有一套完整的启发式参数
+    for (const entry of AI_ROSTER) {
+      const persona = PERSONAS[entry.personaId]
+      expect(persona, entry.personaId).toBeTruthy()
+      expect(persona.name).toBe(entry.name)
+      expect(persona.title.length).toBeGreaterThan(4)
+      expect(persona.play.askMult).toBeGreaterThan(0)
+    }
+  })
+
+  it('私人笔记：随动作写入自己的 notes，回灌到自己的下一份提示词；不进事件、不给别人看；条数与长度有上限', () => {
+    let s = baseState(4, 40)
+    setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
+    s = openDealAt(s, 1, 0) // 叫价轮，1 号先行动
+    const legal = getLegalActions(s, 1)
+    const idx = legal.findIndex(a => a.type === 'PASS')
+    const a = resolveChoice(`{"choice": ${idx + 1}, "thought": "先看看 Boss 出多少", "speech": "各位先请。", "note": "  Boss 是 0 号，上局压过我的价，这局不主动让  "}`, legal, s)!
+    expect(a.note).toBe('Boss 是 0 号，上局压过我的价，这局不主动让')
+    expect(a.say).toBe('各位先请。')
+    expect((a as { thought?: string }).thought).toBeUndefined() // 内心盘算不落地
+    s.players[1].notes = Array.from({ length: 8 }, (_, i) => `旧${i}`) // 已满 8 条
+    s = step(s, a)
+    expect(s.players[1].notes).toHaveLength(8) // 上限 8 条：挤掉最旧的
+    expect(s.players[1].notes[0]).toBe('旧1')
+    expect(s.players[1].notes.at(-1)).toBe('Boss 是 0 号，上局压过我的价，这局不主动让')
+    expect(s.events.some(e => JSON.stringify(e).includes('上局压过我的价'))).toBe(false)
+    expect(s.negotiation!.speeches.some(sp => sp.text.includes('上局压过我的价'))).toBe(false)
+
+    // 回到 1 号时能看到；其他人看不到
+    s = step(s, { type: 'PASS', playerId: 2 }); s = step(s, { type: 'PASS', playerId: 3 }); s = step(s, { type: 'PASS', playerId: 0 })
+    expect(getActingPlayerId(s)).toBe(1)
+    expect(buildDecisionPrompt(s, 1, getLegalActions(s, 1)).user).toContain('【你的私人笔记')
+    expect(buildDecisionPrompt(s, 1, getLegalActions(s, 1)).user).toContain('- Boss 是 0 号，上局压过我的价，这局不主动让')
+    expect(buildDecisionPrompt(s, 2, getLegalActions(s, 2)).user).not.toContain('上局压过我的价')
+
+    // 每条最长 80 字；空白笔记不记
+    s = step(s, { type: 'PASS', playerId: 1, note: '长'.repeat(100) })
+    expect(s.players[1].notes.at(-1)).toHaveLength(80)
+    s = step(s, { type: 'PASS', playerId: 2, note: '   ' })
+    expect(s.players[2].notes).toHaveLength(0)
   })
 
   it('非 Boss 的提示词点明杠杆 / 竞争 / 承诺价', () => {

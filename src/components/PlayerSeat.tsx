@@ -14,6 +14,12 @@ interface PlayerSeatProps {
   isThinking: boolean
 }
 
+/** 座位印章：中文名取姓（首字），拉丁名取首字母 */
+function monogram(name: string): string {
+  const first = [...name.trim()][0] ?? '?'
+  return /[a-z]/i.test(first) ? first.toUpperCase() : first
+}
+
 export default function PlayerSeat({ state, playerId, isActing, isThinking }: PlayerSeatProps) {
   const player = state.players[playerId]
   if (!player) return null
@@ -34,15 +40,15 @@ export default function PlayerSeat({ state, playerId, isActing, isThinking }: Pl
     <div className={`player-seat${isActing ? ' acting' : ''}${isBoss ? ' is-boss' : ''}${player.isAI ? '' : ' is-human'}`}>
       {player.lastSpeech && <div className="seat-bubble" title={player.lastSpeech}>{player.lastSpeech}</div>}
       <div className="seat-head">
-        <span className="seat-avatar">{persona?.emoji ?? '🧑'}</span>
+        <span className="seat-avatar" aria-hidden="true">{monogram(player.name)}</span>
         <div className="seat-title">
           <div className="seat-name">
             {player.name}
             {!player.isAI && <span className="seat-you">你</span>}
             {isBoss && <span className="seat-boss">👑 Boss</span>}
           </div>
-          <div className="seat-sub">
-            {persona ? persona.style : '人类玩家'}
+          <div className="seat-sub" title={persona?.title}>
+            {persona ? persona.title.split(' · ')[0] : '人类玩家'}
           </div>
         </div>
         <div className="seat-cash">${player.cash}M</div>

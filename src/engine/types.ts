@@ -65,6 +65,11 @@ export interface Player {
   personaId?: string
   /** 最近一句台词（座位气泡），谈判开始/结束时清空 */
   lastSpeech?: string
+  /**
+   * 私人笔记：电脑玩家自己写给自己的备忘（谁坑过我、谁欠我、下一步打算），
+   * 只回灌到它自己的提示词里，界面与其他玩家都看不到。保留最近若干条。
+   */
+  notes: string[]
 }
 
 export type RepSource = 'INVESTOR' | 'CLAN'
@@ -277,8 +282,10 @@ export interface GameState {
 
 interface ActionBase {
   playerId: number
-  /** 随动作说的一句台词（AI 人格扮演 / 人类喊话），任何动作都可附带 */
+  /** 随动作说的一句台词（AI 角色扮演 / 人类喊话），任何动作都可附带 */
   say?: string
+  /** 电脑玩家随动作写下的私人笔记（不公开），见 Player.notes */
+  note?: string
 }
 
 export type PlayerAction =

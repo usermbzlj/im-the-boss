@@ -177,7 +177,15 @@ input[type="number"] { width: 90px; }
   content: ''; position: absolute; left: 18px; bottom: -6px; border: 6px solid transparent; border-top-color: #fff; border-bottom: 0;
 }
 .seat-head { display: flex; align-items: center; gap: 8px; }
-.seat-avatar { font-size: 22px; }
+.seat-avatar {
+  flex: none; width: 34px; height: 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; font-weight: bold; letter-spacing: 0.5px;
+  color: var(--gold); background: #0f1512; border: 1.5px solid rgba(240, 180, 41, 0.55);
+  font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", Georgia, serif;
+}
+.player-seat.is-human .seat-avatar { color: #cfe8d6; border-color: rgba(120, 200, 150, 0.6); }
+.player-seat.is-boss .seat-avatar { box-shadow: 0 0 0 2px rgba(240, 180, 41, 0.25); }
 .seat-title { flex: 1; min-width: 0; }
 .seat-name { font-size: 13px; font-weight: bold; display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .seat-you { font-size: 10px; background: var(--green); color: #fff; padding: 0 5px; border-radius: 4px; }

@@ -5,6 +5,7 @@
 import { useState } from 'react'
 import { hasSavedGame } from '../utils/storage'
 import { isLLMConfigured } from '../ai/llmClient'
+import { AI_ROSTER } from '../engine/config'
 
 interface StartScreenProps {
   onStart: (count: number, name: string, seed?: number) => void
@@ -48,6 +49,7 @@ export default function StartScreen({ onStart, onContinue, onSettings }: StartSc
             ))}
           </div>
           <p className="form-hint">{playerCount === 3 ? '每人 2 张投资者牌' : playerCount === 6 ? '每人 1 张投资者牌' : `每人 1 张投资者牌，${6 - playerCount} 张放公共区（需招募取得）`}</p>
+          <p className="form-hint">{playerCount - 1} 位对手从牌桌常客中随机抽出：{AI_ROSTER.map(r => r.name).join('、')}</p>
         </div>
 
         <div className="form-group">

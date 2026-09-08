@@ -33,7 +33,7 @@ import {
 } from './rules'
 import { isLegal } from './validator'
 
-export const SAVE_VERSION = 6
+export const SAVE_VERSION = 7
 
 // ---------- 工具 ----------
 
@@ -91,6 +91,18 @@ function say(s: GameState, playerId: number, text: string | undefined) {
   emit(s, { kind: 'SPEECH', playerId, text: clean })
 }
 
+const MAX_NOTES = 8
+const NOTE_MAX_LEN = 80
+
+/** 电脑玩家的私人笔记：不发事件、不进日志，只留在它自己的状态里 */
+function remember(s: GameState, playerId: number, text: string | undefined) {
+  const player = getPlayer(s, playerId)
+  const clean = (text ?? '').trim().slice(0, NOTE_MAX_LEN)
+  if (!player || !clean) return
+  player.notes.push(clean)
+  if (player.notes.length > MAX_NOTES) player.notes.splice(0, player.notes.length - MAX_NOTES)
+}
+
 /**
  * 记录公开报价（每个代表的出借价）。familyIds 为空 = 通用价/封口费；否则覆盖这些家族各自的报价。
  * 同一玩家可以对不同家族报不同价，互不影响。quiet：只更新承诺、不发事件（同意方案时用）。
@@ -129,10 +141,10 @@ export function createInitialState(playerCount: number, humanName: string, seed?
   const holder = { rng: seed ?? randomSeed() }
   const roster = shuffleWith(holder, AI_ROSTER)
 
-  const players: Player[] = [{ id: 0, name: humanName.trim() || '你', isAI: false, cash: 0, hand: [] }]
+  const players: Player[] = [{ id: 0, name: humanName.trim() || '你', isAI: false, cash: 0, hand: [], notes: [] }]
   for (let i = 1; i < count; i++) {
     const entry = roster[(i - 1) % roster.length]
-    players.push({ id: i, name: entry.name, isAI: true, cash: 0, hand: [], personaId: entry.personaId })
+    players.push({ id: i, name: entry.name, isAI: true, cash: 0, hand: [], personaId: entry.personaId, notes: [] })
   }
 
   // 投资者牌随机分配：3 人各 2 张；4/5 人各 1 张、余下放公共区；6 人各 1 张
@@ -452,6 +464,7 @@ function apply(s: GameState, action: PlayerAction) {
   // 台词先落地（SPEAK 的主体就是台词；其他动作可附带一句）。
   // 反应窗口的放行保持沉默：只有持阻止牌者才真正在"决定"，说话会暴露手牌。
   if (action.type !== 'PASS_REACTION') say(s, player.id, action.say)
+  remember(s, player.id, action.note)
 
   switch (action.type) {
     case 'PLACE_MARKER':

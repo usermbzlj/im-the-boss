@@ -1,7 +1,7 @@
 // ============================================================
 // 启发式策略 — 不依赖 LLM，任何局面都能立刻给出合法动作。
-// 既是"无 LLM"模式下的电脑玩家，也是 LLM 失败 / 超时时的兜底，
-// 还作为 LLM 提示词里的"默认建议"（基线）。
+// 既是"无 LLM"模式下的电脑玩家，也是 LLM 失败 / 超时时的兜底。
+// 行为参数按人物（personas.ts）取：同一座位在两种模式下是同一个人。
 // 决策只依赖状态（随机数由 stateVersion 派生），仿真可复现。
 //
 // 博弈直觉（和真实桌面一致）：
@@ -17,43 +17,16 @@ import {
   getPlayer, getCurrentSpace, getGrossValue, oneShareOf, spaceInvestorCount,
   selectReps, tableCanComplete, canCompleteAlone, playerCoverableFamilies, playerActiveFamilies,
   activeRepsOfFamily, findRep, offerShareOf, offerOwners, repCost, payoutTotal, repsUsedOf,
-  familyDemandOnBoard, groupOfFamily, soleRepFamilies, leaderIds, endChance, grudgeCount, meetsCommitment,
+  familyDemandOnBoard, groupOfFamily, soleRepFamilies, leaderIds, endChance, grudgeCount,
   commitmentPrice, repPriceOf, hasDemand,
 } from '../engine/rules'
 import { getActingPlayerId, getLegalActions, isLegal, buildOfferCandidates, canClose, type OfferCandidate } from '../engine/validator'
 import type { Policy } from './policy'
+import { getPersonaForPlayer, type PersonaParams } from './personas'
 
-interface PersonaParams {
-  /** 要价倍率（相对一份分红） */
-  askMult: number
-  /** 接受阈值倍率（相对自己的要价） */
-  acceptMult: number
-  /** 搅局倾向 0~1 */
-  disrupt: number
-  /** 用阻止牌保护自身利益的倾向 0~1 */
-  protect: number
-  /** 是否会索要封口费 */
-  bribe: boolean
-  /** 当 Boss 时先压价试探的倾向 0~1 */
-  haggle: number
-  /** 记仇权重：对搅过自己的人加倍搅回去 */
-  grudge: number
-  /** 虚张声势倾向 0~1（没牌也放狠话） */
-  bluff: number
-}
-
-// 平衡目标：各人格胜率相近（仿真 400 局内差距 < 1.5 倍），风格不同但都能赢。
-//   steady 是"公道但不好欺负"：要价一份、基本不让、少搅局；不是随便压价都点头的软柿子。
-export const PERSONA_PARAMS: Record<string, PersonaParams> = {
-  greedy: { askMult: 1.4, acceptMult: 0.9, disrupt: 0.55, protect: 0.7, bribe: true, haggle: 0.6, grudge: 0.2, bluff: 0.4 },
-  grudge: { askMult: 1.1, acceptMult: 1.0, disrupt: 0.75, protect: 0.6, bribe: true, haggle: 0.3, grudge: 0.8, bluff: 0.3 },
-  steady: { askMult: 1.0, acceptMult: 0.95, disrupt: 0.5, protect: 0.85, bribe: false, haggle: 0.25, grudge: 0.2, bluff: 0.1 },
-  smile: { askMult: 1.2, acceptMult: 0.9, disrupt: 0.55, protect: 0.7, bribe: true, haggle: 0.5, grudge: 0.3, bluff: 0.6 },
-  stingy: { askMult: 1.3, acceptMult: 0.9, disrupt: 0.55, protect: 0.5, bribe: true, haggle: 0.7, grudge: 0.3, bluff: 0.3 },
-}
-
+/** 人物的行为骨架（参数与人设在 personas.ts；平衡目标：各人物胜率相近、风格不同但都能赢） */
 function persona(state: GameState, id: number): PersonaParams {
-  return PERSONA_PARAMS[getPlayer(state, id)?.personaId ?? 'steady'] ?? PERSONA_PARAMS.steady
+  return getPersonaForPlayer(getPlayer(state, id)?.personaId).play
 }
 
 /** 由状态版本派生的可复现伪随机数 */
@@ -259,7 +232,7 @@ function bossTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerAc
   const candidates = buildOfferCandidates(state)
   if (candidates.length === 0) return { type: 'ABANDON_DEAL', playerId: id }
 
-  // 预测每个方案会不会被接受：有承诺价的付到即成（按所用代表、各家族报价累计）；没报价的按其人格心理价估
+  // 预测每个方案会不会被接受：有承诺价的付到即成（按所用代表、各家族报价累计）；没报价的按其人物心理价估
   const willAccept = (owner: number, got: number, repKeys: string[]) => {
     const committed = commitmentPrice(neg, { repKeys }, owner)
     if (committed != null) return got >= committed
@@ -293,7 +266,7 @@ function bossTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerAc
   const byValue = (a: { value: number }, b: { value: number }) => b.value - a.value
   const acceptable = scored.filter(x => x.okAll && x.keep >= Math.min(minKeep, gross - 1)).sort(byValue)
 
-  // 首次提案：会压价的人格先试探一手（对方要么接受要么反报价，下轮再照价付）
+  // 首次提案：会压价的人先试探一手（对方要么接受要么反报价，下轮再照价付）
   if (neg.offersMade === 0 && !(st.iAmLeader && st.end > 0)) {
     const haggle = scored.find(x => x.c.key === 'haggle')
     const best = acceptable[0]
@@ -332,7 +305,7 @@ function isFamilyMissing(state: GameState, f: FamilyId | undefined): boolean {
 
 // ---------- 非 Boss ----------
 
-/** 我的出借价：一份分红 × 人格倍率 × 杠杆 × 终局因素，且不高于对手的竞争价 */
+/** 我的出借价：一份分红 × 人物倍率 × 杠杆 × 终局因素，且不高于对手的竞争价 */
 export function askPrice(state: GameState, id: number, family?: FamilyId): number {
   const neg = state.negotiation!
   const space = getCurrentSpace(state)!
@@ -526,7 +499,7 @@ function respond(state: GameState, id: number): PlayerAction {
   const share = oneShareOf(state)
   const myShare = offerShareOf(neg.offer, id)
   const used = Math.max(1, repsUsedOf(neg, neg.offer!, id))
-  // 我对这份方案的承诺价（各家族报价累计）；没报过就按人格心理价
+  // 我对这份方案的承诺价（各家族报价累计）；没报过就按人物心理价
   const committed = commitmentPrice(neg, neg.offer!, id)
   const myAsk = committed != null ? committed / used : Math.round(share * p.askMult)
   let threshold = Math.max(1, Math.round(myAsk * p.acceptMult)) * used
@@ -655,37 +628,4 @@ function missingForBoss(state: GameState, id: number, space: BoardSpace): Family
     for (const f of g.families) if (!mine.has(f)) out.push(f)
   }
   return out
-}
-
-/** 供 LLM 提示词使用：解释启发式为什么给出这个建议 */
-export function explainSuggestion(state: GameState, action: PlayerAction): string {
-  const neg = state.negotiation
-  const id = action.playerId
-  switch (action.type) {
-    case 'CLOSE_DEAL': return '方案已获全员同意，立刻落锤，拖下去只会多给别人出牌机会'
-    case 'PROPOSE_OFFER': {
-      const owners = neg ? offerOwners(neg, action) : []
-      if (owners.length === 0) return '全用自己的代表，无需任何人同意'
-      const auto = owners.filter(o => meetsCommitment(neg!, action, o))
-      const avoided = endChance(state) > 0 ? leaderIds(state).filter(l => l !== id && !owners.includes(l) && [...playerActiveFamilies(neg!, l)].length > 0) : []
-      const tail = avoided.length ? `；绕开了领先者 ${avoided.map(l => getPlayer(state, l)?.name).join('、')}，终局别给对手送钱` : ''
-      return (auto.length === owners.length ? '付到了所有人的承诺价，提出即全员自动同意，然后可直接成交' : '在对方报价与自己净得之间的平衡方案') + tail
-    }
-    case 'ABANDON_DEAL': return endChance(state) > 0 ? '凑不齐、要价太高，或这单只会把对手送上领先位——终局宁可流局' : '凑不齐或要价太高，继续耗只会白给别人出牌机会'
-    case 'SPEAK': return action.demand != null ? `报出承诺价 $${action.demand}M：Boss 付到即成，价格参考一份分红与竞争者` : '表态施压'
-    case 'PLAY_CLAN': return action.demand != null ? `该家族桌上缺人或可压价抢单，附带报价 $${action.demand}M` : '用自己的家族卡替代要钱的代表，省钱'
-    case 'PLAY_BOSS': return '交易值钱、你当 Boss 也能凑齐，且现在的方案对你不利'
-    case 'PLAY_TRAVEL': return '被排除在方案外，打飞关键代表让 Boss 回来求你'
-    case 'PLAY_RECRUITMENT': return '永久夺取高频家族的投资者，长期收益'
-    case 'ACCEPT_OFFER': return neg ? `分到 $${offerShareOf(neg.offer, id)}M，达到心理价` : '达到心理价'
-    case 'DECLINE_OFFER': return action.counter != null ? `低于心理价，反报价 $${action.counter}M（成为新的承诺价）` : '低于心理价'
-    case 'PASS_CLOSING': return neg && offerShareOf(neg.offer, id) > 0 ? '方案里有你的钱，放行即到账' : '没有值得打的牌，或搅局对你无益'
-    case 'PLAY_STOP': return '被打的是你的利益，阻止它'
-    case 'PASS_REACTION': return '这张牌不损害你，留着阻止牌'
-    case 'OPEN_DEAL': return '当 Boss 拿大头：估算需要买的代表少、利润够'
-    case 'ROLL_MOVE': return '当前格对你不划算，移动找更好的格子'
-    case 'DRAW_CARDS': return '当前格不划算，补牌积蓄影响力'
-    case 'PASS': return neg?.bossId === id ? '让其他人先叫价，再拼方案' : '没有必要行动，观望'
-    default: return ''
-  }
 }

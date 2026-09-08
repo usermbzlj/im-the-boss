@@ -246,6 +246,10 @@ function isValidSay(say: unknown): boolean {
   return say === undefined || typeof say === 'string'
 }
 
+function isValidNote(note: unknown): boolean {
+  return note === undefined || typeof note === 'string'
+}
+
 function distinctCardsOfType(state: GameState, playerId: number, ids: number[], type: InfluenceCard['type'], count: number): boolean {
   const player = getPlayer(state, playerId)
   if (!player || !Array.isArray(ids) || ids.length !== count || new Set(ids).size !== count) return false
@@ -253,7 +257,7 @@ function distinctCardsOfType(state: GameState, playerId: number, ids: number[], 
 }
 
 export function isLegal(state: GameState, action: PlayerAction): boolean {
-  if (!action || typeof action !== 'object' || !isValidSay(action.say)) return false
+  if (!action || typeof action !== 'object' || !isValidSay(action.say) || !isValidNote(action.note)) return false
   if (getActingPlayerId(state) !== action.playerId) return false
   const player = getPlayer(state, action.playerId)
   if (!player) return false

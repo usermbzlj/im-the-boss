@@ -79,7 +79,7 @@ src/sim/         仿真与不变量；被 scripts/ 与 tests/ 共用
 | 新增一种动作 | ① `types.ts` 加到 `PlayerAction` → ② `validator.ts` 的 `getLegalActions` + `isLegal` → ③ `gameEngine.ts` 的 `apply`（需要叙事则加 `GameEvent` 并 `emit`）→ ④ `text/labels.describeAction` / `text/narrate` → ⑤ 界面按钮（`ActionDock` / `CardHand`）→ ⑥ `ai/heuristic.ts` 分支 → ⑦ 跑 `npm run check`（validator 性质测试会自动覆盖新动作） |
 | 新增判定逻辑 | 放在 `engine/rules.ts`（纯函数，UI / AI / 引擎共用），不要写进组件或策略 |
 | 改日志措辞 / 换语言 | 只改 `text/narrate.ts` 与 `text/labels.ts`；引擎与测试不受影响 |
-| 改电脑台词 / 人格 | `ai/heuristic.ts` 的 `heuristicSpeech`、`ai/personas.ts`、`ai/promptTexts.ts` |
+| 改电脑玩家的人物 / 台词 | `ai/personas.ts`（角色卡与行为参数）、`engine/config.ts` 的 `AI_ROSTER`（名字）、`ai/heuristic.ts` 的 `heuristicSpeech`、`ai/promptTexts.ts` |
 | 改启发式策略 | `ai/heuristic.ts`（保持只依赖 `state` 与 `legal`；改完跑仿真看平均步数与流局率） |
 | 改 LLM 提示词结构 | `ai/prompts.ts`；输出协议在 `ai/llmPolicy.ts`，改协议要同步 `promptTexts.ts` 的模板与 `tests/llm.test.ts` |
 | 改变 `GameState` 结构 | `gameEngine.ts` 的 `SAVE_VERSION + 1`，旧档自动失效 |

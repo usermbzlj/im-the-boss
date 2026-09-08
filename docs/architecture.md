@@ -44,7 +44,7 @@
 ### 2.1 单一动作入口
 
 任何输入——人类点击、LLM 决策、启发式兜底、仿真随机——都表示为一个 `PlayerAction`（`types.ts`）。
-每个动作都带 `playerId`，reducer 不做"隐含行动者"推断。任何动作都可附带 `say`（一句台词），`SPEAK` 的主体就是 `say`。
+每个动作都带 `playerId`，reducer 不做"隐含行动者"推断。任何动作都可附带 `say`（一句台词，公开）与 `note`（电脑玩家的私人笔记，只存入自己的 `notes`、不发事件），`SPEAK` 的主体就是 `say`。
 
 ### 2.2 合法性只有一个口径
 
@@ -82,7 +82,7 @@ isLegal(state, action): boolean                  // 判定：reducer 入口
 | 字段 | 含义 |
 | --- | --- |
 | `phase` | 见第 4 节状态机 |
-| `players[]` | `id / name / isAI / cash / hand / personaId / lastSpeech` |
+| `players[]` | `id / name / isAI / cash / hand / personaId / lastSpeech / notes`（`notes`：电脑玩家写给自己的私人笔记，最多 8 条，只回灌到它自己的提示词） |
 | `investors[]` | 6 张投资者牌的归属，`ownerId: null` 表示公共区 |
 | `board[]` | 16 格：`groups: DealGroup[]`（`families` + `need`）、`dividends`、`closedByTileId` |
 | `dealTiles[]` / `dealTileIndex` | 15 张景气牌与当前下标 |
@@ -249,7 +249,7 @@ destroy()                       // 中止进行中的决策，之后不再推进
 
 ## 8. 存档
 
-`utils/storage.ts` 把整个 `GameState` 存进 `localStorage`。`GameState.saveVersion` 必须等于 `gameEngine.SAVE_VERSION`（当前 4），否则读取时丢弃。
+`utils/storage.ts` 把整个 `GameState` 存进 `localStorage`。`GameState.saveVersion` 必须等于 `gameEngine.SAVE_VERSION`（当前 7），否则读取时丢弃。
 任何改变 `GameState` 结构的修改都要把 `SAVE_VERSION + 1`。
 
 ---

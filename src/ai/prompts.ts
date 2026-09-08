@@ -1,11 +1,11 @@
 // ============================================================
 // LLM Prompt 构建：把局面序列化成模型可读的上下文
 //
-// 设计原则（让模型"像人一样"做决定，而不是在一堆等价选项里瞎猜）：
-//   · 每个可选动作都带"→ 后果"注释：这一步会让谁拿到 / 失去多少钱、方案会不会作废
-//   · 自伤（打飞自己的代表）与冗余（同目标的万能旅行）选项直接剪掉，不给模型犯错的机会
-//   · 启发式的决策作为【默认建议】写进提示词：模型只需判断"有没有理由偏离基线"
+// 设计原则（给模型一张看得清的牌桌，然后把判断留给它）：
+//   · 每个可选动作都带"→ 后果"注释：这一步会让谁拿到 / 失去多少钱、方案会不会作废——是算术，不是建议
+//   · 只剪机械冗余（打飞自己的代表、同目标的万能旅行）；策略上的"坏选择"保留，角色有权冒险或做人情
 //   · 谈判阶段给一段局势摘要：缺口、最省方案、你的杠杆、终局态势
+//   · 模型自己写的私人笔记（Player.notes）原样回灌：让它记账、记人、记打算，形成跨回合的连续性格
 // 所有文字描述复用 text/ 层（与 UI 展示一致），这里只负责组织结构。
 // ============================================================
 
@@ -21,29 +21,16 @@ import { canClose } from '../engine/validator'
 import { narrate, famLabel, famName, playerName } from '../text/narrate'
 import { describeAction, describeCard, describeGroups, describeReactionTarget } from '../text/labels'
 import { getPersonaForPlayer } from './personas'
-import { heuristicAction, explainSuggestion, estimateDeal } from './heuristic'
+import { estimateDeal } from './heuristic'
 import { GAME_RULES_SUMMARY, DECISION_PROMPTS } from './promptTexts'
 
-// ---------- 选项：剪枝 / 注释 / 匹配 ----------
-
-/** 两个动作是否指同一件事（忽略台词与可微调的金额） */
-export function sameAction(a: PlayerAction, b: PlayerAction): boolean {
-  if (a.type !== b.type || a.playerId !== b.playerId) return false
-  switch (a.type) {
-    case 'PLACE_MARKER': return b.type === 'PLACE_MARKER' && a.spaceId === b.spaceId
-    case 'PLAY_CLAN': return b.type === 'PLAY_CLAN' && a.cardId === b.cardId
-    case 'PLAY_TRAVEL': return b.type === 'PLAY_TRAVEL' && a.cardId === b.cardId && a.targetRepKey === b.targetRepKey
-    case 'PLAY_RECRUITMENT': return b.type === 'PLAY_RECRUITMENT' && a.targetFamilyId === b.targetFamilyId
-    case 'PROPOSE_OFFER': return b.type === 'PROPOSE_OFFER' && JSON.stringify(a.repKeys) === JSON.stringify(b.repKeys) && JSON.stringify(a.payouts) === JSON.stringify(b.payouts)
-    default: return true
-  }
-}
+// ---------- 选项：剪枝 / 注释 ----------
 
 /**
- * 给模型看的选项要少而准：
- *   · 剪掉打飞自己代表的旅行牌（纯自伤）
+ * 只剪掉"机械冗余"，不替模型做策略判断：
+ *   · 打飞自己代表的旅行牌（纯自伤，任何人都不会这么做）
  *   · 同一目标既有定向旅行又有万能旅行时，只留定向（万能牌更稀缺）
- *   · 有人要同意才成立、却一分钱不给的"独吞"方案（对方必拒，白耗一次提案）
+ * 一分钱不给的"帮个忙"方案保留——它可能被拒，但一个会做人情的角色有权这么试。
  * 永远至少保留一个选项。
  */
 export function pruneForLLM(state: GameState, actorId: number, legal: PlayerAction[]): PlayerAction[] {
@@ -57,9 +44,6 @@ export function pruneForLLM(state: GameState, actorId: number, legal: PlayerActi
       if (rep?.ownerId === actorId) return false
       const card = state.players[actorId]?.hand.find(c => c.id === a.cardId)
       if (card && !card.familyId && directedTargets.has(a.targetRepKey)) return false
-    }
-    if (a.type === 'PROPOSE_OFFER' && neg) {
-      if (offerOwners(neg, a).length > 0 && payoutTotal(a.payouts) === 0) return false
     }
     return true
   })
@@ -142,6 +126,7 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
       else {
         if (auto.length) notes.push(`${auto.map(id => playerName(state, id)).join('、')} 已付到承诺价会自动同意`)
         if (asked.length) notes.push(`需 ${asked.map(id => `${playerName(state, id)}${commitmentPrice(neg, a, id) != null ? `(承诺价合计$${commitmentPrice(neg, a, id)}M)` : '(未报价)'}`).join('、')} 表态`)
+        if (payoutTotal(a.payouts) === 0) notes.push('一分钱不给还要对方点头：是在求人情，八成会被拒，且耗掉一次提案')
       }
       break
     }
@@ -187,17 +172,11 @@ export function formatLegalActions(state: GameState, legal: PlayerAction[], acto
   return legal.map((a, i) => `${i + 1}. ${annotateOption(state, id, a)}`).join('\n')
 }
 
-/** 启发式基线作为默认建议 */
-function describeSuggestion(state: GameState, options: PlayerAction[]): string {
-  const suggested = heuristicAction(state)
-  if (!suggested) return ''
-  const idx = options.findIndex(o => sameAction(o, suggested))
-  if (idx < 0) return ''
-  const extra: string[] = []
-  if ((suggested.type === 'SPEAK' || suggested.type === 'PLAY_CLAN') && suggested.demand != null) extra.push(`demand=${suggested.demand}`)
-  if (suggested.type === 'DECLINE_OFFER' && suggested.counter != null) extra.push(`demand=${suggested.counter}`)
-  const why = explainSuggestion(state, suggested)
-  return `\n【默认建议】第 ${idx + 1} 项${extra.length ? `（${extra.join('，')}）` : ''}${why ? ` —— ${why}` : ''}\n`
+/** 这位玩家此前写给自己的私人笔记（只有它自己看得到） */
+export function describeNotes(state: GameState, playerId: number): string {
+  const notes = state.players[playerId]?.notes ?? []
+  if (notes.length === 0) return ''
+  return `\n【你的私人笔记（只有你看得到，按时间先后）】\n${notes.map(n => `- ${n}`).join('\n')}\n`
 }
 
 // ---------- 局面描述 ----------
@@ -410,16 +389,21 @@ export interface DecisionPrompt {
   options: PlayerAction[]
 }
 
+/**
+ * system = 角色卡 + 怎么演 + 桌面的现实；user = 局面 + 私人笔记 + 编号选项 + 回复格式。
+ * 没有默认答案：判断交给模型，引擎只保证它选的是合法动作。
+ */
 export function buildDecisionPrompt(state: GameState, playerId: number, legal: PlayerAction[]): DecisionPrompt {
   const player = state.players[playerId]
   const persona = getPersonaForPlayer(player?.personaId)
-  const personaPrompt = persona.systemPrompt.replace(/\{\{name\}\}/g, player?.name ?? persona.name)
+  const name = player?.name ?? persona.name
+  const withName = (text: string) => text.replace(/\{\{name\}\}/g, name)
   const options = pruneForLLM(state, playerId, legal)
-  const footer = DECISION_PROMPTS.userFooterTemplate
+  const footer = withName(DECISION_PROMPTS.userFooterTemplate)
+    .replace('{{notes}}', describeNotes(state, playerId))
     .replace('{{legalActions}}', formatLegalActions(state, options, playerId))
-    .replace('{{suggestion}}', describeSuggestion(state, options))
   return {
-    system: `${personaPrompt}\n${DECISION_PROMPTS.systemSuffix}`,
+    system: `${withName(persona.brief)}\n${withName(DECISION_PROMPTS.roleFrame)}\n${DECISION_PROMPTS.tableTruths}`,
     user: `${buildGameContext(state, playerId)}\n${footer}`,
     options,
   }
