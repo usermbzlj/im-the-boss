@@ -1,18 +1,20 @@
 // ============================================================
 // LLM 策略 — "按编号选择"协议
 //
-// 合法动作由 validator 枚举、由 text/labels 编号成列表；模型只回复序号，
-// 至多用 speech / demand / payouts / cardIds 微调台词、金额或选牌。
+// 合法动作由 validator 枚举、经 prompts.pruneForLLM 剪枝并附上后果注释与启发式
+// 默认建议后编号成列表；模型只回复序号，至多用 speech / demand / payouts / cardIds
+// 微调台词、金额或选牌。
 // 解析出的动作必须通过 isLegal，否则重试一次；仍失败返回 null，
 // 由 withFallback 交给启发式策略——LLM 永远不会让游戏卡住。
 // ============================================================
 
-import type { GameState, Negotiation, PlayerAction, Payout } from '../engine/types'
+import type { GameState, Negotiation, PlayerAction, Payout, FamilyId } from '../engine/types'
+import { FAMILY_IDS } from '../engine/config'
 import { chatCompletion, isLLMConfigured, type LLMConfig } from './llmClient'
 import { buildDecisionPrompt } from './prompts'
 import { DECISION_PROMPTS } from './promptTexts'
 import { getActingPlayerId, getLegalActions, isLegal } from '../engine/validator'
-import { getGrossValue, playerActiveFamilies, offerOwners, demandOf } from '../engine/rules'
+import { getGrossValue, offerOwners, hasDemand, playerRelevantFamilies } from '../engine/rules'
 import { heuristicSpeech } from './heuristic'
 import type { Policy } from './policy'
 
@@ -32,12 +34,14 @@ export function createLLMPolicy(getConfig: () => LLMConfig): Policy {
       const config = getConfig()
       if (!isLLMConfigured(config)) return null
 
-      const { system, user } = buildDecisionPrompt(state, actingId, legal)
+      // 编号列表是剪枝后的 options（去掉自伤 / 冗余项），落成动作也必须用同一份列表
+      const { system, user, options } = buildDecisionPrompt(state, actingId, legal)
+      if (options.length === 1) return { ...options[0], say: heuristicSpeech(state, options[0]) || undefined }
       const raw = await chatCompletion(config, [
         { role: 'system', content: system },
         { role: 'user', content: user },
       ], { signal, purpose: 'decision' })
-      const first = resolveChoice(raw, legal, state)
+      const first = resolveChoice(raw, options, state)
       if (first) return first
 
       const retrySystem = `${system}\n${DECISION_PROMPTS.retryHint}\n【你上一次的原始回复】\n${raw.slice(0, 400)}`
@@ -45,7 +49,7 @@ export function createLLMPolicy(getConfig: () => LLMConfig): Policy {
         { role: 'system', content: retrySystem },
         { role: 'user', content: user },
       ], { signal, temperatureOverride: 0, purpose: 'decision-retry' })
-      return resolveChoice(raw2, legal, state)
+      return resolveChoice(raw2, options, state)
     },
   }
 }
@@ -60,6 +64,8 @@ interface ChoiceResponse {
   choice: number
   speech?: string
   demand?: number
+  /** 喊话报价时可指定只对某一家族报价（家族字母 A–F） */
+  demandFamily?: FamilyId
   payouts?: RawPayout[]
   cardIds?: number[]
 }
@@ -105,6 +111,9 @@ export function parseChoiceResponse(raw: string): ChoiceResponse | null {
     const choice = toInt(obj.choice)
     if (choice == null || choice < 1) return null
     const demand = obj.demand && typeof obj.demand === 'object' ? toInt(obj.demand.amount) : toInt(obj.demand)
+    const famRaw = obj.demandFamily ?? obj.family ?? (obj.demand && typeof obj.demand === 'object' ? obj.demand.family : undefined)
+    const famLetter = typeof famRaw === 'string' ? famRaw.trim().charAt(0).toUpperCase() : ''
+    const demandFamily = (FAMILY_IDS as readonly string[]).includes(famLetter) ? famLetter as FamilyId : undefined
     // 分成条目任一残缺则整组作废：宁可沿用候选方案，也不能把"给某人 $2M"悄悄变成"谁都不给"
     // （空数组同样视为"不覆盖"——"独吞"本身就是一个独立的编号选项）
     const rawPayouts = obj.payouts ?? obj.payout
@@ -117,7 +126,7 @@ export function parseChoiceResponse(raw: string): ChoiceResponse | null {
       payouts = list.every((p): p is RawPayout => p.playerId != null && p.amount != null) ? list : undefined
     }
     const cardIds = Array.isArray(obj.cardIds) ? obj.cardIds.map(toInt).filter((n: number | undefined): n is number => n != null) : undefined
-    return { choice, speech: typeof obj.speech === 'string' ? obj.speech : undefined, demand, payouts, cardIds }
+    return { choice, speech: typeof obj.speech === 'string' ? obj.speech : undefined, demand, demandFamily, payouts, cardIds }
   } catch {
     return null
   }
@@ -141,8 +150,8 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
       const demand = clampDemand(parsed.demand)
       if (demand != null) {
         action.demand = demand
-        const mine = state.negotiation ? [...playerActiveFamilies(state.negotiation, action.playerId)] : []
-        if (mine.length > 0) action.demandFamily = mine[0]
+        // 指定了家族且确实是我在本格的相关代表 → 只对该家族报价；否则由引擎对我所有相关代表记同一价（无代表则为封口费）
+        if (parsed.demandFamily && playerRelevantFamilies(state, action.playerId).includes(parsed.demandFamily)) action.demandFamily = parsed.demandFamily
       }
       break
     }
@@ -201,5 +210,5 @@ export function resolvePayees(state: GameState, raw: RawPayout[]): Payout[] | nu
  */
 function payoutsPlausible(neg: Negotiation, action: { repKeys: string[]; payouts: Payout[] }): boolean {
   const owners = new Set(offerOwners(neg, action))
-  return action.payouts.every(p => owners.has(p.playerId) || demandOf(neg, p.playerId) != null)
+  return action.payouts.every(p => owners.has(p.playerId) || hasDemand(neg, p.playerId))
 }

@@ -34,6 +34,26 @@ describe('整局仿真', () => {
     expect(viaSession.final.winnerIds).toEqual(direct.final.winnerIds)
   })
 
+  it('谈判是活的：多数交易里有人公开报价，且承诺价机制在被使用（自动同意出现）', () => {
+    let opened = 0, withBid = 0, autoAccepts = 0, offers = 0
+    for (const seed of seeds) {
+      const r = runGame({ playerCount: 4, seed, mode: 'heuristic' })
+      // 事件流只保留末尾 300 条：按其中完整出现的交易统计
+      let sawBid = false, inDeal = false
+      for (const e of r.final.events) {
+        if (e.kind === 'DEAL_OPENED') { inDeal = true; sawBid = false; opened++; continue }
+        if (!inDeal) continue
+        if (e.kind === 'DEMAND') sawBid = true
+        if (e.kind === 'OFFER_PROPOSED') offers++
+        if (e.kind === 'OFFER_ACCEPTED' && e.auto) autoAccepts++
+        if (e.kind === 'DEAL_CLOSED' || e.kind === 'DEAL_FAILED') { inDeal = false; if (sawBid) withBid++ }
+      }
+    }
+    expect(opened).toBeGreaterThan(30)
+    expect(withBid / opened).toBeGreaterThan(0.5)
+    expect(autoAccepts).toBeGreaterThan(offers * 0.3)
+  })
+
   it('事件流可以完整讲述整局，条数与事件数一致且无空行', () => {
     const r = runGame({ playerCount: 4, seed: 3, mode: 'heuristic' })
     const lines = narrateGame(r.final)

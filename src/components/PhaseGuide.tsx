@@ -32,7 +32,9 @@ export default function PhaseGuide({ state }: { state: GameState }) {
       const boss = state.players[neg!.bossId]
       const role = neg!.bossId === actingId ? 'Boss' : ''
       text = human
-        ? (neg!.bossId === 0 ? '你是 Boss：出牌、喊话、提出方案；方案全员同意后可宣布成交' : '轮到你：出牌、喊话报价，或跳过')
+        ? (neg!.bossId === 0
+          ? (neg!.offer ? '你是 Boss：方案全员同意后可宣布成交；也可修改方案、再听一轮或放弃' : '你是 Boss：听完叫价，用自己的家族卡省钱，再提出方案')
+          : (neg!.offer ? '轮到你：方案已在桌上——压价抢单、打干扰牌，或跳过' : '叫价轮：报出你的出借价（承诺价）、打家族卡入场、出牌，或跳过'))
         : `谈判中（Boss：${boss?.name}）— ${acting?.name}${role ? '（Boss）' : ''} 行动中`
       break
     }
@@ -45,7 +47,7 @@ export default function PhaseGuide({ state }: { state: GameState }) {
         : '反应窗口：依次询问其他玩家是否阻止…'
       break
     case 'CLOSING':
-      text = human ? 'Boss 已宣布成交，这是你最后的出牌机会：放行或打出干扰牌' : `成交倒计时：等待 ${acting?.name} 放行或出牌`
+      text = human ? 'Boss 已宣布成交，这是你最后的出牌机会：放行或打出干扰牌（没有干扰牌会自动放行）' : `成交倒计时：等待 ${acting?.name} 放行或出牌`
       break
     case 'END_ROLL':
       text = human ? '终局判定：掷骰！' : `${acting?.name} 掷终局骰`

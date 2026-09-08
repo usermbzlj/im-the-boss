@@ -12,7 +12,7 @@ import {
   getPlayer, getCurrentSpace, getGrossValue, spaceInvestorCount,
   playableClanCards, travelTargets, recruitTargets, findRep,
   selectReps, tableCanComplete, offerOwners, isOfferAgreed, offerStillValid, offerDecliners,
-  validateOfferShape, demandOf, hasStop, payoutTotal,
+  validateOfferShape, repPriceOf, hasStop, payoutTotal, endChance, leaderIds,
 } from './rules'
 
 export function getActingPlayerId(state: GameState): number {
@@ -51,7 +51,11 @@ export function defaultDiscardIds(state: GameState, playerId: number): number[] 
   return [...player.hand].sort((a, b) => value(a) - value(b)).slice(0, over).map(c => c.id)
 }
 
-export type OfferCandidateKey = 'stingy' | 'fair' | 'meet' | 'switch'
+/**
+ * stingy：一分不给 · haggle：压价试探（报价打折）· fair：一份分红为基准、报价封顶两份
+ * meet：照单全付（含封口费，全部按承诺价自动同意）· switch：绕开拒绝者改用竞争代表
+ */
+export type OfferCandidateKey = 'stingy' | 'haggle' | 'fair' | 'meet' | 'switch'
 
 export interface OfferCandidate {
   key: OfferCandidateKey
@@ -75,13 +79,21 @@ export function buildOfferCandidates(state: GameState): OfferCandidate[] {
     key, repKeys, payouts, bossKeep: gross - payoutTotal(payouts), needsConsent: offerOwners(neg, { repKeys }).length > 0,
   })
 
-  const makePayouts = (repKeys: string[], mode: 'fair' | 'meet'): Payout[] | null => {
+  const makePayouts = (repKeys: string[], mode: 'haggle' | 'fair' | 'meet'): Payout[] | null => {
     const owners = offerOwners(neg, { repKeys })
     const payouts: Payout[] = []
     for (const id of owners) {
-      const asked = demandOf(neg, id)
-      const amt = mode === 'meet' ? (asked ?? oneShare) : Math.max(asked != null ? Math.min(asked, oneShare * 2) : oneShare, 1)
-      payouts.push({ playerId: id, amount: amt })
+      // 承诺价按每个代表、按各自家族的报价计：用了他两个代表就付两份，两家报价不同就各算各的
+      let total = 0
+      for (const k of repKeys) {
+        const rep = findRep(neg, k)
+        if (!rep || rep.ownerId !== id) continue
+        const asked = repPriceOf(neg, rep)
+        total += mode === 'meet' ? (asked ?? oneShare)
+          : mode === 'haggle' ? Math.max(1, Math.round((asked ?? oneShare) * 0.7))
+          : Math.max(asked != null ? Math.min(asked, oneShare * 2) : oneShare, 1)
+      }
+      payouts.push({ playerId: id, amount: total })
     }
     if (mode === 'meet') {
       // 满足所有公开报价，包括没有代表、只想拿封口费的人
@@ -98,20 +110,25 @@ export function buildOfferCandidates(state: GameState): OfferCandidate[] {
     out.push(make('stingy', base.repKeys, []))
     if (offerOwners(neg, { repKeys: base.repKeys }).length > 0) {
       const fair = makePayouts(base.repKeys, 'fair')
+      const haggle = makePayouts(base.repKeys, 'haggle')
+      if (haggle && JSON.stringify(haggle) !== JSON.stringify(fair)) out.push(make('haggle', base.repKeys, haggle))
       if (fair) out.push(make('fair', base.repKeys, fair))
       const meet = makePayouts(base.repKeys, 'meet')
       if (meet && JSON.stringify(meet) !== JSON.stringify(fair)) out.push(make('meet', base.repKeys, meet))
     }
   }
-  // 当前方案被拒 → 尝试绕开拒绝者改用竞争代表
-  if (neg.offer) {
-    const decliners = offerDecliners(neg, neg.offer)
-    if (decliners.length > 0) {
-      const alt = selectReps(state, { excludeOwners: decliners })
-      if (alt.complete && JSON.stringify(alt.repKeys) !== JSON.stringify(base.repKeys)) {
-        out.push(make('switch', alt.repKeys, makePayouts(alt.repKeys, 'fair') ?? []))
-      }
-    }
+  // 绕开某些人改用竞争代表：当前方案的拒绝者；终局阶段还有"最省组合里的领先者"（给对手送钱等于帮他赢）
+  const decliners = neg.offer ? offerDecliners(neg, neg.offer) : []
+  const baseOwners = base.complete ? offerOwners(neg, { repKeys: base.repKeys }) : []
+  const feedLeaders = endChance(state) > 0 ? leaderIds(state).filter(l => l !== neg.bossId && baseOwners.includes(l)) : []
+  const tried = new Set<string>([JSON.stringify(base.repKeys)])
+  for (const exclude of [[...decliners, ...feedLeaders], decliners]) {
+    if (exclude.length === 0) continue
+    const alt = selectReps(state, { excludeOwners: exclude })
+    const sig = JSON.stringify(alt.repKeys)
+    if (!alt.complete || tried.has(sig)) continue
+    tried.add(sig)
+    out.push(make('switch', alt.repKeys, makePayouts(alt.repKeys, 'fair') ?? []))
   }
   return out.filter(c => validateOfferShape(state, c.repKeys, c.payouts) === null)
 }

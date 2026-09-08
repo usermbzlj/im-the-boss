@@ -10,7 +10,7 @@
 
 import type { GameState, PlayerAction } from '../engine/types'
 import { gameReducer } from '../engine/gameEngine'
-import { getActingPlayerId, isLegal } from '../engine/validator'
+import { getActingPlayerId, getLegalActions, isLegal } from '../engine/validator'
 import { hasStop } from '../engine/rules'
 import type { Policy } from '../ai/policy'
 import { heuristicPolicy } from '../ai/heuristic'
@@ -22,7 +22,7 @@ export interface SessionOptions {
   fallback?: Policy
   /** 电脑行动前的停顿毫秒数（营造节奏；仿真传 0） */
   delay?: (state: GameState) => number
-  /** 反应窗口里没有阻止牌的人类只能放行：停顿同样时长后自动放行（默认开） */
+  /** 人类只能放行的窗口（反应窗口无阻止牌 / 成交倒计时无干扰牌）：停顿同样时长后自动放行（默认开） */
   autoPassHuman?: boolean
   onChange?: (state: GameState) => void
   onError?: (message: string) => void
@@ -132,16 +132,18 @@ export class GameSession {
 
     if (actor.isAI) {
       void this.runAI(state, actorId, controller.signal)
-    } else if (state.phase === 'REACTION' && (this.opts.autoPassHuman ?? true) && !hasStop(actor)) {
-      // 无阻止牌只能放行；停顿同样时长，使窗口时长与"谁持有阻止牌"无关
-      void this.autoPass(state, actorId, controller.signal)
+    } else if (this.opts.autoPassHuman ?? true) {
+      // 只能放行的窗口不必等人点：反应窗口没有阻止牌 / 成交倒计时没有任何可打的干扰牌。
+      // 停顿同样时长，使窗口时长与"谁持有什么牌"无关，不泄露手牌信息
+      if (state.phase === 'REACTION' && !hasStop(actor)) void this.autoPass(state, actorId, controller.signal, 'PASS_REACTION')
+      else if (state.phase === 'CLOSING' && getLegalActions(state, actorId).every(a => a.type === 'PASS_CLOSING')) void this.autoPass(state, actorId, controller.signal, 'PASS_CLOSING')
     }
   }
 
-  private async autoPass(state: GameState, actorId: number, signal: AbortSignal) {
+  private async autoPass(state: GameState, actorId: number, signal: AbortSignal, type: 'PASS_REACTION' | 'PASS_CLOSING') {
     await sleep(this.opts.delay?.(state) ?? 0, signal)
     if (signal.aborted || this.snap.state !== state) return
-    this.dispatch({ type: 'PASS_REACTION', playerId: actorId })
+    this.dispatch({ type, playerId: actorId })
   }
 
   private async runAI(state: GameState, actorId: number, signal: AbortSignal) {

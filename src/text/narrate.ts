@@ -77,16 +77,21 @@ export function narrate(state: GameState, e: GameEvent): Narration {
     case 'SPEECH':
       return { tone: 'speech', text: `${n(e.playerId)}：「${e.text}」` }
     case 'DEMAND':
-      return { tone: 'action', text: `${n(e.playerId)} 报价：$${e.amount}M${e.familyId ? `（${famName(e.familyId)} 代表出借价）` : '（封口费）'}` }
+      return { tone: 'action', text: `${n(e.playerId)} 报价：$${e.amount}M${e.familyIds.length ? `（${e.familyIds.map(famName).join('/')} 代表出借价${e.familyIds.length > 1 ? '，每个代表' : ''}，付到即成）` : '（封口费）'}` }
     case 'STALEMATE_ROUND':
       return { tone: 'system', text: `全员跳过一轮，谈判停滞（${e.rounds}/${e.max}，再一轮无人行动将流局）` }
     case 'OFFER_PROPOSED': {
       const reps = e.reps.map(r => `${famName(r.familyId)}←${n(r.ownerId)}${r.source === 'CLAN' ? '(卡)' : ''}`).join('、')
-      const wait = e.waitingFor.length ? `；等待 ${e.waitingFor.map(n).join('、')} 应答` : '；只用 Boss 自己的代表，无需他人同意'
-      return { tone: 'action', text: `${n(e.bossId)} 提出方案 #${e.offerNo}/${MAX_OFFERS_PER_BOSS}：代表 ${reps}；分成 ${describePayouts(state, e.payouts)}；Boss 净得 $${e.bossKeep}M${wait}` }
+      const auto = e.autoAccepted ?? []
+      const tail = e.waitingFor.length
+        ? `；等待 ${e.waitingFor.map(n).join('、')} 应答`
+        : auto.length ? '' : '；只用 Boss 自己的代表，无需他人同意'
+      return { tone: 'action', text: `${n(e.bossId)} 提出方案 #${e.offerNo}/${MAX_OFFERS_PER_BOSS}：代表 ${reps}；分成 ${describePayouts(state, e.payouts)}；Boss 净得 $${e.bossKeep}M${tail}` }
     }
     case 'OFFER_ACCEPTED':
-      return { tone: 'action', text: `${n(e.playerId)} 同意出借代表` }
+      return e.auto
+        ? { tone: 'action', text: `${n(e.playerId)} 的承诺价已付到，按约视为同意` }
+        : { tone: 'action', text: `${n(e.playerId)} 同意出借代表` }
     case 'OFFER_DECLINED':
       return { tone: 'fail', text: `${n(e.playerId)} 拒绝出借代表${e.counter != null ? `，反报价 $${e.counter}M` : ''}` }
     case 'OFFER_RESOLVED':

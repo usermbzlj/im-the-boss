@@ -111,10 +111,17 @@ export interface Speech {
   text: string
 }
 
-/** 玩家公开报价：有代表的是"出借价"，没代表的是"不搅局的封口费" */
+/**
+ * 玩家公开报价（承诺价）：有代表的是"出借价"，没代表的是"不搅局的封口费"。
+ * 报价即承诺：Boss 的方案付到这个价，代表持有者视为自动同意，不再另行应答。
+ */
 export interface Demand {
   playerId: number
   amount: number
+  /**
+   * 报价针对的家族：同一玩家可对不同家族的代表报不同价（"我的赤岩集团 $3M、黑松控股卡 $1M"）。
+   * 省略 = 通用价：没有相关代表时是封口费；有代表但某家族没单独报价时作为该家族的兜底价。
+   */
   familyId?: FamilyId
 }
 
@@ -141,7 +148,7 @@ export interface Negotiation {
   offer: Offer | null
   /** 当前 Boss 已提出的方案数（换 Boss 后清零） */
   offersMade: number
-  /** NEGOTIATION 阶段轮到谁行动 */
+  /** NEGOTIATION 阶段轮到谁行动。开局从 Boss 左手边起叫价，Boss 在第一轮末位行动 */
   turnId: number
   /** 连续跳过计数（任何实质行动清零） */
   passStreak: number
@@ -214,10 +221,12 @@ export type GameEvent =
   | { kind: 'BOSS_RESOLVED'; playerId: number; previousBossId: number }
   | { kind: 'OFFER_VOIDED'; reason: 'TRAVELLED' | 'RECRUITED' }
   | { kind: 'SPEECH'; playerId: number; text: string }
-  | { kind: 'DEMAND'; playerId: number; amount: number; familyId?: FamilyId }
+  /** familyIds 为空 = 封口费；否则是这些家族代表各自的出借价（每个代表） */
+  | { kind: 'DEMAND'; playerId: number; amount: number; familyIds: FamilyId[] }
   | { kind: 'STALEMATE_ROUND'; rounds: number; max: number }
-  | { kind: 'OFFER_PROPOSED'; bossId: number; offerNo: number; reps: RepRef[]; payouts: Payout[]; bossKeep: number; waitingFor: number[] }
-  | { kind: 'OFFER_ACCEPTED'; playerId: number }
+  | { kind: 'OFFER_PROPOSED'; bossId: number; offerNo: number; reps: RepRef[]; payouts: Payout[]; bossKeep: number; waitingFor: number[]; autoAccepted: number[] }
+  /** auto：方案付到了其承诺价，按约视为同意 */
+  | { kind: 'OFFER_ACCEPTED'; playerId: number; auto?: boolean }
   | { kind: 'OFFER_DECLINED'; playerId: number; counter?: number }
   | { kind: 'OFFER_RESOLVED'; agreed: boolean; declinerIds: number[] }
   | { kind: 'CLOSING_STARTED'; bossId: number }
@@ -284,7 +293,10 @@ export type PlayerAction =
   | (ActionBase & { type: 'PLAY_BOSS'; cardId: number })
   | (ActionBase & { type: 'PLAY_STOP' })
   | (ActionBase & { type: 'PASS_REACTION' })
-  /** 纯喊话：say 必填；可附带公开报价 */
+  /**
+   * 喊话：say 必填；可附带公开报价 demand（每个代表的出借价）。
+   * demandFamily 省略 = 对我在本格所有相关代表报同一价（没有相关代表则为封口费）；指定 = 只对该家族报价。
+   */
   | (ActionBase & { type: 'SPEAK'; demand?: number; demandFamily?: FamilyId })
   | (ActionBase & { type: 'PASS' })
   | (ActionBase & { type: 'PROPOSE_OFFER'; repKeys: string[]; payouts: Payout[] })

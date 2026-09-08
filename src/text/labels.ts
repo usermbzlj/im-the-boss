@@ -65,6 +65,7 @@ export function describeOfferError(err: OfferError): string {
 export function candidateTitle(c: OfferCandidate): string {
   switch (c.key) {
     case 'stingy': return '独吞'
+    case 'haggle': return '压价试探'
     case 'fair': return '公平分成'
     case 'meet': return '满足报价'
     case 'switch': return '换人绕开拒绝者'
@@ -75,8 +76,9 @@ export function describeCandidate(c: OfferCandidate): string {
   const keep = `（Boss 净得 $${c.bossKeep}M）`
   switch (c.key) {
     case 'stingy': return c.needsConsent ? '独吞：不给任何人分成（代表持有者大概率拒绝）' : '独吞：全部代表都是自己的，独得全款'
-    case 'fair': return `公平分成：每位代表持有者约一份分红${keep}`
-    case 'meet': return `满足报价：按各方公开要价支付${keep}`
+    case 'haggle': return `压价试探：按各方报价的七折付（对方需表态，可能反报价）${keep}`
+    case 'fair': return `公平分成：每位代表持有者约一份分红，报价封顶两份${keep}`
+    case 'meet': return `满足报价：照各方承诺价全付（已报价者自动同意）${keep}`
     case 'switch': return `换人：绕开拒绝者，改用其他代表${keep}`
   }
 }

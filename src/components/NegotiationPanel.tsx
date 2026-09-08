@@ -8,7 +8,7 @@ import type { GameState, FamilyId, Representative } from '../engine/types'
 import { MAX_OFFERS_PER_BOSS } from '../engine/config'
 import {
   getCurrentSpace, getCurrentTile, getGrossValue, oneShareOf, isRequiredGroup,
-  activeRepsOfFamily, demandOf, offerOwners, findRep, playerActiveFamilies,
+  activeRepsOfFamily, repPriceOf, offerOwners, findRep, playerActiveFamilies, meetsCommitment,
 } from '../engine/rules'
 import { canClose } from '../engine/validator'
 import FamilyChip from './FamilyChip'
@@ -35,9 +35,11 @@ export default function NegotiationPanel({ state }: { state: GameState }) {
 
   const priceOf = (r: Representative) => {
     if (r.ownerId === neg.bossId) return 'Boss 自有'
-    const d = demandOf(neg, r.ownerId)
-    return d != null ? `要价 $${d}M` : '未报价'
+    const d = repPriceOf(neg, r)
+    return d != null ? `承诺价 $${d}M` : '未报价'
   }
+  // 谈判轮次里轮到谁（叫价轮：Boss 左手边起，Boss 末位）
+  const turnName = state.phase === 'NEGOTIATION' ? name(neg.turnId) : null
 
   const renderFamily = (f: FamilyId, required: boolean) => {
     const reps = neg.reps.filter(r => r.familyId === f)
@@ -60,7 +62,7 @@ export default function NegotiationPanel({ state }: { state: GameState }) {
                 {name(r.ownerId)}
                 <em>{r.source === 'INVESTOR' ? '投资者' : '家族卡'}</em>
                 {r.travelled ? <b className="red">已失效</b> : <i>{priceOf(r)}</i>}
-                {inOffer && r.ownerId !== neg.bossId && resp && <b className={resp === 'ACCEPTED' ? 'green' : 'red'}>{resp === 'ACCEPTED' ? '同意' : '拒绝'}</b>}
+                {inOffer && r.ownerId !== neg.bossId && resp && <b className={resp === 'ACCEPTED' ? 'green' : 'red'}>{resp === 'ACCEPTED' ? (meetsCommitment(neg, offer!, r.ownerId) ? '按价同意' : '同意') : '拒绝'}</b>}
               </span>
             )
           })}
@@ -69,20 +71,20 @@ export default function NegotiationPanel({ state }: { state: GameState }) {
     )
   }
 
-  const bribes = neg.demands.filter(d => d.playerId !== neg.bossId && playerActiveFamilies(neg, d.playerId).size === 0)
+  const bribes = neg.demands.filter(d => d.familyId == null && d.playerId !== neg.bossId && playerActiveFamilies(neg, d.playerId).size === 0)
 
   return (
     <div className="neg-panel">
       <div className="neg-header">
         <div>
           <div className="boss-tag">👑 {name(neg.bossId)} 是 Boss{neg.openerId !== neg.bossId && <span className="muted">（发起者 {state.players[neg.openerId]?.name}）</span>}</div>
-          <div className="neg-sub">#{neg.spaceId} · {space.dividends} 份 × ${tile?.shareValue}M · 一份 ≈ ${share}M · 方案 {neg.offersMade}/{MAX_OFFERS_PER_BOSS}</div>
+          <div className="neg-sub">#{neg.spaceId} · {space.dividends} 份 × ${tile?.shareValue}M · 一份 ≈ ${share}M · 方案 {neg.offersMade}/{MAX_OFFERS_PER_BOSS}{turnName ? ` · 轮到 ${turnName}` : ''}</div>
         </div>
         <div className="neg-gross">${gross}M</div>
       </div>
 
       <div className="neg-block">
-        <div className="neg-block-title">席位与竞价 <span className="muted">同家族多代表时 Boss 只选其一</span></div>
+        <div className="neg-block-title">席位与叫价 <span className="muted" title="报价即承诺：Boss 的方案付到承诺价，持有者视为自动同意">同家族多代表时 Boss 只选其一 · 承诺价付到即成</span></div>
         {space.groups.map((g, i) => (
           <div key={i} className="fam-group">
             <div className="fam-group-title">
@@ -126,7 +128,7 @@ export default function NegotiationPanel({ state }: { state: GameState }) {
             </div>
           </div>
         ) : (
-          <div className="muted">Boss 尚未提出方案</div>
+          <div className="muted">{state.phase === 'NEGOTIATION' && neg.turnId !== neg.bossId ? '叫价轮：各方报出借价 / 打家族卡入场，Boss 听完再拼方案' : 'Boss 尚未提出方案'}</div>
         )}
       </div>
 

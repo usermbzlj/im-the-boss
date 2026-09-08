@@ -40,7 +40,7 @@ export const DEFAULT_LLM_CONFIG: LLMConfig = {
   model: 'deepseek-chat',
   // 决策类任务需要严格遵循指令、稳定复现，过高的温度会显著提升"选了不存在的
   // 选项/编造非法结构"的概率，因此默认值比常见聊天场景的 0.8~1.0 更保守。
-  temperature: 0.5,
+  temperature: 0.3,
   enabled: false,
   aiSpeed: 'normal',
   timeoutSecs: 60,

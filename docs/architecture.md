@@ -103,7 +103,8 @@ isLegal(state, action): boolean                  // 判定：reducer 入口
 - `offer` —— 当前方案（`repKeys` + `payouts` + 各持有者的 `responses`）；`offersMade` 为本任 Boss 已提案次数。
 - `turnId / passStreak / stalemateRounds` —— 谈判轮转与僵局计数。
 - `responseQueue / responseIndex` —— OFFER_RESPONSE 的应答顺序；`closingOrder / closingIndex` —— CLOSING 的询问顺序。
-- `speeches / demands / speakCounts / disruptors / openerId / travelledInvestors` —— 供界面、AI 与结算使用的谈判记录。
+- `demands: Demand[]` —— 公开报价，**按 (玩家, 家族) 记录**：`familyId` 有值 = 该家族代表每个的出借价；无值 = 通用价（没有相关代表时是封口费，有代表但该家族没单独报价时作兜底）。同一玩家可有多条，各家族互不覆盖。查询用 `rules.demandOf(neg, playerId, familyId?)` / `repPriceOf(neg, rep)` / `commitmentPrice(neg, offer, playerId)`（= 方案中所用其代表各自价之和）。
+- `speeches / speakCounts / disruptors / openerId / travelledInvestors` —— 供界面、AI 与结算使用的谈判记录。
 
 ### 3.1 事件（`GameEvent`）
 
@@ -130,10 +131,12 @@ TURN ──ROLL_MOVE──► AFTER_MOVE ──OPEN_DEAL──► NEGOTIATION
 HAND_LIMIT ──DISCARD──► 下一位 TURN
 HAND_LIMIT ──PLAY_RECRUITMENT──► REACTION ──► (仍>12 ? HAND_LIMIT : 下一位 TURN)
 
-NEGOTIATION（turnId 轮转）
-  ├─SPEAK / PASS / PLAY_CLAN ──► NEGOTIATION（下一位）
-  ├─PLAY_TRAVEL / PLAY_RECRUITMENT / PLAY_BOSS ──► REACTION ──► NEGOTIATION
-  ├─PROPOSE_OFFER（Boss）──► OFFER_RESPONSE（逐个 ACCEPT/DECLINE）──► NEGOTIATION（回到 Boss）
+NEGOTIATION（turnId 轮转；开局 turnId = Boss 左手边 ⇒ 叫价轮，Boss 在第一轮末位）
+  ├─SPEAK / PASS / PLAY_CLAN ──► NEGOTIATION（下一位；Boss 打自己的家族卡则仍是 Boss 行动，可紧接着提案 / 成交）
+  ├─PLAY_TRAVEL / PLAY_RECRUITMENT / PLAY_BOSS ──► REACTION ──► NEGOTIATION（方案被作废 ? 回到 Boss : 下一位）
+  ├─PROPOSE_OFFER（Boss）──► 付到承诺价者自动 OFFER_ACCEPTED(auto)
+  │     ├─ 全员已同意 ──► NEGOTIATION（Boss，可 CLOSE_DEAL）
+  │     └─ 否则 ──► OFFER_RESPONSE（未自动同意者逐个 ACCEPT/DECLINE）──► NEGOTIATION（回到 Boss）
   ├─CLOSE_DEAL（Boss，canClose）──► CLOSING
   └─ABANDON_DEAL（Boss）/ 僵局 ──► 流局 ──► 下一位 TURN
 
@@ -152,7 +155,7 @@ END_ROLL ──ROLL_END──► 命中 ? GAME_OVER : 下一位 TURN
 
 ### 4.1 谈判阶段的收敛保证
 
-- 每人每笔交易最多 3 次 `SPEAK`（`MAX_SPEECHES_PER_PLAYER`）。
+- 每人每笔交易最多 4 次 `SPEAK`（`MAX_SPEECHES_PER_PLAYER`）。
 - 每任 Boss 最多 5 次 `PROPOSE_OFFER`（`MAX_OFFERS_PER_BOSS`），易主后清零。
 - 全员连续 `PASS` 一整轮记 1 次停滞，连续 2 轮停滞流局（`MAX_STALEMATE_ROUNDS`）。
 - 每张影响牌只能打一次，手牌有限。
@@ -162,11 +165,13 @@ END_ROLL ──ROLL_END──► 命中 ? GAME_OVER : 下一位 TURN
 ### 4.2 方案的生命周期
 
 1. Boss `PROPOSE_OFFER`。`validateOfferShape` 返回结构化 `OfferError`（缺家族 / 无关家族 / 重复家族 / 代表失效 / 给 Boss 分钱 / 超额 / 负数），界面用 `describeOfferError` 显示，引擎用它判定合法性。
-2. 若方案只用 Boss 自己的代表，无需应答，Boss 可直接成交；否则进入 `OFFER_RESPONSE`，被选用代表的持有者按座位顺序应答。
-3. 任一 `DECLINE_OFFER` → 方案保留在 `offer` 上但 `canClose` 为假；`counter` 记为该玩家的新报价。Boss 可重提、改选他人代表或放弃。
-4. 方案中的代表被旅行牌打飞或被招募易主 → 方案立即置空并发出 `OFFER_VOIDED`。
-5. `CLOSE_DEAL` 要求 `canClose`：方案仍有效且全员同意；或没有方案但 `selectReps` 只用 Boss 自己的代表就能凑齐（此时自动生成无分成方案）。
-6. `CLOSING` 全员放行 → `finalizeDeal` 结算。
+2. **报价即承诺**（`rules.offerConsent`）：对方案中每位代表持有者，若 `分成 ≥ commitmentPrice`（= 被选用的其每个代表按各自家族报价之和；任一代表没报价则无承诺，`meetsCommitment` 为假），引擎直接记为同意并发出 `OFFER_ACCEPTED{auto:true}`；`OFFER_PROPOSED` 事件带 `autoAccepted` 与 `waitingFor`。
+3. 若无人需要应答（全用 Boss 自己的代表，或全部自动同意），停在 `NEGOTIATION` 由 Boss 直接成交；否则进入 `OFFER_RESPONSE`，`waitingFor` 中的玩家按座位顺序应答。
+4. `ACCEPT_OFFER` 把 `实付 ÷ 代表数` 静默记为**所用家族**的新承诺价（之后付到这个价即自动同意）；任一 `DECLINE_OFFER` → 方案保留在 `offer` 上但 `canClose` 为假；`counter`（每个代表）记为所用家族的新承诺价。Boss 可重提、改选他人代表或放弃。
+   报价的写入口径（`SPEAK.demand`）：指定 `demandFamily` 只改那一家；不指定则对该玩家在本格所有相关代表记同一价，没有相关代表时记为封口费。`PLAY_CLAN.demand` 只针对那张卡的家族。
+5. 方案中的代表被旅行牌打飞或被招募易主 → 方案立即置空并发出 `OFFER_VOIDED`，反应结束后回合回到 Boss。
+6. `CLOSE_DEAL` 要求 `canClose`：方案仍有效且全员同意；或没有方案但 `selectReps` 只用 Boss 自己的代表就能凑齐（此时自动生成无分成方案）。
+7. `CLOSING` 全员放行 → `finalizeDeal` 结算。运行时（`game/session.ts`）在人类玩家手中没有任何可打的干扰牌时自动替其放行，避免无意义的点击。
 
 ---
 

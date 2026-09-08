@@ -85,19 +85,26 @@ export default function CardHand({ state, legal, act, discardMode, discardSelect
         const base = openActions.find(a => a.type === 'PLAY_CLAN')
         if (!base || base.type !== 'PLAY_CLAN') return null
         const suggest = oneShareOf(state)
+        const iAmBoss = state.negotiation?.bossId === HUMAN_ID
         return (
           <div className="popover-body">
-            <div className="popover-title">打出 {FAMILIES[card.familyId!].name} 家族成员卡，成为该家族的临时代表</div>
-            <label className="popover-field">
-              出借价（$M，可空）
-              <input type="number" min={0} value={clanDemand} placeholder={`建议 ${suggest}`} onChange={e => setClanDemand(e.target.value)} />
-            </label>
+            <div className="popover-title">
+              {iAmBoss
+                ? `打出 ${FAMILIES[card.familyId!].name} 家族成员卡：你自己的代表，免费，不用再买别人的`
+                : `打出 ${FAMILIES[card.familyId!].name} 家族成员卡，成为该家族的临时代表`}
+            </div>
+            {!iAmBoss && (
+              <label className="popover-field">
+                承诺价（$M / 每个代表，可空；Boss 付到即自动同意）
+                <input type="number" min={0} value={clanDemand} placeholder={`建议 ${suggest}`} onChange={e => setClanDemand(e.target.value)} />
+              </label>
+            )}
             <label className="popover-field">
               台词（可空）
-              <input value={clanText} maxLength={60} placeholder="例：我家的人到了，谈个价吧" onChange={e => setClanText(e.target.value)} />
+              <input value={clanText} maxLength={60} placeholder={iAmBoss ? '例：这家我自己有人，不劳各位' : '例：我家的人到了，谈个价吧'} onChange={e => setClanText(e.target.value)} />
             </label>
             <button className="btn btn-success" onClick={() => {
-              const d = clanDemand.trim() === '' ? undefined : Math.max(0, Math.floor(Number(clanDemand) || 0))
+              const d = iAmBoss || clanDemand.trim() === '' ? undefined : Math.max(0, Math.floor(Number(clanDemand) || 0))
               fire({ ...base, demand: d, say: clanText.trim() || undefined })
             }}>打出</button>
           </div>

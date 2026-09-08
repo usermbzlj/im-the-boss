@@ -221,9 +221,10 @@ input[type="number"] { width: 90px; }
 .dock-hint { color: var(--muted); font-size: 12px; }
 .dock-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .dock-neg { display: flex; flex-direction: column; gap: 8px; }
-.speak-box { display: flex; gap: 8px; align-items: center; }
-.speak-box input:first-child { flex: 1; }
+.speak-box { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.speak-box .speak-text { flex: 1; min-width: 200px; }
 .demand-input { width: 100px; }
+.demand-fam { max-width: 130px; }
 
 /* ---- Hand ---- */
 .hand { position: relative; background: var(--bg-panel); border-top: 1px solid var(--border); padding: 6px 14px 10px; flex-shrink: 0; }

@@ -66,7 +66,7 @@ export const HAND_LIMIT = 12
 export const CARDS_PER_DRAW = 3
 export const STARTING_HAND = 5
 export const TOTAL_DEALS = 15
-export const MAX_SPEECHES_PER_PLAYER = 3
+export const MAX_SPEECHES_PER_PLAYER = 4
 export const MAX_OFFERS_PER_BOSS = 5
 export const MAX_STALEMATE_ROUNDS = 2
 /** 状态中保留的事件条数上限（UI 日志 / AI 提示词只需要最近一段） */

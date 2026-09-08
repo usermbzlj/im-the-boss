@@ -65,6 +65,16 @@ export function openDealAt(s: GameState, spaceId: number, bossId: number): GameS
   return step(s, { type: 'OPEN_DEAL', playerId: bossId })
 }
 
+/** 叫价轮：其他玩家依次跳过，直到轮到 Boss（谈判阶段专用） */
+export function toBoss(s: GameState): GameState {
+  let guard = 0
+  while (s.phase === 'NEGOTIATION' && getActingPlayerId(s) !== s.negotiation!.bossId) {
+    s = step(s, { type: 'PASS', playerId: getActingPlayerId(s) })
+    if (++guard > 12) throw new Error('toBoss: 转了一圈还没轮到 Boss')
+  }
+  return s
+}
+
 export function eventsOf(s: GameState, kind: GameState['events'][number]['kind']) {
   return s.events.filter(e => e.kind === kind)
 }

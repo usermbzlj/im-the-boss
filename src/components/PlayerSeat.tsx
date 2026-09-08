@@ -3,7 +3,7 @@
 // ============================================================
 
 import type { GameState } from '../engine/types'
-import { HAND_LIMIT } from '../engine/config'
+import { HAND_LIMIT, FAMILIES } from '../engine/config'
 import FamilyChip from './FamilyChip'
 import { getPersonaForPlayer } from '../ai/personas'
 
@@ -24,7 +24,11 @@ export default function PlayerSeat({ state, playerId, isActing, isThinking }: Pl
   const myClanReps = neg?.reps.filter(r => r.source === 'CLAN' && r.ownerId === playerId && !r.travelled) ?? []
   const persona = player.isAI ? getPersonaForPlayer(player.personaId) : null
   const myShare = neg?.offer?.payouts.find(p => p.playerId === playerId)?.amount
-  const demand = neg?.demands.find(d => d.playerId === playerId)
+  const demands = neg?.demands.filter(d => d.playerId === playerId) ?? []
+  // 报价按家族分列；只有一条时不标家族名
+  const demandLabel = demands.length === 0 ? null
+    : demands.length === 1 ? `要价 $${demands[0].amount}M`
+      : demands.map(d => `${d.familyId ? FAMILIES[d.familyId].name : '封口'} $${d.amount}M`).join(' · ')
 
   return (
     <div className={`player-seat${isActing ? ' acting' : ''}${isBoss ? ' is-boss' : ''}${player.isAI ? '' : ' is-human'}`}>
@@ -55,7 +59,7 @@ export default function PlayerSeat({ state, playerId, isActing, isThinking }: Pl
       </div>
       <div className="seat-row seat-meta">
         <span>手牌 {player.hand.length}/{HAND_LIMIT}</span>
-        {demand && <span className="seat-demand">要价 ${demand.amount}M</span>}
+        {demandLabel && <span className="seat-demand" title="公开报价（每个代表的出借价）：Boss 付到即自动同意">{demandLabel}</span>}
         {myShare != null && myShare > 0 && <span className="seat-share">方案 +${myShare}M</span>}
         {isThinking && <span className="seat-thinking"><span className="dot" /><span className="dot" /><span className="dot" /></span>}
       </div>

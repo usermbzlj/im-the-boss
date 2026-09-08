@@ -110,6 +110,41 @@ describe('GameSession', () => {
     session2.destroy()
   })
 
+  it('成交倒计时里没有任何干扰牌的人类自动放行；有牌则等待', async () => {
+    let s = baseState(4, 107)
+    s.players[3].isAI = false
+    for (let i = 0; i < 4; i++) clearHand(s, i)
+    setInvestors(s, { A: 0, B: 0, C: 1, D: 2, E: 3 })
+    s = openDealAt(s, 1, 0) // Boss 独立凑齐
+    s.negotiation!.turnId = 0
+    const held: Policy = { name: 'hold', decide: () => new Promise(() => {}) }
+    const session = new GameSession(s, { policy: held, delay: () => 0 })
+    expect(session.dispatch({ type: 'CLOSE_DEAL', playerId: 0 })).toBe(true)
+    expect(session.dispatch({ type: 'PASS_CLOSING', playerId: 1 })).toBe(true)
+    expect(session.dispatch({ type: 'PASS_CLOSING', playerId: 2 })).toBe(true)
+    expect(getActingPlayerId(session.state)).toBe(3)
+    await tick(); await tick()
+    expect(session.state.phase).toBe('TURN') // 3 号无牌可打，自动放行 → 结算
+    expect(session.state.players[0].cash).toBe(6)
+    session.destroy()
+
+    let t = baseState(4, 108)
+    t.players[3].isAI = false
+    for (let i = 0; i < 4; i++) clearHand(t, i)
+    setInvestors(t, { A: 0, B: 0, C: 1, D: 2, E: 3 })
+    giveCards(t, 3, [{ type: 'TRAVEL' }])
+    t = openDealAt(t, 1, 0)
+    t.negotiation!.turnId = 0
+    const session2 = new GameSession(t, { policy: held, delay: () => 0 })
+    session2.dispatch({ type: 'CLOSE_DEAL', playerId: 0 })
+    session2.dispatch({ type: 'PASS_CLOSING', playerId: 1 })
+    session2.dispatch({ type: 'PASS_CLOSING', playerId: 2 })
+    await tick(); await tick()
+    expect(session2.state.phase).toBe('CLOSING')
+    expect(getActingPlayerId(session2.state)).toBe(3) // 有旅行牌：等人类决定
+    session2.destroy()
+  })
+
   it('销毁后不再推进，也不接受动作', async () => {
     const session = new GameSession(baseState(4, 105), { policy: heuristicPolicy, delay: () => 5 })
     const v = session.state.stateVersion

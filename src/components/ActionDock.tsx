@@ -3,10 +3,11 @@
 // ============================================================
 
 import { useState } from 'react'
-import type { GameState, PlayerAction } from '../engine/types'
+import type { GameState, PlayerAction, FamilyId } from '../engine/types'
 import { FAMILIES, HAND_LIMIT, MAX_SPEECHES_PER_PLAYER } from '../engine/config'
 import {
-  getGrossValue, oneShareOf, offerShareOf, demandOf, playerActiveFamilies, relevantFamilies, getCurrentSpace, tableCanComplete, canCompleteAlone,
+  getGrossValue, oneShareOf, offerShareOf, demandOf, getCurrentSpace, tableCanComplete, canCompleteAlone,
+  soleRepFamilies, rivalReps, missingFamilies, playerRelevantFamilies, demandsOf, repPriceOf, commitmentPrice,
 } from '../engine/rules'
 import { canClose } from '../engine/validator'
 import { describeReactionTarget } from '../text/labels'
@@ -26,6 +27,8 @@ const HUMAN_ID = 0
 export default function ActionDock({ state, legal, act, discardSelection, onOpenOfferEditor }: ActionDockProps) {
   const [speakText, setSpeakText] = useState('')
   const [demand, setDemand] = useState('')
+  /** 报价针对的家族：'' = 本格我所有相关代表同价 */
+  const [demandFam, setDemandFam] = useState<'' | FamilyId>('')
   const [counter, setCounter] = useState('')
   const [confirmAbandon, setConfirmAbandon] = useState(false)
 
@@ -43,8 +46,17 @@ export default function ActionDock({ state, legal, act, discardSelection, onOpen
     act(a)
     setSpeakText('')
     setDemand('')
+    setDemandFam('')
     setCounter('')
     setConfirmAbandon(false)
+  }
+
+  /** 状态栏里"你的承诺价"：按家族分列，通用价标为封口费 */
+  const myDemandLabel = () => {
+    if (!neg) return null
+    const ds = demandsOf(neg, HUMAN_ID)
+    if (ds.length === 0) return null
+    return ds.map(d => `${d.familyId ? FAMILIES[d.familyId].name + ' ' : ds.length > 1 ? '封口费 ' : ''}$${d.amount}M`).join(' · ')
   }
 
   const renderStatus = () => (
@@ -62,7 +74,7 @@ export default function ActionDock({ state, legal, act, discardSelection, onOpen
           {myClanReps.map(r => <FamilyChip key={r.key} familyId={r.familyId} size="md" travelled={r.travelled} />)}
         </span>
       )}
-      {neg && demandOf(neg, HUMAN_ID) != null && <span className="status-group"><span className="status-label">你的报价</span><b className="gold">${demandOf(neg, HUMAN_ID)}M</b></span>}
+      {myDemandLabel() && <span className="status-group" title="报价即承诺（每个代表）：Boss 的方案付到这个价，视为你自动同意"><span className="status-label">你的承诺价</span><b className="gold">{myDemandLabel()}</b></span>}
       {neg?.offer && offerShareOf(neg.offer, HUMAN_ID) > 0 && <span className="status-group"><span className="status-label">方案分你</span><b className="gold">${offerShareOf(neg.offer, HUMAN_ID)}M</b></span>}
     </div>
   )
@@ -122,35 +134,71 @@ export default function ActionDock({ state, legal, act, discardSelection, onOpen
       case 'NEGOTIATION': {
         const isBoss = neg!.bossId === HUMAN_ID
         const speakLeft = MAX_SPEECHES_PER_PLAYER - (neg!.speakCounts[HUMAN_ID] ?? 0)
-        const space = getCurrentSpace(state)!
-        const mine = [...playerActiveFamilies(neg!, HUMAN_ID)].filter(f => relevantFamilies(space).includes(f))
+        const mine = playerRelevantFamilies(state, HUMAN_ID)
         const closable = canClose(state)
+        const myAsks = mine.map(f => ({ f, price: demandOf(neg!, HUMAN_ID, f) })).filter(x => x.price != null)
+        const hush = mine.length === 0 ? demandOf(neg!, HUMAN_ID) : undefined
+        const sole = soleRepFamilies(state, HUMAN_ID)
+        const missing = missingFamilies(state)
+        // 非 Boss 的筹码提示：唯一代表可抬价；有竞争者要比他低；没代表只能靠手牌
+        const leverageHint = !isBoss && (mine.length
+          ? mine.map(f => {
+            const tag = demandOf(neg!, HUMAN_ID, f) != null ? `（你报 $${demandOf(neg!, HUMAN_ID, f)}M）` : ''
+            if (sole.includes(f)) return `${FAMILIES[f].name}只有你有，没你做不成 → 可抬价${tag}`
+            const rivals = rivalReps(state, HUMAN_ID, f)
+            if (rivals.some(r => r.ownerId === neg!.bossId)) return `${FAMILIES[f].name} Boss 自己也有 → 你的几乎不会被选${tag}`
+            if (rivals.length) return `${FAMILIES[f].name}有竞争者（${rivals.map(r => `${state.players[r.ownerId]?.name}${repPriceOf(neg!, r) != null ? ` $${repPriceOf(neg!, r)}M` : ''}`).join('、')}）→ 报得更低才会被选${tag}`
+            return `${FAMILIES[f].name}可出借，一份分红 ≈ $${share}M${tag}`
+          }).join('；')
+          : `你没有本格相关代表${missing.length ? `（缺 ${missing.map(f => FAMILIES[f].name).join('、')}，有家族卡就打）` : ''}；可索要封口费或打干扰牌`)
         return (
           <div className="dock-neg">
             {has('SPEAK') && (
               <div className="speak-box">
-                <input value={speakText} maxLength={120} placeholder={isBoss ? '对桌上的人说点什么…' : mine.length ? `喊话并报价：我的 ${mine.map(f => FAMILIES[f].name).join('/')} 出借价…` : '喊话：施压 / 表态 / 索要封口费…'}
-                  onChange={e => setSpeakText(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && speakText.trim()) doSpeak() }} />
                 {!isBoss && (
-                  <input className="demand-input" type="number" min={0} max={gross} value={demand} placeholder={`要价 ≈${share}`} title={mine.length ? '你的代表出借价（$M）' : '封口费：不搅局的价码（$M）'}
-                    onChange={e => setDemand(e.target.value)} />
+                  <>
+                    {mine.length > 1 && (
+                      <select className="demand-fam" value={demandFam} onChange={e => setDemandFam(e.target.value as '' | FamilyId)}
+                        title="只对某一家族的代表报价，其他家族的报价不变；不同家族可以报不同价">
+                        <option value="">全部代表</option>
+                        {mine.map(f => <option key={f} value={f}>{FAMILIES[f].name}</option>)}
+                      </select>
+                    )}
+                    <input className="demand-input" type="number" min={0} max={gross} value={demand} placeholder={`承诺价 ≈${share}`}
+                      title={mine.length ? '你的代表出借价（$M / 每个代表）：Boss 付到即视为你同意' : '封口费：不搅局的价码（$M）'}
+                      onChange={e => setDemand(e.target.value)} />
+                    <button className="btn btn-sm" onClick={() => setDemand(String(share))} title="填入一份分红">≈${share}M</button>
+                  </>
                 )}
-                <button className="btn" disabled={!speakText.trim()} onClick={doSpeak}>喊话（剩 {speakLeft}）</button>
+                <input className="speak-text" value={speakText} maxLength={120} placeholder={isBoss ? '对桌上的人说点什么…' : mine.length ? '台词（可空：只报价会自动生成一句）' : '喊话：施压 / 表态 / 索要封口费…'}
+                  onChange={e => setSpeakText(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && (speakText.trim() || demand.trim())) doSpeak() }} />
+                <button className="btn" disabled={!speakText.trim() && (isBoss || demand.trim() === '')} onClick={doSpeak}>
+                  {!isBoss && demand.trim() !== '' ? `报价 $${Math.max(0, Math.floor(Number(demand) || 0))}M` : '喊话'}（剩 {speakLeft}）
+                </button>
               </div>
+            )}
+            {!isBoss && (
+              <span className="dock-hint">
+                {leverageHint}
+                {myAsks.length > 0
+                  ? <>。你当前承诺价（每个代表）<b className="gold">{myAsks.map(x => `${mine.length > 1 ? FAMILIES[x.f].name + ' ' : ''}$${x.price}M`).join('、')}</b>：Boss 付到即自动同意</>
+                  : hush != null ? <>。你要的封口费 <b className="gold">${hush}M</b></>
+                    : '。报价即承诺：Boss 付到你的价就视为同意'}
+              </span>
             )}
             <div className="dock-actions">
               {isBoss ? (
                 <>
                   <button className="btn" disabled={!has('PROPOSE_OFFER') && !tableCanComplete(state)} onClick={onOpenOfferEditor}
-                    title={tableCanComplete(state) ? '指定选用的代表与分成' : '桌上代表还凑不齐需求，先等人打家族卡/报价'}>
+                    title={tableCanComplete(state) ? '指定选用的代表与分成；付到对方承诺价的会自动同意' : '桌上代表还凑不齐需求，先等人打家族卡/报价'}>
                     {neg!.offer ? '修改方案' : '提出方案'}{!tableCanComplete(state) && '（代表不足）'}
                   </button>
                   <button className="btn btn-success" disabled={!closable} onClick={() => send({ type: 'CLOSE_DEAL', playerId: HUMAN_ID })}
                     title={closable ? '进入"Going once, going twice"倒计时，无人干扰即结算' : '需先有全员同意的方案，或仅用自己的代表凑齐'}>
                     ✓ 宣布成交
                   </button>
-                  <button className="btn" onClick={() => send({ type: 'PASS', playerId: HUMAN_ID })} title="让其他人先出牌/报价">让他人先行动</button>
+                  <button className="btn" onClick={() => send({ type: 'PASS', playerId: HUMAN_ID })} title="再听一轮叫价">再听一轮</button>
                   {confirmAbandon
                     ? <><span className="red">确定放弃？家族卡收回，无人拿钱</span><button className="btn btn-danger" onClick={() => send({ type: 'ABANDON_DEAL', playerId: HUMAN_ID })}>确定</button><button className="btn" onClick={() => setConfirmAbandon(false)}>取消</button></>
                     : <button className="btn btn-danger" onClick={() => setConfirmAbandon(true)}>放弃交易</button>}
@@ -168,13 +216,14 @@ export default function ActionDock({ state, legal, act, discardSelection, onOpen
 
       case 'OFFER_RESPONSE': {
         const myShare = offerShareOf(neg!.offer, HUMAN_ID)
-        const myAsk = demandOf(neg!, HUMAN_ID)
+        const myAsk = neg!.offer ? commitmentPrice(neg!, neg!.offer, HUMAN_ID) : undefined
         const toOthers = neg!.offer?.payouts.filter(p => p.playerId !== HUMAN_ID && p.amount > 0) ?? []
         return (
           <div className="dock-actions">
             <span className="dock-hint">
-              Boss {state.players[neg!.bossId]?.name} 要用你的代表，分给你 <b className="gold">${myShare}M</b>{myAsk != null ? `（你要价 $${myAsk}M）` : ''}
+              Boss {state.players[neg!.bossId]?.name} 要用你的代表，分给你 <b className="gold">${myShare}M</b>{myAsk != null ? `（低于你对这些代表的承诺价合计 $${myAsk}M）` : ''}
               {toOthers.length > 0 && <span className="muted">；另付 {describePayouts(state, toOthers)}</span>}
+              <span className="muted">。同意后 ${myShare}M（按代表折算）成为你的承诺价；拒绝可反报价（每个代表，成为新承诺价）</span>
             </span>
             <button className="btn btn-success" onClick={() => send({ type: 'ACCEPT_OFFER', playerId: HUMAN_ID })}>✓ 同意出借（拿 ${myShare}M）</button>
             <input className="demand-input" type="number" min={0} max={gross} value={counter} placeholder="反报价" onChange={e => setCounter(e.target.value)} />
@@ -197,9 +246,13 @@ export default function ActionDock({ state, legal, act, discardSelection, onOpen
 
       case 'CLOSING': {
         const myShare = offerShareOf(neg!.offer, HUMAN_ID)
+        const canDisrupt = legal.some(a => a.type !== 'PASS_CLOSING')
         return (
           <div className="dock-actions">
-            <span className="dock-hint">Boss 宣布成交，你{myShare > 0 ? <>将分得 <b className="gold">${myShare}M</b></> : '拿不到钱'}。最后机会：放行，或从手牌打旅行 / 招募 / 老板牌</span>
+            <span className="dock-hint">
+              Boss 宣布成交，你{myShare > 0 ? <>将分得 <b className="gold">${myShare}M</b></> : '拿不到钱'}。
+              {canDisrupt ? '最后机会：放行，或从手牌打旅行 / 招募 / 老板牌' : '你没有可打的干扰牌，稍后自动放行'}
+            </span>
             <button className="btn btn-success" onClick={() => send({ type: 'PASS_CLOSING', playerId: HUMAN_ID })}>放行</button>
           </div>
         )
@@ -217,12 +270,15 @@ export default function ActionDock({ state, legal, act, discardSelection, onOpen
   }
 
   function doSpeak() {
-    if (!speakText.trim()) return
     const isBoss = neg?.bossId === HUMAN_ID
     const d = !isBoss && demand.trim() !== '' ? Math.max(0, Math.min(gross, Math.floor(Number(demand) || 0))) : undefined
-    const space = getCurrentSpace(state)
-    const mine = neg && space ? [...playerActiveFamilies(neg, HUMAN_ID)].filter(f => relevantFamilies(space).includes(f)) : []
-    send({ type: 'SPEAK', playerId: HUMAN_ID, say: speakText.trim(), demand: d, demandFamily: d != null && mine.length ? mine[0] : undefined })
+    if (!speakText.trim() && d == null) return
+    const mine = playerRelevantFamilies(state, HUMAN_ID)
+    const fam = d != null && demandFam && mine.includes(demandFam) ? demandFam : undefined
+    const target = fam ? [fam] : mine
+    // 只填了价没写台词：自动生成一句，报价本身就是话
+    const say = speakText.trim() || (target.length ? `我的${target.map(f => FAMILIES[f].name).join('/')}，$${d}M 出借，付到就成。` : `分我 $${d}M，我不捣乱。`)
+    send({ type: 'SPEAK', playerId: HUMAN_ID, say, demand: d, demandFamily: fam })
   }
 
   return (

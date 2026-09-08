@@ -8,8 +8,10 @@
 import { useMemo, useState } from 'react'
 import type { GameState, FamilyId, Payout, Representative } from '../engine/types'
 import {
-  getCurrentSpace, getGrossValue, oneShareOf, isRequiredGroup, selectReps, demandOf, repCost, validateOfferShape,
+  getCurrentSpace, getGrossValue, oneShareOf, isRequiredGroup, selectReps, demandOf, repCost, validateOfferShape, offerConsent,
+  findRep, repPriceOf, commitmentPrice,
 } from '../engine/rules'
+import { FAMILIES } from '../engine/config'
 import { buildOfferCandidates } from '../engine/validator'
 import { candidateTitle, describeCandidate, describeOfferError } from '../text/labels'
 import FamilyChip from './FamilyChip'
@@ -67,6 +69,8 @@ export default function OfferEditor({ state, onSubmit, onClose }: OfferEditorPro
   const payouts: Payout[] = Object.entries(pay).filter(([, a]) => a > 0).map(([id, a]) => ({ playerId: Number(id), amount: a }))
   const error = validateOfferShape(state, repKeys, payouts)
   const total = payouts.reduce((s, p) => s + p.amount, 0)
+  // 报价即承诺：付到承诺价的持有者自动同意，其余需表态
+  const consent = offerConsent(neg, { repKeys, payouts })
 
   const toggleFamily = (g: typeof space.groups[number], f: FamilyId) => {
     setChosen(prev => {
@@ -96,17 +100,41 @@ export default function OfferEditor({ state, onSubmit, onClose }: OfferEditorPro
     const owners = new Set(repKeys.map(k => neg.reps.find(r => r.key === k)?.ownerId))
     for (const p of state.players) {
       if (p.id === neg.bossId) continue
-      const d = demandOf(neg, p.id)
-      if (d != null && (owners.has(p.id) || !neg.demands.find(x => x.playerId === p.id)?.familyId)) next[p.id] = d
-      else if (owners.has(p.id) && next[p.id] == null) next[p.id] = share
+      if (owners.has(p.id)) {
+        // 用了他的代表：按方案里他每个代表各自家族的承诺价相加；没报价的按一份分红估
+        let total = 0
+        for (const k of repKeys) {
+          const r = findRep(neg, k)
+          if (r && r.ownerId === p.id) total += repPriceOf(neg, r) ?? share
+        }
+        next[p.id] = total
+      } else {
+        // 没用其代表：只有封口费（通用报价）才算
+        const hush = demandOf(neg, p.id)
+        if (hush != null) next[p.id] = hush
+      }
     }
     setPay(next)
   }
 
   const priceLabel = (r: Representative) => {
     if (r.ownerId === neg.bossId) return 'Boss 自有 · 免费'
-    const d = demandOf(neg, r.ownerId)
-    return d != null ? `要价 $${d}M` : `未报价（约 $${share}M）`
+    const d = repPriceOf(neg, r)
+    return d != null ? `承诺价 $${d}M` : `未报价（约 $${share}M）`
+  }
+
+  /** 分成行的承诺价说明：用了其代表 → 各代表价相加；否则显示封口费 */
+  const commitLabel = (playerId: number, usesRep: boolean) => {
+    if (usesRep) {
+      const parts = repKeys.map(k => findRep(neg, k)).filter((r): r is Representative => !!r && r.ownerId === playerId)
+      const prices = parts.map(r => repPriceOf(neg, r))
+      if (prices.every(x => x == null)) return null
+      const total = commitmentPrice(neg, { repKeys }, playerId)
+      const detail = parts.length > 1 ? `（${parts.map((r, i) => `${FAMILIES[r.familyId].name} ${prices[i] != null ? `$${prices[i]}M` : '未报'}`).join(' + ')}）` : ''
+      return total != null ? `承诺价 $${total}M${detail}` : `部分代表未报价${detail}`
+    }
+    const hush = demandOf(neg, playerId)
+    return hush != null ? `封口费 $${hush}M` : null
   }
 
   const responseTag = (ownerId: number) => {
@@ -181,14 +209,16 @@ export default function OfferEditor({ state, onSubmit, onClose }: OfferEditorPro
             {neg.demands.length > 0 && <button className="btn btn-sm" onClick={fillFromDemands}>按公开报价填入</button>}
           </div>
           {state.players.filter(p => p.id !== neg.bossId).map(p => {
-            const d = neg.demands.find(x => x.playerId === p.id)
             const usesRep = repKeys.some(k => neg.reps.find(r => r.key === k)?.ownerId === p.id)
+            const auto = consent.auto.includes(p.id)
+            const commit = commitLabel(p.id, usesRep)
             return (
               <div key={p.id} className={`payout-row${usesRep ? ' uses-rep' : ''}`}>
                 <span className="payout-name">
                   {p.name}{p.id === HUMAN_ID ? '（你）' : ''}
                   {usesRep ? <em>用其代表</em> : <em className="muted">未用其代表</em>}
-                  {d && <i>要价 ${d.amount}M{d.familyId ? '' : '（封口费）'}</i>}
+                  {commit && <i>{commit}</i>}
+                  {usesRep && (auto ? <b className="green"> ✓ 付到承诺价，自动同意</b> : <b className="muted"> 需其表态</b>)}
                 </span>
                 <input type="number" min={0} max={gross} value={pay[p.id] ?? 0}
                   onChange={e => setPay({ ...pay, [p.id]: Math.max(0, Math.floor(Number(e.target.value) || 0)) })} />
@@ -202,7 +232,14 @@ export default function OfferEditor({ state, onSubmit, onClose }: OfferEditorPro
           </div>
         </div>
 
-        {error ? <p className="red offer-error">⚠ {describeOfferError(error)}</p> : <p className="green offer-ok">方案结构合法。被选用代表的持有者将依次表态。</p>}
+        {error
+          ? <p className="red offer-error">⚠ {describeOfferError(error)}</p>
+          : <p className="green offer-ok">
+            方案结构合法。
+            {consent.auto.length + consent.asked.length === 0 ? '全用自己的代表，提出后可直接宣布成交。'
+              : consent.asked.length === 0 ? '所有持有者都已付到承诺价，提出即视为全员同意，然后可直接宣布成交。'
+                : `${consent.asked.map(id => state.players[id]?.name).join('、')} 需表态${consent.auto.length ? `；${consent.auto.map(id => state.players[id]?.name).join('、')} 自动同意` : ''}。`}
+          </p>}
         <div className="neg-actions">
           <button className="btn btn-success" disabled={!!error} onClick={() => onSubmit(repKeys, payouts)}>提出方案</button>
           <button className="btn" onClick={onClose}>取消</button>

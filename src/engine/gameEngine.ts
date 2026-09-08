@@ -1,13 +1,15 @@
 // ============================================================
 // I'm the Boss! — 游戏引擎（纯 reducer）
 //
-// 谈判流程（官方规则的回合制近似）：
-//   OPEN_DEAL → NEGOTIATION（从 Boss 起轮流：出牌 / 喊话报价 / 跳过；Boss 可提案）
-//   PROPOSE_OFFER → OFFER_RESPONSE（被选用代表的持有者依次同意/拒绝）→ 回到 Boss
+// 谈判流程（官方规则的回合制近似，模拟真实桌面的"叫价 → 拼盘 → 落锤"）：
+//   OPEN_DEAL → NEGOTIATION 叫价轮：Boss 左手边起轮流出牌 / 喊话报价 / 跳过，Boss 在
+//   第一轮末位行动（听完叫价再拼方案）；之后继续轮转，Boss 轮到时可提案
+//   PROPOSE_OFFER → 报价即承诺：方案付到某人公开报价的，自动视为同意；其余被选用代表的
+//   持有者进入 OFFER_RESPONSE 依次同意 / 拒绝（拒绝可反报价 = 更新承诺价）→ 回到 Boss
 //   CLOSE_DEAL（须方案全员同意）→ CLOSING（"going once, going twice"：其他人依次
 //   可打干扰牌或放行）→ 全员放行即结算；有牌生效则回到谈判
 //   旅行 / 招募 / 老板牌打出后进入 REACTION，按座位顺序逐个询问其他玩家是否打阻止牌
-//   （无阻止牌者只能放行；询问所有人是为了不暴露谁持有阻止牌）
+//   （无阻止牌者只能放行；询问所有人是为了不暴露谁持有阻止牌）；方案被打掉则回合回到 Boss
 //
 // 契约：
 //   · reducer 只接受通过 validator.isLegal 的动作；被拒绝的动作原样返回旧状态
@@ -16,7 +18,7 @@
 // ============================================================
 
 import type {
-  GameState, GameAction, PlayerAction, Player, InfluenceCard, Negotiation,
+  GameState, GameAction, PlayerAction, Player, InfluenceCard, Negotiation, Offer,
   GameEvent, FamilyId, Payout, Representative, RepRef, ReactionKind, FailReason,
 } from './types'
 import {
@@ -26,11 +28,12 @@ import {
 } from './config'
 import {
   getPlayer, nextPlayerId, prevPlayerId, othersFrom, getSpace, getCurrentTile,
-  getGrossValue, offerOwners, findRep, selectReps, investorRepKey, clanRepKey, payoutTotal,
+  getGrossValue, offerOwners, findRep, selectReps, investorRepKey, clanRepKey, payoutTotal, offerShareOf, meetsCommitment, repsUsedOf,
+  commitmentPrice, playerRelevantFamilies,
 } from './rules'
 import { isLegal } from './validator'
 
-export const SAVE_VERSION = 4
+export const SAVE_VERSION = 6
 
 // ---------- 工具 ----------
 
@@ -88,12 +91,31 @@ function say(s: GameState, playerId: number, text: string | undefined) {
   emit(s, { kind: 'SPEECH', playerId, text: clean })
 }
 
-function setDemand(s: GameState, playerId: number, amount: number, familyId?: FamilyId) {
+/**
+ * 记录公开报价（每个代表的出借价）。familyIds 为空 = 通用价/封口费；否则覆盖这些家族各自的报价。
+ * 同一玩家可以对不同家族报不同价，互不影响。quiet：只更新承诺、不发事件（同意方案时用）。
+ */
+function setDemand(s: GameState, playerId: number, amount: number, familyIds: FamilyId[], quiet = false) {
   const neg = s.negotiation
   if (!neg) return
-  neg.demands = neg.demands.filter(d => d.playerId !== playerId)
-  neg.demands.push({ playerId, amount, familyId })
-  emit(s, { kind: 'DEMAND', playerId, amount, familyId })
+  if (familyIds.length === 0) {
+    neg.demands = neg.demands.filter(d => !(d.playerId === playerId && d.familyId == null))
+    neg.demands.push({ playerId, amount })
+  } else {
+    neg.demands = neg.demands.filter(d => !(d.playerId === playerId && d.familyId != null && familyIds.includes(d.familyId)))
+    for (const familyId of familyIds) neg.demands.push({ playerId, amount, familyId })
+  }
+  if (!quiet) emit(s, { kind: 'DEMAND', playerId, amount, familyIds })
+}
+
+/** 方案中用到的、属于该玩家的代表所属家族（去重） */
+function usedFamiliesOf(neg: Negotiation, offer: Pick<Offer, 'repKeys'>, playerId: number): FamilyId[] {
+  const out: FamilyId[] = []
+  for (const k of offer.repKeys) {
+    const r = findRep(neg, k)
+    if (r && r.ownerId === playerId && !out.includes(r.familyId)) out.push(r.familyId)
+  }
+  return out
 }
 
 function markDisruptor(neg: Negotiation, playerId: number) {
@@ -171,7 +193,8 @@ function openNegotiation(s: GameState, bossId: number) {
     travelledInvestors: [],
     offer: null,
     offersMade: 0,
-    turnId: bossId,
+    // 叫价轮：Boss 开单后先听桌上叫价（左手边起），自己在第一轮末位行动再出方案
+    turnId: nextPlayerId(s, bossId),
     passStreak: 0,
     stalemateRounds: 0,
     speeches: [],
@@ -231,6 +254,7 @@ function voidOfferIfTouched(s: GameState, repKey: string, reason: 'TRAVELLED' | 
 function resolveReaction(s: GameState) {
   const pr = s.pendingReaction!
   const neg = s.negotiation
+  const hadOffer = !!neg?.offer
 
   if (pr.kind === 'TRAVEL' && neg) {
     const rep = findRep(neg, pr.targetRepKey!)
@@ -268,10 +292,14 @@ function resolveReaction(s: GameState) {
   } else {
     s.discardPile.push(...pr.cards)
   }
-  afterReaction(s, false)
+  afterReaction(s, false, hadOffer && !s.negotiation?.offer)
 }
 
-function afterReaction(s: GameState, cancelled: boolean) {
+/**
+ * 反应窗口结束后回到原阶段。
+ * 谈判中：方案被打掉 → 回合直接回到 Boss（他要立刻重新拿出方案）；否则出牌者的下一位继续。
+ */
+function afterReaction(s: GameState, cancelled: boolean, offerVoided = false) {
   const pr = s.pendingReaction!
   s.pendingReaction = null
   const neg = s.negotiation
@@ -301,7 +329,9 @@ function afterReaction(s: GameState, cancelled: boolean) {
   }
   s.phase = 'NEGOTIATION'
   neg.passStreak = 0
-  neg.turnId = !cancelled && pr.kind === 'BOSS' ? pr.actorId : nextPlayerId(s, pr.actorId)
+  if (!cancelled && pr.kind === 'BOSS') neg.turnId = pr.actorId
+  else if (offerVoided) neg.turnId = neg.bossId
+  else neg.turnId = nextPlayerId(s, pr.actorId)
 }
 
 function advanceResponse(s: GameState) {
@@ -469,9 +499,10 @@ function apply(s: GameState, action: PlayerAction) {
       const [card] = takeFromHand(player, [action.cardId])
       neg!.reps.push({ key: clanRepKey(card.id), familyId: card.familyId!, source: 'CLAN', ownerId: player.id, cardId: card.id, travelled: false })
       emit(s, { kind: 'CLAN_PLAYED', playerId: player.id, familyId: card.familyId! })
-      if (action.demand != null) setDemand(s, player.id, action.demand, card.familyId)
+      if (action.demand != null) setDemand(s, player.id, action.demand, [card.familyId!])
       neg!.passStreak = 0
-      neg!.turnId = nextPlayerId(s, player.id)
+      // Boss 打自己的家族卡是在"拼方案"，紧接着就该提案 / 成交，不必等一整圈；别人打卡则轮到下一位
+      neg!.turnId = player.id === neg!.bossId ? player.id : nextPlayerId(s, player.id)
       return
     }
 
@@ -518,7 +549,11 @@ function apply(s: GameState, action: PlayerAction) {
 
     case 'SPEAK':
       neg!.speakCounts[player.id] = (neg!.speakCounts[player.id] ?? 0) + 1
-      if (action.demand != null) setDemand(s, player.id, action.demand, action.demandFamily)
+      if (action.demand != null) {
+        // 指定家族 → 只对该家族报价；否则对我在本格所有相关代表报同一价；没有相关代表 → 封口费
+        const fams = action.demandFamily ? [action.demandFamily] : playerRelevantFamilies(s, player.id)
+        setDemand(s, player.id, action.demand, fams)
+      }
       neg!.passStreak = 0
       neg!.turnId = nextPlayerId(s, player.id)
       return
@@ -540,17 +575,26 @@ function apply(s: GameState, action: PlayerAction) {
     case 'PROPOSE_OFFER': {
       const payouts = action.payouts.filter(p => p.amount > 0)
       neg!.offersMade++
-      neg!.offer = { id: s.nextId++, bossId: player.id, repKeys: [...action.repKeys], payouts, responses: {} }
+      const offer: Offer = { id: s.nextId++, bossId: player.id, repKeys: [...action.repKeys], payouts, responses: {} }
+      neg!.offer = offer
       neg!.passStreak = 0
-      const owners = offerOwners(neg!, neg!.offer)
-      const order = othersFrom(s, player.id).filter(id => owners.includes(id))
+      const owners = offerOwners(neg!, offer)
+      // 报价即承诺：方案付到某人的公开报价，他按约视为同意，不再询问
+      const autoAccepted = othersFrom(s, player.id).filter(id => owners.includes(id) && meetsCommitment(neg!, offer, id))
+      const order = othersFrom(s, player.id).filter(id => owners.includes(id) && !autoAccepted.includes(id))
       emit(s, {
         kind: 'OFFER_PROPOSED', bossId: player.id, offerNo: neg!.offersMade,
         reps: action.repKeys.map(k => findRep(neg!, k)).filter((r): r is Representative => !!r).map(repRef),
-        payouts, bossKeep: getGrossValue(s) - payoutTotal(payouts), waitingFor: order,
+        payouts, bossKeep: getGrossValue(s) - payoutTotal(payouts), waitingFor: order, autoAccepted,
       })
+      for (const id of autoAccepted) {
+        offer.responses[id] = 'ACCEPTED'
+        emit(s, { kind: 'OFFER_ACCEPTED', playerId: id, auto: true })
+      }
       if (order.length === 0) {
-        neg!.turnId = player.id // 只用自己的代表，无需他人同意，Boss 可直接宣布成交
+        // 无需他人表态（只用自己的代表 / 全部按承诺价自动同意）：Boss 可直接宣布成交
+        if (owners.length > 0) emit(s, { kind: 'OFFER_RESOLVED', agreed: true, declinerIds: [] })
+        neg!.turnId = player.id
         return
       }
       neg!.responseQueue = order
@@ -559,19 +603,27 @@ function apply(s: GameState, action: PlayerAction) {
       return
     }
 
-    case 'ACCEPT_OFFER':
-      neg!.offer!.responses[player.id] = 'ACCEPTED'
+    case 'ACCEPT_OFFER': {
+      const offer = neg!.offer!
+      offer.responses[player.id] = 'ACCEPTED'
       emit(s, { kind: 'OFFER_ACCEPTED', playerId: player.id })
+      // 点头就是承诺：这个价（按每个代表折算）成为所用家族的公开出借价，方案若作废后 Boss 再按此价提案即自动同意
+      const got = offerShareOf(offer, player.id)
+      const used = Math.max(1, repsUsedOf(neg!, offer, player.id))
+      const committed = commitmentPrice(neg!, offer, player.id)
+      if (got % used === 0 && (committed == null || committed > got)) {
+        setDemand(s, player.id, got / used, usedFamiliesOf(neg!, offer, player.id), true)
+      }
       advanceResponse(s)
       return
+    }
 
     case 'DECLINE_OFFER':
       neg!.offer!.responses[player.id] = 'DECLINED'
       emit(s, { kind: 'OFFER_DECLINED', playerId: player.id, counter: action.counter })
       if (action.counter != null) {
-        // 反报价是对"方案里用到的我的代表"的出借价，而不是封口费
-        const myRep = neg!.offer!.repKeys.map(k => findRep(neg!, k)).find(r => r?.ownerId === player.id)
-        setDemand(s, player.id, action.counter, myRep?.familyId)
+        // 反报价是对"方案里用到的我的代表"（每个）的出借价，而不是封口费
+        setDemand(s, player.id, action.counter, usedFamiliesOf(neg!, neg!.offer!, player.id))
       }
       advanceResponse(s)
       return
@@ -585,6 +637,7 @@ function apply(s: GameState, action: PlayerAction) {
       neg!.closingIndex = 0
       s.phase = 'CLOSING'
       emit(s, { kind: 'CLOSING_STARTED', bossId: player.id })
+      if (neg!.closingOrder.length === 0) finalizeDeal(s) // 没有别人可放行（单人局）→ 直接结算
       return
     }
 
