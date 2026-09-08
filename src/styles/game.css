@@ -232,7 +232,14 @@ input[type="number"] { width: 90px; }
 .speak-box { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .speak-box .speak-text { flex: 1; min-width: 200px; }
 .demand-input { width: 100px; }
-.demand-fam { max-width: 130px; }
+/* 每个代表一个价格框 */
+.quote-grid { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.quote-row {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 6px 3px 4px;
+  background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); border-radius: 8px;
+}
+.quote-row .demand-input { width: 72px; }
+.quote-name { font-size: 12px; color: var(--muted); white-space: nowrap; }
 
 /* ---- Hand ---- */
 .hand { position: relative; background: var(--bg-panel); border-top: 1px solid var(--border); padding: 6px 14px 10px; flex-shrink: 0; }

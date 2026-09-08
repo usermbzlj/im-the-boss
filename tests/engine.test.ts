@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { HAND_LIMIT, MAX_STALEMATE_ROUNDS, MAX_OFFERS_PER_BOSS, MAX_SPEECHES_PER_PLAYER } from '../src/engine/config'
-import { getActingPlayerId, getLegalActions, canClose } from '../src/engine/validator'
+import { getActingPlayerId, getLegalActions, canClose, isLegal } from '../src/engine/validator'
 import { findRep, investorRepKey, clanRepKey, getGrossValue, recruitTargets, demandOf, commitmentPrice } from '../src/engine/rules'
 import { baseState, setInvestors, giveCards, clearHand, step, rejects, openDealAt, toBoss, eventsOf, totalCash } from './helpers'
 
@@ -32,7 +32,7 @@ describe('叫价轮', () => {
     clearHand(s, 2)
     const [clan] = giveCards(s, 2, [{ type: 'CLAN', familyId: 'B' }])
     s = openDealAt(s, 1, 0) // 需要 A+B
-    s = step(s, { type: 'SPEAK', playerId: 1, say: 'B 要 3', demand: 3, demandFamily: 'B' })
+    s = step(s, { type: 'SPEAK', playerId: 1, say: 'B 要 3', quotes: [{ familyId: 'B', amount: 3 }] })
     s = step(s, { type: 'PLAY_CLAN', playerId: 2, cardId: clan.id, demand: 2 })
     s = step(s, { type: 'PASS', playerId: 3 })
     expect(getActingPlayerId(s)).toBe(0)
@@ -116,11 +116,13 @@ describe('方案 / 应答 / 分成', () => {
     expect(s.negotiation!.offersMade).toBe(1)
     expect(eventsOf(s, 'OFFER_PROPOSED').at(-1)).toMatchObject({ waitingFor: [1], autoAccepted: [] })
 
-    s = step(s, { type: 'DECLINE_OFFER', playerId: 1, counter: 3 })
+    s = step(s, { type: 'DECLINE_OFFER', playerId: 1, quotes: [{ amount: 3 }] })
     expect(s.phase).toBe('NEGOTIATION')
     expect(getActingPlayerId(s)).toBe(0)
     expect(canClose(s)).toBe(false)
     expect(s.negotiation!.demands).toEqual([{ playerId: 1, amount: 3, familyId: 'B' }]) // 反报价记为 B 代表的出借价
+    expect(eventsOf(s, 'OFFER_DECLINED').at(-1)).toMatchObject({ playerId: 1, counters: [{ familyIds: ['B'], amount: 3 }] })
+    expect(eventsOf(s, 'DEMAND')).toHaveLength(0) // 反报价随拒绝事件叙述，不另刷一条报价
     expect(eventsOf(s, 'OFFER_RESOLVED').at(-1)).toMatchObject({ agreed: false, declinerIds: [1] })
 
     // 付到承诺价：不再询问，自动同意
@@ -145,7 +147,7 @@ describe('方案 / 应答 / 分成', () => {
     let s = baseState(4, 2)
     setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
     s = openDealAt(s, 1, 0)
-    s = step(s, { type: 'SPEAK', playerId: 1, say: '3 块', demand: 3, demandFamily: 'B' })
+    s = step(s, { type: 'SPEAK', playerId: 1, say: '3 块', quotes: [{ familyId: 'B', amount: 3 }] })
     s = toBoss(s)
     const keys = [investorRepKey('A'), investorRepKey('B')]
     s = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: keys, payouts: [{ playerId: 1, amount: 2 }] })
@@ -163,14 +165,14 @@ describe('方案 / 应答 / 分成', () => {
     s.board[0].groups = [{ families: ['A', 'B', 'C'], need: 3 }]; s.board[0].dividends = 4 // #1 改为必需 A+B+C
     s = openDealAt(s, 1, 0)
     // 只对 B 报价 4；再对 C 报价 1
-    s = step(s, { type: 'SPEAK', playerId: 1, say: 'B 要 4', demand: 4, demandFamily: 'B' })
+    s = step(s, { type: 'SPEAK', playerId: 1, say: 'B 要 4', quotes: [{ familyId: 'B', amount: 4 }] })
     expect(demandOf(s.negotiation!, 1, 'B')).toBe(4)
     expect(demandOf(s.negotiation!, 1, 'C')).toBeUndefined()
     s = step(s, { type: 'PASS', playerId: 2 }); s = step(s, { type: 'PASS', playerId: 3 }); s = step(s, { type: 'PASS', playerId: 0 })
-    s = step(s, { type: 'SPEAK', playerId: 1, say: 'C 便宜，1 块', demand: 1, demandFamily: 'C' })
+    s = step(s, { type: 'SPEAK', playerId: 1, say: 'C 便宜，1 块', quotes: [{ familyId: 'C', amount: 1 }] })
     expect(demandOf(s.negotiation!, 1, 'B')).toBe(4) // B 的价不受 C 报价影响
     expect(demandOf(s.negotiation!, 1, 'C')).toBe(1)
-    expect(eventsOf(s, 'DEMAND').map(e => e.kind === 'DEMAND' && e.familyIds)).toEqual([['B'], ['C']])
+    expect(eventsOf(s, 'DEMAND').map(e => e.kind === 'DEMAND' && e.quotes)).toEqual([[{ familyIds: ['B'], amount: 4 }], [{ familyIds: ['C'], amount: 1 }]])
     s = toBoss(s)
     const keys = [investorRepKey('A'), investorRepKey('B'), investorRepKey('C')]
     expect(commitmentPrice(s.negotiation!, { repKeys: keys }, 1)).toBe(5) // 4 + 1
@@ -182,20 +184,65 @@ describe('方案 / 应答 / 分成', () => {
     expect(paid4.phase).toBe('OFFER_RESPONSE')
   })
 
+  it('一句话里给每个代表各报各的价；通用价补到没单独报的家族', () => {
+    let s = baseState(4, 2)
+    setInvestors(s, { A: 0, B: 1, C: 1, D: 3 })
+    s.board[0].groups = [{ families: ['A', 'B', 'C'], need: 3 }]; s.board[0].dividends = 4
+    s = openDealAt(s, 1, 0)
+    // 一次说完：B 4、C 1 —— 只占一次喊话
+    s = step(s, { type: 'SPEAK', playerId: 1, say: 'B 4 块、C 1 块', quotes: [{ familyId: 'B', amount: 4 }, { familyId: 'C', amount: 1 }] })
+    expect(s.negotiation!.speakCounts[1]).toBe(1)
+    expect(demandOf(s.negotiation!, 1, 'B')).toBe(4)
+    expect(demandOf(s.negotiation!, 1, 'C')).toBe(1)
+    expect(demandOf(s.negotiation!, 1)).toBeUndefined()
+    expect(eventsOf(s, 'DEMAND').at(-1)).toMatchObject({ playerId: 1, quotes: [{ familyIds: ['B'], amount: 4 }, { familyIds: ['C'], amount: 1 }] })
+    expect(commitmentPrice(s.negotiation!, { repKeys: [investorRepKey('A'), investorRepKey('B'), investorRepKey('C')] }, 1)).toBe(5)
+    // 显式 + 通用：C 改 2，其余（B）按通用价 3
+    s = step(s, { type: 'PASS', playerId: 2 }); s = step(s, { type: 'PASS', playerId: 3 }); s = step(s, { type: 'PASS', playerId: 0 })
+    s = step(s, { type: 'SPEAK', playerId: 1, say: 'C 2，别的 3', quotes: [{ amount: 3 }, { familyId: 'C', amount: 2 }] })
+    expect(demandOf(s.negotiation!, 1, 'B')).toBe(3)
+    expect(demandOf(s.negotiation!, 1, 'C')).toBe(2)
+    expect(demandOf(s.negotiation!, 1)).toBeUndefined() // 有相关代表时通用价不会变成封口费
+  })
+
   it('不指定家族的报价覆盖本格所有相关代表；没有相关代表时是封口费', () => {
     let s = baseState(4, 2)
     setInvestors(s, { A: 0, B: 1, C: 1, D: 3 })
     s.board[0].groups = [{ families: ['A', 'B', 'C'], need: 3 }]; s.board[0].dividends = 4
     s = openDealAt(s, 1, 0)
-    s = step(s, { type: 'SPEAK', playerId: 1, say: '都是 2', demand: 2 })
+    s = step(s, { type: 'SPEAK', playerId: 1, say: '都是 2', quotes: [{ amount: 2 }] })
     expect(demandOf(s.negotiation!, 1, 'B')).toBe(2)
     expect(demandOf(s.negotiation!, 1, 'C')).toBe(2)
     expect(demandOf(s.negotiation!, 1)).toBeUndefined()
+    expect(eventsOf(s, 'DEMAND').at(-1)).toMatchObject({ quotes: [{ familyIds: ['B', 'C'], amount: 2 }] })
     // 玩家 3 的 D 与本格无关：报价就是封口费
     s = step(s, { type: 'PASS', playerId: 2 })
-    s = step(s, { type: 'SPEAK', playerId: 3, say: '给 1 块我不闹', demand: 1 })
+    s = step(s, { type: 'SPEAK', playerId: 3, say: '给 1 块我不闹', quotes: [{ amount: 1 }] })
     expect(s.negotiation!.demands).toContainEqual({ playerId: 3, amount: 1 })
     expect(demandOf(s.negotiation!, 3)).toBe(1)
+    expect(eventsOf(s, 'DEMAND').at(-1)).toMatchObject({ playerId: 3, quotes: [{ familyIds: [], amount: 1 }] })
+  })
+
+  it('报价校验：无关家族、重复家族、两条通用价、越界金额都不合法', () => {
+    let s = baseState(4, 2)
+    setInvestors(s, { A: 0, B: 1, C: 1, D: 3 })
+    s.board[0].groups = [{ families: ['A', 'B', 'C'], need: 3 }]; s.board[0].dividends = 4
+    s = openDealAt(s, 1, 0)
+    rejects(s, { type: 'SPEAK', playerId: 1, say: 'x', quotes: [{ familyId: 'D', amount: 1 }] })                       // D 不是玩家 1 的相关家族
+    rejects(s, { type: 'SPEAK', playerId: 1, say: 'x', quotes: [{ familyId: 'B', amount: 1 }, { familyId: 'B', amount: 2 }] })
+    rejects(s, { type: 'SPEAK', playerId: 1, say: 'x', quotes: [{ amount: 1 }, { amount: 2 }] })
+    rejects(s, { type: 'SPEAK', playerId: 1, say: 'x', quotes: [{ familyId: 'B', amount: getGrossValue(s) + 1 }] })
+    rejects(s, { type: 'SPEAK', playerId: 1, say: 'x', quotes: [{ familyId: 'B', amount: 1.5 }] })
+    expect(isLegal(s, { type: 'SPEAK', playerId: 1, say: 'x', quotes: [] })).toBe(true)
+    // 反报价的作用域是方案所用的我的家族
+    s = toBoss(s)
+    s = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: [investorRepKey('A'), investorRepKey('B'), investorRepKey('C')], payouts: [{ playerId: 1, amount: 1 }] })
+    expect(s.phase).toBe('OFFER_RESPONSE')
+    rejects(s, { type: 'DECLINE_OFFER', playerId: 1, quotes: [{ familyId: 'D', amount: 2 }] })
+    s = step(s, { type: 'DECLINE_OFFER', playerId: 1, quotes: [{ familyId: 'B', amount: 3 }, { familyId: 'C', amount: 1 }] })
+    expect(demandOf(s.negotiation!, 1, 'B')).toBe(3)
+    expect(demandOf(s.negotiation!, 1, 'C')).toBe(1)
+    expect(eventsOf(s, 'OFFER_DECLINED').at(-1)).toMatchObject({ counters: [{ familyIds: ['B'], amount: 3 }, { familyIds: ['C'], amount: 1 }] })
   })
 
   it('方案结构校验：重复家族、无关家族、给 Boss 分钱、超额分成都不合法', () => {

@@ -13,6 +13,7 @@ import {
   playableClanCards, travelTargets, recruitTargets, findRep,
   selectReps, tableCanComplete, offerOwners, isOfferAgreed, offerStillValid, offerDecliners,
   validateOfferShape, repPriceOf, hasStop, payoutTotal, endChance, leaderIds,
+  playerRelevantFamilies, usedFamiliesOf, validQuotes,
 } from './rules'
 
 export function getActingPlayerId(state: GameState): number {
@@ -268,7 +269,7 @@ export function isLegal(state: GameState, action: PlayerAction): boolean {
       return state.phase === 'NEGOTIATION' && !!neg &&
         (neg.speakCounts[action.playerId] ?? 0) < MAX_SPEECHES_PER_PLAYER &&
         typeof action.say === 'string' && action.say.trim().length > 0 &&
-        isValidDemand(state, action.demand)
+        validQuotes(action.quotes, playerRelevantFamilies(state, action.playerId), getGrossValue(state))
     case 'PLAY_CLAN':
       return state.phase === 'NEGOTIATION' &&
         playableClanCards(state, action.playerId).some(c => c.id === action.cardId) &&
@@ -299,7 +300,8 @@ export function isLegal(state: GameState, action: PlayerAction): boolean {
         new Set(action.cardIds).size === over && action.cardIds.every(id => player.hand.some(c => c.id === id))
     }
     case 'DECLINE_OFFER':
-      return state.phase === 'OFFER_RESPONSE' && isValidDemand(state, action.counter)
+      return state.phase === 'OFFER_RESPONSE' && !!neg?.offer &&
+        validQuotes(action.quotes, usedFamiliesOf(neg, neg.offer, action.playerId), getGrossValue(state))
     case 'PLACE_MARKER':
       return state.phase === 'PLACE_MARKER' && !!state.board.find(s => s.id === action.spaceId && s.closedByTileId == null)
     default:

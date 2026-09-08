@@ -19,7 +19,7 @@
 
 import type {
   GameState, GameAction, PlayerAction, Player, InfluenceCard, Negotiation, Offer,
-  GameEvent, FamilyId, Payout, Representative, RepRef, ReactionKind, FailReason,
+  GameEvent, FamilyId, Payout, Representative, RepRef, ReactionKind, FailReason, Quote, ResolvedQuote,
 } from './types'
 import {
   FAMILY_IDS, BOARD_SPACES, DEAL_TILES, AI_ROSTER,
@@ -29,11 +29,11 @@ import {
 import {
   getPlayer, nextPlayerId, prevPlayerId, othersFrom, getSpace, getCurrentTile,
   getGrossValue, offerOwners, findRep, selectReps, investorRepKey, clanRepKey, payoutTotal, offerShareOf, meetsCommitment, repsUsedOf,
-  commitmentPrice, playerRelevantFamilies,
+  commitmentPrice, playerRelevantFamilies, usedFamiliesOf, resolveQuotes,
 } from './rules'
 import { isLegal } from './validator'
 
-export const SAVE_VERSION = 7
+export const SAVE_VERSION = 8
 
 // ---------- 工具 ----------
 
@@ -104,30 +104,26 @@ function remember(s: GameState, playerId: number, text: string | undefined) {
 }
 
 /**
- * 记录公开报价（每个代表的出借价）。familyIds 为空 = 通用价/封口费；否则覆盖这些家族各自的报价。
- * 同一玩家可以对不同家族报不同价，互不影响。quiet：只更新承诺、不发事件（同意方案时用）。
+ * 记录公开报价（每个代表的出借价）：一次动作里可以给每个家族各报各的价。
+ * scope 是本次报价的作用域（喊话 = 我在本格的相关家族；反报价 = 方案所用的我的家族）；
+ * 通用价补到作用域内未单独报价的家族，作用域为空时通用价就是封口费。
+ * 同一玩家对不同家族的价互不影响。quiet：只更新承诺、不发事件（同意方案 / 拒绝时用，由调用方自己叙述）。
  */
-function setDemand(s: GameState, playerId: number, amount: number, familyIds: FamilyId[], quiet = false) {
+function applyQuotes(s: GameState, playerId: number, quotes: Quote[], scope: FamilyId[], quiet = false): ResolvedQuote[] {
   const neg = s.negotiation
-  if (!neg) return
-  if (familyIds.length === 0) {
-    neg.demands = neg.demands.filter(d => !(d.playerId === playerId && d.familyId == null))
-    neg.demands.push({ playerId, amount })
-  } else {
-    neg.demands = neg.demands.filter(d => !(d.playerId === playerId && d.familyId != null && familyIds.includes(d.familyId)))
-    for (const familyId of familyIds) neg.demands.push({ playerId, amount, familyId })
+  if (!neg) return []
+  const resolved = resolveQuotes(quotes, scope)
+  for (const { amount, familyIds } of resolved) {
+    if (familyIds.length === 0) {
+      neg.demands = neg.demands.filter(d => !(d.playerId === playerId && d.familyId == null))
+      neg.demands.push({ playerId, amount })
+    } else {
+      neg.demands = neg.demands.filter(d => !(d.playerId === playerId && d.familyId != null && familyIds.includes(d.familyId)))
+      for (const familyId of familyIds) neg.demands.push({ playerId, amount, familyId })
+    }
   }
-  if (!quiet) emit(s, { kind: 'DEMAND', playerId, amount, familyIds })
-}
-
-/** 方案中用到的、属于该玩家的代表所属家族（去重） */
-function usedFamiliesOf(neg: Negotiation, offer: Pick<Offer, 'repKeys'>, playerId: number): FamilyId[] {
-  const out: FamilyId[] = []
-  for (const k of offer.repKeys) {
-    const r = findRep(neg, k)
-    if (r && r.ownerId === playerId && !out.includes(r.familyId)) out.push(r.familyId)
-  }
-  return out
+  if (!quiet && resolved.length > 0) emit(s, { kind: 'DEMAND', playerId, quotes: resolved })
+  return resolved
 }
 
 function markDisruptor(neg: Negotiation, playerId: number) {
@@ -512,7 +508,7 @@ function apply(s: GameState, action: PlayerAction) {
       const [card] = takeFromHand(player, [action.cardId])
       neg!.reps.push({ key: clanRepKey(card.id), familyId: card.familyId!, source: 'CLAN', ownerId: player.id, cardId: card.id, travelled: false })
       emit(s, { kind: 'CLAN_PLAYED', playerId: player.id, familyId: card.familyId! })
-      if (action.demand != null) setDemand(s, player.id, action.demand, [card.familyId!])
+      if (action.demand != null) applyQuotes(s, player.id, [{ familyId: card.familyId!, amount: action.demand }], [card.familyId!])
       neg!.passStreak = 0
       // Boss 打自己的家族卡是在"拼方案"，紧接着就该提案 / 成交，不必等一整圈；别人打卡则轮到下一位
       neg!.turnId = player.id === neg!.bossId ? player.id : nextPlayerId(s, player.id)
@@ -562,11 +558,8 @@ function apply(s: GameState, action: PlayerAction) {
 
     case 'SPEAK':
       neg!.speakCounts[player.id] = (neg!.speakCounts[player.id] ?? 0) + 1
-      if (action.demand != null) {
-        // 指定家族 → 只对该家族报价；否则对我在本格所有相关代表报同一价；没有相关代表 → 封口费
-        const fams = action.demandFamily ? [action.demandFamily] : playerRelevantFamilies(s, player.id)
-        setDemand(s, player.id, action.demand, fams)
-      }
+      // 一次说完：每个相关家族各自的出借价；通用价补到没单独报的家族；没有相关代表 → 封口费
+      if (action.quotes?.length) applyQuotes(s, player.id, action.quotes, playerRelevantFamilies(s, player.id))
       neg!.passStreak = 0
       neg!.turnId = nextPlayerId(s, player.id)
       return
@@ -625,21 +618,20 @@ function apply(s: GameState, action: PlayerAction) {
       const used = Math.max(1, repsUsedOf(neg!, offer, player.id))
       const committed = commitmentPrice(neg!, offer, player.id)
       if (got % used === 0 && (committed == null || committed > got)) {
-        setDemand(s, player.id, got / used, usedFamiliesOf(neg!, offer, player.id), true)
+        applyQuotes(s, player.id, [{ amount: got / used }], usedFamiliesOf(neg!, offer, player.id), true)
       }
       advanceResponse(s)
       return
     }
 
-    case 'DECLINE_OFFER':
+    case 'DECLINE_OFFER': {
       neg!.offer!.responses[player.id] = 'DECLINED'
-      emit(s, { kind: 'OFFER_DECLINED', playerId: player.id, counter: action.counter })
-      if (action.counter != null) {
-        // 反报价是对"方案里用到的我的代表"（每个）的出借价，而不是封口费
-        setDemand(s, player.id, action.counter, usedFamiliesOf(neg!, neg!.offer!, player.id))
-      }
+      // 反报价是对"方案里用到的我的代表"（每个）的出借价，可按家族分别给；不是封口费
+      const counters = action.quotes?.length ? applyQuotes(s, player.id, action.quotes, usedFamiliesOf(neg!, neg!.offer!, player.id), true) : []
+      emit(s, { kind: 'OFFER_DECLINED', playerId: player.id, counters })
       advanceResponse(s)
       return
+    }
 
     case 'CLOSE_DEAL': {
       if (!neg!.offer) {

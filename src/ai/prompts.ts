@@ -15,7 +15,7 @@ import {
   getCurrentSpace, getCurrentTile, getGrossValue, getEndProbability, oneShareOf,
   relevantFamilies, isRequiredGroup, demandOf, offerShareOf, offerOwners, findRep, playerActiveFamilies,
   selectReps, repCost, missingFamilies, soleRepFamilies, rivalReps, leaderIds, endChance, offerConsent,
-  payoutTotal, activeRepsOfFamily, groupOfFamily, repPriceOf, commitmentPrice, playerRelevantFamilies,
+  payoutTotal, activeRepsOfFamily, groupOfFamily, repPriceOf, commitmentPrice, playerRelevantFamilies, usedFamiliesOf,
 } from '../engine/rules'
 import { canClose } from '../engine/validator'
 import { narrate, famLabel, famName, playerName } from '../text/narrate'
@@ -114,9 +114,10 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
       if (!neg) break
       const mine = playerRelevantFamilies(state, actorId)
       if (mine.length) {
-        const current = mine.map(f => `${famName(f)}${demandOf(neg, actorId, f) != null ? ` $${demandOf(neg, actorId, f)}M` : ' 未报价'}`).join('、')
-        notes.push(`用 demand 报出每个代表的承诺价（一份分红≈$${share}M；你的代表：${current}）；Boss 付到即自动同意`)
-      } else notes.push('你没有相关代表：可施压 / 索要封口费（demand）')
+        const current = mine.map(f => `${f}·${famName(f)}${demandOf(neg, actorId, f) != null ? ` $${demandOf(neg, actorId, f)}M` : ' 未报价'}`).join('、')
+        const example = mine.length > 1 ? `，如 {${mine.map((f, i) => `"${f}":${Math.max(1, share + (i === 0 ? 1 : 0) - i)}`).join(',')}}` : ''
+        notes.push(`用 demand 报出每个代表的承诺价（一份分红≈$${share}M；你的代表：${current}）；${mine.length > 1 ? `不同家族可报不同价，用对象按家族字母分别写${example}，填一个数字则全部同价；` : ''}Boss 付到即自动同意`)
+      } else notes.push('你没有相关代表：可施压 / 索要封口费（demand 填数字）')
       break
     }
     case 'PROPOSE_OFFER': {
@@ -135,7 +136,9 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
       break
     case 'DECLINE_OFFER': {
       const left = neg ? MAX_OFFERS_PER_BOSS - neg.offersMade : 0
-      notes.push(`方案作废；Boss 还剩 ${left} 次提案${left <= 1 ? '（很可能直接放弃，你一分不得）' : ''}；可用 demand 反报价（成为新承诺价）`)
+      const usedFams = neg?.offer ? usedFamiliesOf(neg, neg.offer, actorId) : []
+      const perFam = usedFams.length > 1 ? `；方案用了你 ${usedFams.map(f => `${f}·${famName(f)}`).join('、')} 的代表，可按家族分别反报价（对象写法）` : ''
+      notes.push(`方案作废；Boss 还剩 ${left} 次提案${left <= 1 ? '（很可能直接放弃，你一分不得）' : ''}；可用 demand 反报价（每个代表，成为新承诺价）${perFam}`)
       break
     }
     case 'CLOSE_DEAL':

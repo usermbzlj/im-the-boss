@@ -130,6 +130,21 @@ export interface Demand {
   familyId?: FamilyId
 }
 
+/**
+ * 玩家在一次动作里给出的一条报价（每个代表的价）。
+ * familyId 省略 = 通用价：补到本次作用域内其余未单独报价的家族；作用域为空（没有相关代表）时是封口费。
+ */
+export interface Quote {
+  familyId?: FamilyId
+  amount: number
+}
+
+/** 报价落成后的形态：familyIds 为空 = 封口费 */
+export interface ResolvedQuote {
+  familyIds: FamilyId[]
+  amount: number
+}
+
 export type GamePhase =
   | 'PLACE_MARKER'
   | 'TURN'
@@ -226,13 +241,14 @@ export type GameEvent =
   | { kind: 'BOSS_RESOLVED'; playerId: number; previousBossId: number }
   | { kind: 'OFFER_VOIDED'; reason: 'TRAVELLED' | 'RECRUITED' }
   | { kind: 'SPEECH'; playerId: number; text: string }
-  /** familyIds 为空 = 封口费；否则是这些家族代表各自的出借价（每个代表） */
-  | { kind: 'DEMAND'; playerId: number; amount: number; familyIds: FamilyId[] }
+  /** 一次报价落成的结果：每条 familyIds 为空 = 封口费；否则是这些家族代表各自的出借价（每个代表） */
+  | { kind: 'DEMAND'; playerId: number; quotes: ResolvedQuote[] }
   | { kind: 'STALEMATE_ROUND'; rounds: number; max: number }
   | { kind: 'OFFER_PROPOSED'; bossId: number; offerNo: number; reps: RepRef[]; payouts: Payout[]; bossKeep: number; waitingFor: number[]; autoAccepted: number[] }
   /** auto：方案付到了其承诺价，按约视为同意 */
   | { kind: 'OFFER_ACCEPTED'; playerId: number; auto?: boolean }
-  | { kind: 'OFFER_DECLINED'; playerId: number; counter?: number }
+  /** counters：反报价（每个代表），已落成到方案所用的家族 */
+  | { kind: 'OFFER_DECLINED'; playerId: number; counters: ResolvedQuote[] }
   | { kind: 'OFFER_RESOLVED'; agreed: boolean; declinerIds: number[] }
   | { kind: 'CLOSING_STARTED'; bossId: number }
   | { kind: 'CLOSING_INTERRUPTED' }
@@ -301,14 +317,16 @@ export type PlayerAction =
   | (ActionBase & { type: 'PLAY_STOP' })
   | (ActionBase & { type: 'PASS_REACTION' })
   /**
-   * 喊话：say 必填；可附带公开报价 demand（每个代表的出借价）。
-   * demandFamily 省略 = 对我在本格所有相关代表报同一价（没有相关代表则为封口费）；指定 = 只对该家族报价。
+   * 喊话：say 必填；可附带公开报价 quotes——一次说完每个代表各自的出借价。
+   * 有 familyId 的条目只对该家族报价（必须是我在本格的相关家族）；没有 familyId 的通用价
+   * 补到其余未单独报价的相关家族；没有相关家族时通用价就是封口费。
    */
-  | (ActionBase & { type: 'SPEAK'; demand?: number; demandFamily?: FamilyId })
+  | (ActionBase & { type: 'SPEAK'; quotes?: Quote[] })
   | (ActionBase & { type: 'PASS' })
   | (ActionBase & { type: 'PROPOSE_OFFER'; repKeys: string[]; payouts: Payout[] })
   | (ActionBase & { type: 'ACCEPT_OFFER' })
-  | (ActionBase & { type: 'DECLINE_OFFER'; counter?: number })
+  /** 拒绝：可附反报价 quotes（每个代表），作用域是方案里用到的我的代表所属家族；通用价补到其余家族 */
+  | (ActionBase & { type: 'DECLINE_OFFER'; quotes?: Quote[] })
   | (ActionBase & { type: 'CLOSE_DEAL' })
   | (ActionBase & { type: 'ABANDON_DEAL' })
   | (ActionBase & { type: 'PASS_CLOSING' })

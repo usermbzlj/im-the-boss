@@ -2,10 +2,10 @@
 // 以及提示词工程：剪枝、后果注释、局势摘要、角色卡、私人笔记
 
 import { describe, it, expect } from 'vitest'
-import { extractJsonObject, parseChoiceResponse, resolveChoice, createLLMPolicy } from '../src/ai/llmPolicy'
+import { extractJsonObject, parseChoiceResponse, parseQuotes, resolveChoice, createLLMPolicy } from '../src/ai/llmPolicy'
 import { buildDecisionPrompt, pruneForLLM, annotateOption } from '../src/ai/prompts'
 import { getActingPlayerId, getLegalActions } from '../src/engine/validator'
-import { investorRepKey, clanRepKey } from '../src/engine/rules'
+import { investorRepKey, clanRepKey, demandOf } from '../src/engine/rules'
 import { withFallback } from '../src/ai/policy'
 import { DEFAULT_LLM_CONFIG } from '../src/ai/llmClient'
 import { heuristicPolicy } from '../src/ai/heuristic'
@@ -23,7 +23,7 @@ describe('回复解析', () => {
 
   it('字段宽容：字符串数字、demand 对象、payout 单数、收款人可为名字', () => {
     expect(parseChoiceResponse('{"choice": "3", "demand": {"amount": "2"}, "payout": [{"playerId": "1", "amount": 2}, {"player": "钱多多", "amount": "1"}]}'))
-      .toEqual({ choice: 3, speech: undefined, demand: 2, payouts: [{ playerId: 1, amount: 2 }, { playerId: '钱多多', amount: 1 }], cardIds: undefined })
+      .toEqual({ choice: 3, speech: undefined, quotes: [{ amount: 2 }], payouts: [{ playerId: 1, amount: 2 }, { playerId: '钱多多', amount: 1 }], cardIds: undefined, note: undefined })
     expect(parseChoiceResponse('{"choice": 0}')).toBeNull()
     expect(parseChoiceResponse('{"speech": "没选"}')).toBeNull()
     expect(parseChoiceResponse('{"choice": 1, "cardIds": [3, "4", null, "x"]}')!.cardIds).toEqual([3, 4])
@@ -61,11 +61,58 @@ describe('落成动作', () => {
     const idx = legal.findIndex(a => a.type === 'SPEAK')
     const a = resolveChoice(`{"choice": ${idx + 1}, "demand": 99}`, legal, s)!
     expect(a.type).toBe('SPEAK')
-    expect(a.type === 'SPEAK' && a.demand).toBe(6)
+    expect(a.type === 'SPEAK' && a.quotes).toEqual([{ amount: 6 }])
     expect(a.say!.length).toBeGreaterThan(0)
     const b = resolveChoice(`{"choice": ${idx + 1}, "demand": -5, "speech": "${'长'.repeat(200)}"}`, legal, s)!
-    expect(b.type === 'SPEAK' && b.demand).toBe(0)
+    expect(b.type === 'SPEAK' && b.quotes).toEqual([{ amount: 0 }])
     expect(b.say!.length).toBe(120)
+  })
+
+  it('demand 的各种写法都能解析成按家族的报价', () => {
+    expect(parseQuotes(3)).toEqual([{ amount: 3 }])
+    expect(parseQuotes('3')).toEqual([{ amount: 3 }])
+    expect(parseQuotes(3, 'B')).toEqual([{ familyId: 'B', amount: 3 }])           // 旧写法 demand + demandFamily
+    expect(parseQuotes({ B: 3, D: 1 })).toEqual([{ familyId: 'B', amount: 3 }, { familyId: 'D', amount: 1 }])
+    expect(parseQuotes({ b: 3, '*': 2 })).toEqual([{ familyId: 'B', amount: 3 }, { amount: 2 }])   // 小写字母、"*" 默认价
+    expect(parseQuotes({ 'B·赤岩集团': 3, 其他: 1 })).toEqual([{ familyId: 'B', amount: 3 }, { amount: 1 }])
+    expect(parseQuotes({ 赤岩集团: 3 })).toEqual([{ familyId: 'B', amount: 3 }])   // 家族中文名
+    expect(parseQuotes({ amount: 3, family: 'C' })).toEqual([{ familyId: 'C', amount: 3 }])
+    expect(parseQuotes([{ family: 'B', amount: 3 }, { family: 'C', amount: 1 }])).toEqual([{ familyId: 'B', amount: 3 }, { familyId: 'C', amount: 1 }])
+    expect(parseQuotes({ B: 3, b: 5 })).toEqual([{ familyId: 'B', amount: 3 }])   // 同一家族取第一条
+    expect(parseQuotes({ Boss: 3, xyz: 1 })).toBeUndefined()                        // 认不出的键全部跳过
+    expect(parseQuotes(null)).toBeUndefined()
+    expect(parseQuotes('随便')).toBeUndefined()
+  })
+
+  it('多家族玩家用对象 demand 一次报完各家的价；写错的家族丢掉，其余照常生效', () => {
+    let s = baseState(4, 39)
+    setInvestors(s, { A: 0, B: 1, C: 1, D: 3 }) // 玩家 1 同时持有 B、C
+    s.board[0].groups = [{ families: ['A', 'B', 'C'], need: 3 }]; s.board[0].dividends = 4
+    s = openDealAt(s, 1, 0)
+    expect(getActingPlayerId(s)).toBe(1)
+    const legal = getLegalActions(s, 1)
+    const idx = legal.findIndex(a => a.type === 'SPEAK')
+    const a = resolveChoice(`{"choice": ${idx + 1}, "speech": "B 4、C 1", "demand": {"B": 4, "C": 1, "D": 9}}`, legal, s)!
+    expect(a.type === 'SPEAK' && a.quotes).toEqual([{ familyId: 'B', amount: 4 }, { familyId: 'C', amount: 1 }]) // D 与他无关，丢掉
+    const after = step(s, a)
+    expect(demandOf(after.negotiation!, 1, 'B')).toBe(4)
+    expect(demandOf(after.negotiation!, 1, 'C')).toBe(1)
+    expect(after.negotiation!.speakCounts[1]).toBe(1)
+    // 提示词里说明可以按家族分别报价
+    const prompt = buildDecisionPrompt(s, 1, legal).user
+    expect(prompt).toContain('不同家族可报不同价')
+    expect(prompt).toMatch(/\{"[BC]":\d+,"[BC]":\d+\}/) // 示例按他的两个家族写
+
+    // 拒绝时也可按方案所用的家族分别反报价
+    let t = toBoss(s)
+    t = step(t, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: [investorRepKey('A'), investorRepKey('B'), investorRepKey('C')], payouts: [{ playerId: 1, amount: 1 }] })
+    const legal2 = getLegalActions(t, 1)
+    const di = legal2.findIndex(x => x.type === 'DECLINE_OFFER')
+    const d = resolveChoice(`{"choice": ${di + 1}, "demand": {"B": 3, "C": 2}}`, legal2, t)!
+    expect(d.type === 'DECLINE_OFFER' && d.quotes).toEqual([{ familyId: 'B', amount: 3 }, { familyId: 'C', amount: 2 }])
+    const declined = step(t, d)
+    expect(demandOf(declined.negotiation!, 1, 'B')).toBe(3)
+    expect(demandOf(declined.negotiation!, 1, 'C')).toBe(2)
   })
 
   it('PROPOSE_OFFER 的自定义分成合法则采用，非法则退回候选方案', () => {
@@ -103,7 +150,7 @@ describe('落成动作', () => {
     // 旁观者若已公开索要封口费，则付给他是合理的
     const bribed = step(s, { type: 'PASS', playerId: 0 })
     const spoke = step(bribed, { type: 'SPEAK', playerId: 1, say: '出个价' })
-    const asked = step(spoke, { type: 'SPEAK', playerId: 2, say: '给我 1M 我就不捣乱', demand: 1 })
+    const asked = step(spoke, { type: 'SPEAK', playerId: 2, say: '给我 1M 我就不捣乱', quotes: [{ amount: 1 }] })
     const back = step(asked, { type: 'PASS', playerId: 3 })
     const legal2 = getLegalActions(back, 0)
     const idx2 = legal2.findIndex(a => a.type === 'PROPOSE_OFFER' && a.payouts.length > 0)
@@ -117,7 +164,7 @@ describe('落成动作', () => {
     const legal = getLegalActions(s, 1)
     const idx = legal.findIndex(a => a.type === 'DECLINE_OFFER')
     const a = resolveChoice(`{"choice": ${idx + 1}, "demand": 3}`, legal, s)!
-    expect(a.type === 'DECLINE_OFFER' && a.counter).toBe(3)
+    expect(a.type === 'DECLINE_OFFER' && a.quotes).toEqual([{ amount: 3 }])
 
     const h = baseState(4, 32)
     clearHand(h, 0)
@@ -166,7 +213,7 @@ describe('选项剪枝与后果注释', () => {
     for (let i = 0; i < 4; i++) clearHand(s, i)
     giveCards(s, 3, [{ type: 'TRAVEL' }])
     s = openDealAt(s, 1, 0)
-    s = step(s, { type: 'SPEAK', playerId: 1, say: '3', demand: 3, demandFamily: 'B' })
+    s = step(s, { type: 'SPEAK', playerId: 1, say: '3', quotes: [{ familyId: 'B', amount: 3 }] })
     s = step(s, { type: 'PASS', playerId: 2 }); s = step(s, { type: 'PASS', playerId: 3 })
     const keys = [investorRepKey('A'), investorRepKey('B')]
     const propose = { type: 'PROPOSE_OFFER' as const, playerId: 0, repKeys: keys, payouts: [{ playerId: 1, amount: 3 }] }
@@ -279,7 +326,7 @@ describe('提示词与策略', () => {
     s = openDealAt(s, 1, 0)
     const solo = buildDecisionPrompt(s, 1, getLegalActions(s, 1)).user
     expect(solo).toContain('唯一代表')
-    s = step(s, { type: 'SPEAK', playerId: 1, say: '3', demand: 3, demandFamily: 'B' })
+    s = step(s, { type: 'SPEAK', playerId: 1, say: '3', quotes: [{ familyId: 'B', amount: 3 }] })
     s = step(s, { type: 'PLAY_CLAN', playerId: 2, cardId: clan.id, demand: 2 })
     s = step(s, { type: 'PASS', playerId: 3 }); s = step(s, { type: 'PASS', playerId: 0 })
     const contested = buildDecisionPrompt(s, 1, getLegalActions(s, 1)).user

@@ -124,7 +124,7 @@ export function describeAction(state: GameState, a: PlayerAction): string {
     case 'PASS_REACTION': return '不阻止'
     case 'SPEAK': {
       const hasRep = !!neg && playerActiveFamilies(neg, a.playerId).size > 0
-      return hasRep ? '喊话并报价：说明你的代表出借价（填 demand）' : '喊话：施压 / 表态 / 索要封口费（可填 demand）'
+      return hasRep ? '喊话并报价：报出你每个代表的出借价（填 demand，可按家族分别报）' : '喊话：施压 / 表态 / 索要封口费（可填 demand）'
     }
     case 'PASS': return neg?.bossId === a.playerId ? '暂不行动，让其他人先说' : '跳过'
     case 'PROPOSE_OFFER': {

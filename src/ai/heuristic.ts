@@ -402,25 +402,29 @@ function otherTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerA
     }
   }
 
-  // 3. 叫价：有相关代表但还没开价的家族 → 报承诺价。
-  //    每个家族按各自筹码定价（唯一代表抬价、有竞争者压价）；各家同价就一句话报完，不同价则先报最值钱的那家
+  // 3. 叫价：有相关代表但还没开价的家族 → 一句话报完，每个家族各按自己的筹码定价（唯一代表抬价、有竞争者压价）
   const canSpeak = legal.some(a => a.type === 'SPEAK')
   const unpriced = relevantMine.filter(f => repPriceOf(neg, { ownerId: id, familyId: f } as Representative) == null)
   if (canSpeak && unpriced.length > 0) {
     const priced = unpriced.map(f => ({ f, ask: askPrice(state, id, f) })).sort((a, b) => b.ask - a.ask)
     const allSame = priced.every(x => x.ask === priced[0].ask)
-    const batch = allSame ? priced : [priced[0]]
-    const ask = batch[0].ask
-    const fam = batch.map(x => FAMILIES[x.f].name).join('/')
     const soleSet = new Set(soleRepFamilies(state, id))
-    const sole = batch.some(x => soleSet.has(x.f))
-    const say = sole
-      ? pick([`没我的${fam}这单做不成，$${ask}M。`, `${fam}只有我有，$${ask}M，不二价。`], rand(state, 17))
-      : pick([`想用我的${fam}？$${ask}M，一口价。`, `${fam}这边可以谈，我要 $${ask}M。`, `$${ask}M，付到就成。`], rand(state, 17))
-    // 一句话报完所有家族：不指定 demandFamily（引擎按本格相关代表全部记价）；只报一家则指定
-    return allSame && batch.length === relevantMine.length
-      ? { type: 'SPEAK', playerId: id, say, demand: ask }
-      : { type: 'SPEAK', playerId: id, say, demand: ask, demandFamily: batch[0].f }
+    const sole = priced.some(x => soleSet.has(x.f))
+    let say: string
+    if (allSame) {
+      const ask = priced[0].ask
+      const fam = priced.map(x => FAMILIES[x.f].name).join('/')
+      say = sole
+        ? pick([`没我的${fam}这单做不成，$${ask}M。`, `${fam}只有我有，$${ask}M，不二价。`], rand(state, 17))
+        : pick([`想用我的${fam}？$${ask}M，一口价。`, `${fam}这边可以谈，我要 $${ask}M。`, `$${ask}M，付到就成。`], rand(state, 17))
+    } else {
+      const list = priced.map(x => `${FAMILIES[x.f].name} $${x.ask}M`).join('、')
+      say = sole
+        ? pick([`我的价：${list}。${FAMILIES[priced.find(x => soleSet.has(x.f))!.f].name}没我做不成，不二价。`, `${list}——各是各的价，付到就成。`], rand(state, 17))
+        : pick([`${list}，一口价。`, `我这边：${list}，付到就成。`], rand(state, 17))
+    }
+    // 各家各价，一次说完；已经报过价的家族不动
+    return { type: 'SPEAK', playerId: id, say, quotes: priced.map(x => ({ familyId: x.f, amount: x.ask })) }
   }
 
   // 3b. 被竞争者顶掉：主动降价抢回来（一次），只降被顶掉的那一家的价
@@ -432,7 +436,7 @@ function otherTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerA
       const rivalPrice = repPriceOf(neg, chosen) ?? Math.max(1, Math.floor(offerShareOf(neg.offer, chosen.ownerId) / Math.max(1, repsUsedOf(neg, neg.offer, chosen.ownerId))))
       const cut = Math.max(1, rivalPrice - 1)
       if (myAsk == null || cut < myAsk) {
-        return { type: 'SPEAK', playerId: id, say: `Boss，换我的${FAMILIES[f].name}，$${cut}M 就行，比他便宜。`, demand: cut, demandFamily: f }
+        return { type: 'SPEAK', playerId: id, say: `Boss，换我的${FAMILIES[f].name}，$${cut}M 就行，比他便宜。`, quotes: [{ familyId: f, amount: cut }] }
       }
     }
   }
@@ -453,7 +457,7 @@ function otherTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerA
   if (canSpeak && relevantMine.length === 0 && !hasDemand(neg, id) && p.bribe && gross >= 12 && rand(state, 29) < 0.4) {
     const ask = Math.max(1, Math.round(share * 0.5))
     const say = pick([`我手里有牌，$${ask}M 买个安静怎么样？`, `分我 $${ask}M，我保证不捣乱。`], rand(state, 31))
-    return { type: 'SPEAK', playerId: id, say, demand: ask }
+    return { type: 'SPEAK', playerId: id, say, quotes: [{ amount: ask }] }
   }
 
   // 7. 跳过（被排除时偶尔放狠话——有牌是威胁，没牌是虚张声势）
@@ -507,9 +511,9 @@ function respond(state: GameState, id: number): PlayerAction {
   if (st.iAmLeader && st.end > 0 && !st.wouldOvertake) threshold = 1 // 成交就可能赢：给钱就点头
   if (myShare >= threshold) return { type: 'ACCEPT_OFFER', playerId: id }
   if (neg.offersMade >= MAX_OFFERS_PER_BOSS - 1 && myShare >= Math.max(1, Math.round(share * 0.5)) * used) return { type: 'ACCEPT_OFFER', playerId: id }
-  // 反报价是每个代表的出借价
+  // 反报价是每个代表的出借价（通用价：方案所用的我的每个家族同价）
   const counter = Math.max(Math.ceil(threshold / used), Math.floor(myShare / used) + 1)
-  return { type: 'DECLINE_OFFER', playerId: id, counter: Math.min(counter, Math.max(1, Math.floor((getGrossValue(state) - 1) / used))) }
+  return { type: 'DECLINE_OFFER', playerId: id, quotes: [{ amount: Math.min(counter, Math.max(1, Math.floor((getGrossValue(state) - 1) / used))) }] }
 }
 
 function reaction(state: GameState, id: number, legal: PlayerAction[]): PlayerAction {
@@ -591,7 +595,10 @@ export function heuristicSpeech(state: GameState, action: PlayerAction): string 
     case 'PLAY_RECRUITMENT': return pick(['来，这位投资人跟我走。', '挖个人，不介意吧？'], r)
     case 'PLAY_STOP': return pick(['想都别想！', '这招对我没用。'], r)
     case 'ACCEPT_OFFER': return pick(['成交，我同意出人。', '这个价可以，合作愉快。'], r)
-    case 'DECLINE_OFFER': return action.counter != null ? pick([`这价不行，$${action.counter}M 才谈。`, `加到 $${action.counter}M 我就点头。`], r) : '这价钱我不干。'
+    case 'DECLINE_OFFER': {
+      const counter = action.quotes?.[0]?.amount
+      return counter != null ? pick([`这价不行，每个代表 $${counter}M 才谈。`, `加到 $${counter}M 一个我就点头。`], r) : '这价钱我不干。'
+    }
     case 'CLOSE_DEAL': return pick(['Going once, going twice… 成交！', '没人有意见？那就这么定了。'], r)
     case 'ABANDON_DEAL': return pick(['算了，这单不做了。', '要价太狠，我不玩了。'], r)
     case 'PROPOSE_OFFER': {

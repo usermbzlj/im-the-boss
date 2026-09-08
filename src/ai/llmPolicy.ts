@@ -8,13 +8,13 @@
 // 由 withFallback 交给启发式策略——LLM 永远不会让游戏卡住。
 // ============================================================
 
-import type { GameState, Negotiation, PlayerAction, Payout, FamilyId } from '../engine/types'
-import { FAMILY_IDS } from '../engine/config'
+import type { GameState, Negotiation, PlayerAction, Payout, FamilyId, Quote } from '../engine/types'
+import { FAMILY_IDS, FAMILIES } from '../engine/config'
 import { chatCompletion, isLLMConfigured, type LLMConfig } from './llmClient'
 import { buildDecisionPrompt } from './prompts'
 import { DECISION_PROMPTS } from './promptTexts'
 import { getActingPlayerId, getLegalActions, isLegal } from '../engine/validator'
-import { getGrossValue, offerOwners, hasDemand, playerRelevantFamilies } from '../engine/rules'
+import { getGrossValue, offerOwners, hasDemand, playerRelevantFamilies, usedFamiliesOf } from '../engine/rules'
 import { heuristicSpeech } from './heuristic'
 import type { Policy } from './policy'
 
@@ -64,13 +64,62 @@ export interface RawPayout {
 interface ChoiceResponse {
   choice: number
   speech?: string
-  demand?: number
-  /** 喊话报价时可指定只对某一家族报价（家族字母 A–F） */
-  demandFamily?: FamilyId
+  /**
+   * 报价（每个代表）：由 demand 字段解析而来——数字 = 通用价；对象 {"B":3,"D":1,"*":2} = 按家族分别报价
+   * （"*" 为其余家族的默认价）；也接受 [{family,amount}] 数组与旧的 {amount,family} / demandFamily 写法
+   */
+  quotes?: Quote[]
   payouts?: RawPayout[]
   cardIds?: number[]
   /** 写给下回合自己的私人笔记 */
   note?: string
+}
+
+const GENERAL_KEYS = new Set(['*', 'all', 'default', 'other', 'others', 'rest', '其他', '其余', '全部', '默认'])
+
+/** 家族键：字母 A–F（不分大小写、允许 "B·赤岩集团" 这类带说明的写法）或家族中文名 */
+function toFamilyId(v: unknown): FamilyId | undefined {
+  if (typeof v !== 'string') return undefined
+  const s = v.trim()
+  if (!s) return undefined
+  const letter = s.charAt(0).toUpperCase()
+  if ((FAMILY_IDS as readonly string[]).includes(letter) && (s.length === 1 || !/^[A-Za-z]/.test(s.slice(1)))) return letter as FamilyId
+  return FAMILY_IDS.find(f => s.includes(FAMILIES[f].name))
+}
+
+/** 把模型五花八门的 demand 写法统一成 Quote[]；解析不出任何有效条目返回 undefined */
+export function parseQuotes(demand: unknown, demandFamily?: unknown): Quote[] | undefined {
+  const out: Quote[] = []
+  const push = (familyId: FamilyId | undefined, amount: number | undefined) => {
+    if (amount == null) return
+    if (out.some(q => q.familyId === familyId)) return // 同一家族取第一条
+    out.push(familyId == null ? { amount } : { familyId, amount })
+  }
+  /** 对象键 → 家族 / 通用价；认不出的键跳过 */
+  const fromMap = (rec: Record<string, unknown>) => {
+    for (const [k, v] of Object.entries(rec)) {
+      if (GENERAL_KEYS.has(k.trim().toLowerCase())) push(undefined, toInt(v))
+      else {
+        const fam = toFamilyId(k)
+        if (fam) push(fam, toInt(v))
+      }
+    }
+  }
+  const single = toInt(demand)
+  if (single != null) push(toFamilyId(demandFamily), single)
+  else if (Array.isArray(demand)) {
+    for (const item of demand) {
+      if (!item || typeof item !== 'object') continue
+      const rec = item as Record<string, unknown>
+      if ('amount' in rec) push(toFamilyId(rec.family ?? rec.familyId), toInt(rec.amount))
+      else fromMap(rec)
+    }
+  } else if (demand && typeof demand === 'object') {
+    const rec = demand as Record<string, unknown>
+    if ('amount' in rec) push(toFamilyId(rec.family ?? rec.familyId ?? demandFamily), toInt(rec.amount))
+    else fromMap(rec)
+  }
+  return out.length ? out : undefined
 }
 
 /** 剥离 <think> 与代码围栏后，用括号配对提取第一个完整 JSON 对象 */
@@ -113,10 +162,7 @@ export function parseChoiceResponse(raw: string): ChoiceResponse | null {
     const obj = JSON.parse(text)
     const choice = toInt(obj.choice)
     if (choice == null || choice < 1) return null
-    const demand = obj.demand && typeof obj.demand === 'object' ? toInt(obj.demand.amount) : toInt(obj.demand)
-    const famRaw = obj.demandFamily ?? obj.family ?? (obj.demand && typeof obj.demand === 'object' ? obj.demand.family : undefined)
-    const famLetter = typeof famRaw === 'string' ? famRaw.trim().charAt(0).toUpperCase() : ''
-    const demandFamily = (FAMILY_IDS as readonly string[]).includes(famLetter) ? famLetter as FamilyId : undefined
+    const quotes = parseQuotes(obj.demand ?? obj.quotes ?? obj.counter, obj.demandFamily ?? obj.family)
     // 分成条目任一残缺则整组作废：宁可沿用候选方案，也不能把"给某人 $2M"悄悄变成"谁都不给"
     // （空数组同样视为"不覆盖"——"独吞"本身就是一个独立的编号选项）
     const rawPayouts = obj.payouts ?? obj.payout
@@ -131,7 +177,7 @@ export function parseChoiceResponse(raw: string): ChoiceResponse | null {
     const cardIds = Array.isArray(obj.cardIds) ? obj.cardIds.map(toInt).filter((n: number | undefined): n is number => n != null) : undefined
     const note = typeof obj.note === 'string' && obj.note.trim() ? obj.note.trim() : undefined
     // thought 字段是模型自己的盘算，读过即弃：既不落地也不展示
-    return { choice, speech: typeof obj.speech === 'string' ? obj.speech : undefined, demand, demandFamily, payouts, cardIds, note }
+    return { choice, speech: typeof obj.speech === 'string' ? obj.speech : undefined, quotes, payouts, cardIds, note }
   } catch {
     return null
   }
@@ -146,28 +192,35 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
 
   const speech = (parsed.speech ?? '').trim().slice(0, SPEECH_MAX_LEN)
   const gross = getGrossValue(state)
-  const clampDemand = (d: number | undefined) => d == null ? undefined : Math.max(0, Math.min(gross, d))
+  const clamp = (d: number) => Math.max(0, Math.min(gross, d))
+  /** 只保留作用域内的家族条目与通用价（模型写错的家族直接丢掉，其余照常生效） */
+  const scoped = (scope: FamilyId[]): Quote[] | undefined => {
+    const kept = (parsed.quotes ?? [])
+      .filter(q => q.familyId == null || scope.includes(q.familyId))
+      .map(q => ({ ...q, amount: clamp(q.amount) }))
+    return kept.length ? kept : undefined
+  }
   let action: PlayerAction = structuredClone(option)
 
   switch (action.type) {
     case 'SPEAK': {
       action.say = speech || DECISION_PROMPTS.defaultSpeech
-      const demand = clampDemand(parsed.demand)
-      if (demand != null) {
-        action.demand = demand
-        // 指定了家族且确实是我在本格的相关代表 → 只对该家族报价；否则由引擎对我所有相关代表记同一价（无代表则为封口费）
-        if (parsed.demandFamily && playerRelevantFamilies(state, action.playerId).includes(parsed.demandFamily)) action.demandFamily = parsed.demandFamily
-      }
+      const quotes = scoped(playerRelevantFamilies(state, action.playerId))
+      if (quotes) action.quotes = quotes
       break
     }
     case 'PLAY_CLAN': {
-      const demand = clampDemand(parsed.demand)
-      if (demand != null) action.demand = demand
+      // 这张卡的家族有单独报价就用它，否则用通用价
+      const { playerId, cardId } = action
+      const fam = state.players[playerId]?.hand.find(c => c.id === cardId)?.familyId
+      const q = parsed.quotes?.find(x => x.familyId === fam) ?? parsed.quotes?.find(x => x.familyId == null)
+      if (q) action.demand = clamp(q.amount)
       break
     }
     case 'DECLINE_OFFER': {
-      const counter = clampDemand(parsed.demand)
-      if (counter != null) action.counter = counter
+      const neg = state.negotiation
+      const quotes = neg?.offer ? scoped(usedFamiliesOf(neg, neg.offer, action.playerId)) : undefined
+      if (quotes) action.quotes = quotes
       break
     }
     case 'PROPOSE_OFFER': {

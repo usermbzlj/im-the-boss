@@ -5,7 +5,7 @@
 
 import type {
   GameState, BoardSpace, DealGroup, DealTile, FamilyId, Negotiation,
-  Representative, Offer, Payout, Player, InfluenceCard, Demand,
+  Representative, Offer, Payout, Player, InfluenceCard, Demand, Quote, ResolvedQuote,
 } from './types'
 import { FAMILY_IDS } from './config'
 
@@ -154,6 +154,62 @@ export function playerRelevantFamilies(state: GameState, playerId: number): Fami
 /** 展示用：玩家的全部报价，按家族 */
 export function demandsOf(neg: Negotiation, playerId: number): Demand[] {
   return neg.demands.filter(d => d.playerId === playerId)
+}
+
+/** 方案中用到的、属于该玩家的代表所属家族（去重）——反报价的作用域 */
+export function usedFamiliesOf(neg: Negotiation, offer: Pick<Offer, 'repKeys'>, playerId: number): FamilyId[] {
+  const out: FamilyId[] = []
+  for (const k of offer.repKeys) {
+    const r = findRep(neg, k)
+    if (r && r.ownerId === playerId && !out.includes(r.familyId)) out.push(r.familyId)
+  }
+  return out
+}
+
+/**
+ * 报价是否成形：金额是 [0, 总额] 内的整数；指定的家族必须在作用域内（我在本格的相关家族 / 方案所用的我的家族）
+ * 且不重复；通用价最多一条。空数组视为"没报价"。
+ */
+export function validQuotes(quotes: unknown, scope: FamilyId[], gross: number): quotes is Quote[] {
+  if (quotes === undefined) return true
+  if (!Array.isArray(quotes)) return false
+  const seen = new Set<string>()
+  for (const q of quotes as Array<Partial<Quote> | null>) {
+    if (!q || typeof q !== 'object') return false
+    if (!Number.isInteger(q.amount) || (q.amount as number) < 0 || (q.amount as number) > gross) return false
+    if (q.familyId != null && !scope.includes(q.familyId)) return false
+    const key = q.familyId ?? '*'
+    if (seen.has(key)) return false
+    seen.add(key)
+  }
+  return true
+}
+
+/**
+ * 把一次报价落成到家族：显式家族条目各记各的价；通用价补到作用域内其余家族；
+ * 作用域为空（没有相关代表）时通用价就是封口费（familyIds 为空）。
+ * 返回按金额归并的列表（同价家族合成一条），供引擎记账与叙述。
+ */
+export function resolveQuotes(quotes: Quote[], scope: FamilyId[]): ResolvedQuote[] {
+  const byAmount = new Map<number, FamilyId[]>()
+  const explicit = new Set<FamilyId>()
+  let general: number | undefined
+  for (const q of quotes) {
+    if (q.familyId != null) {
+      explicit.add(q.familyId)
+      byAmount.set(q.amount, [...(byAmount.get(q.amount) ?? []), q.familyId])
+    } else general = q.amount
+  }
+  if (general != null) {
+    const rest = scope.filter(f => !explicit.has(f))
+    if (rest.length > 0) byAmount.set(general, [...(byAmount.get(general) ?? []), ...rest])
+    else if (scope.length === 0) return [...toResolved(byAmount), { familyIds: [], amount: general }]
+  }
+  return toResolved(byAmount)
+}
+
+function toResolved(byAmount: Map<number, FamilyId[]>): ResolvedQuote[] {
+  return [...byAmount.entries()].map(([amount, familyIds]) => ({ amount, familyIds }))
 }
 
 /** 一份分红的默认心理价：总额 / (投资者数 + 1) */

@@ -3,7 +3,7 @@
 // UI 日志、座位气泡、LLM 提示词里的"最近发生了什么"都走这一份实现。
 // ============================================================
 
-import type { GameEvent, GameState, FamilyId, Payout, RepRef, ReactionKind } from '../engine/types'
+import type { GameEvent, GameState, FamilyId, Payout, RepRef, ReactionKind, ResolvedQuote } from '../engine/types'
 import { FAMILIES, HAND_LIMIT, MAX_OFFERS_PER_BOSS } from '../engine/config'
 
 export type EventTone = 'system' | 'action' | 'card' | 'deal' | 'fail' | 'end' | 'speech'
@@ -33,6 +33,21 @@ export function describeRepRef(state: GameState, r: RepRef): string {
 export function describePayouts(state: GameState, payouts: Payout[]): string {
   const parts = payouts.filter(p => p.amount > 0).map(p => `${playerName(state, p.playerId)} $${p.amount}M`)
   return parts.length ? parts.join('、') : '无人分成'
+}
+
+/** 落成后的报价："赤岩集团 $3M、黑松控股 $1M（每个代表，付到即成）" / "$2M（封口费）" */
+export function describeQuotes(quotes: ResolvedQuote[]): string {
+  const hush = quotes.find(q => q.familyIds.length === 0)
+  const reps = quotes.filter(q => q.familyIds.length > 0)
+  const parts: string[] = []
+  if (reps.length) {
+    const body = reps.length === 1 && reps[0].familyIds.length > 1 && reps.every(q => q.familyIds.length > 1)
+      ? `$${reps[0].amount}M（${reps[0].familyIds.map(famName).join('/')}，每个代表）`
+      : reps.flatMap(q => q.familyIds.map(f => `${famName(f)} $${q.amount}M`)).join('、')
+    parts.push(`${body}，付到即成`)
+  }
+  if (hush) parts.push(`$${hush.amount}M（封口费）`)
+  return parts.join('；')
 }
 
 export function narrate(state: GameState, e: GameEvent): Narration {
@@ -77,7 +92,7 @@ export function narrate(state: GameState, e: GameEvent): Narration {
     case 'SPEECH':
       return { tone: 'speech', text: `${n(e.playerId)}：「${e.text}」` }
     case 'DEMAND':
-      return { tone: 'action', text: `${n(e.playerId)} 报价：$${e.amount}M${e.familyIds.length ? `（${e.familyIds.map(famName).join('/')} 代表出借价${e.familyIds.length > 1 ? '，每个代表' : ''}，付到即成）` : '（封口费）'}` }
+      return { tone: 'action', text: `${n(e.playerId)} 报价：${describeQuotes(e.quotes)}` }
     case 'STALEMATE_ROUND':
       return { tone: 'system', text: `全员跳过一轮，谈判停滞（${e.rounds}/${e.max}，再一轮无人行动将流局）` }
     case 'OFFER_PROPOSED': {
@@ -93,7 +108,7 @@ export function narrate(state: GameState, e: GameEvent): Narration {
         ? { tone: 'action', text: `${n(e.playerId)} 的承诺价已付到，按约视为同意` }
         : { tone: 'action', text: `${n(e.playerId)} 同意出借代表` }
     case 'OFFER_DECLINED':
-      return { tone: 'fail', text: `${n(e.playerId)} 拒绝出借代表${e.counter != null ? `，反报价 $${e.counter}M` : ''}` }
+      return { tone: 'fail', text: `${n(e.playerId)} 拒绝出借代表${e.counters.length ? `，反报价：${describeQuotes(e.counters)}` : ''}` }
     case 'OFFER_RESOLVED':
       return e.agreed
         ? { tone: 'system', text: '方案获得全部代表持有者同意，Boss 可宣布成交' }
