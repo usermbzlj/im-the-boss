@@ -562,9 +562,13 @@ export function canReclaim(state: GameState, playerId: number, familyId: FamilyI
  */
 export function recruitCost(state: GameState, playerId: number, familyId: FamilyId): number {
   if (canReclaim(state, playerId, familyId)) return RECLAIM_RECRUIT_COST
+  return standardRecruitCost(state)
+}
+
+/** 不计夺回权时，此刻凑一组招募要几张：猎头格交易进行中 2 张，其余 3 张（手牌区"招募 n/3"的分母） */
+export function standardRecruitCost(state: GameState): number {
   const inDeal = !!state.negotiation && (state.phase === 'NEGOTIATION' || state.phase === 'CLOSING' || state.phase === 'REACTION')
-  if (inDeal && getCurrentSpace(state)?.kind === 'HEADHUNT') return HEADHUNT_RECRUIT_COST
-  return RECRUIT_COST
+  return inDeal && getCurrentSpace(state)?.kind === 'HEADHUNT' ? HEADHUNT_RECRUIT_COST : RECRUIT_COST
 }
 
 /**

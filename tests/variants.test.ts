@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from 'vitest'
 import {
-  VARIANTS, VARIANT_IDS, VARIANT_LIST, getVariant, makeDealTiles, DEAL_TILES, buildBoard, createDeckFor, ringLayout,
+  VARIANTS, VARIANT_IDS, VARIANT_LIST, getVariant, makeDealTiles, DEAL_TILES, buildBoard, createDeckFor, ringLayout, ringRowOptions,
   STARTING_HAND, LANDMARK_RENT, PREMIUM_BONUS, BOOM_BONUS, BUST_PENALTY, MIN_SHARE_VALUE, HEADHUNT_RECRUIT_COST, RECLAIM_RECRUIT_COST, RECRUIT_COST,
   sickCardCount,
 } from '../src/engine/config'
@@ -80,13 +80,28 @@ describe('变体配置', () => {
     for (const deck of [classic, full, marathon]) expect(new Set(deck.map(c => c.id)).size).toBe(deck.length)
   })
 
-  it('环形布局：n 格正好铺满外圈且互不重叠', () => {
+  it('环形布局：n 格正好铺满外圈且互不重叠（每种可选行数都成立）', () => {
+    expect(ringRowOptions(16)).toEqual([4])
+    expect(ringRowOptions(24)).toEqual([4, 5, 6])
+    expect(ringRowOptions(32)).toEqual([4, 5, 6, 7, 8])
     for (const n of [16, 24, 32]) {
-      const { cols, rows, cells } = ringLayout(n)
-      expect(cells).toHaveLength(n)
-      expect(2 * cols + 2 * (rows - 2)).toBe(n)
-      expect(new Set(cells.map(c => `${c.row},${c.col}`)).size).toBe(n)
-      for (const c of cells) expect(c.row === 1 || c.row === rows || c.col === 1 || c.col === cols).toBe(true)
+      // 默认取最方的一种（与旧版 6×4 / 8×6 / 10×8 一致）
+      expect(ringLayout(n).rows).toBe(ringRowOptions(n)[ringRowOptions(n).length - 1])
+      // 不合法的行数回落到默认
+      expect(ringLayout(n, 3).rows).toBe(ringLayout(n).rows)
+      for (const wanted of ringRowOptions(n)) {
+        const { cols, rows, cells } = ringLayout(n, wanted)
+        expect(rows).toBe(wanted)
+        expect(cols).toBeGreaterThan(rows)
+        expect(cells).toHaveLength(n)
+        expect(2 * cols + 2 * (rows - 2)).toBe(n)
+        expect(new Set(cells.map(c => `${c.row},${c.col}`)).size).toBe(n)
+        for (const c of cells) expect(c.row === 1 || c.row === rows || c.col === 1 || c.col === cols).toBe(true)
+        // 顺时针：#1 在左上角，上排从左到右，最后一格回到左列第二行
+        expect(cells[0]).toEqual({ row: 1, col: 1 })
+        expect(cells[cols - 1]).toEqual({ row: 1, col: cols })
+        expect(cells[n - 1]).toEqual({ row: 2, col: 1 })
+      }
     }
   })
 

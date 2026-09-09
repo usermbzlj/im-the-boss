@@ -105,12 +105,15 @@ input[type="number"] { width: 90px; }
 /* ---- Table Board ---- */
 .table-board { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; padding: 10px 14px 4px; gap: 10px; }
 .seats-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; flex-shrink: 0; }
-/* 版图放不下时（大版图 / 小窗口）在自身内部滚动，而不是顶到座位栏和操作区下面 */
-.ring-wrap { flex: 1; display: flex; min-height: 0; overflow: auto; padding: 2px; }
+/*
+ * 版图区域不滚动：TableBoard 按区域宽高挑外圈行数（宽屏 / 矮窗口用更扁的外圈），
+ * 仍放不下就把整张外圈等比缩小（transform，围绕中心），保证 32 格也一屏看全。
+ */
+.ring-wrap { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 180px; overflow: hidden; padding: 2px; }
 .ring-grid {
   --cell-min: 112px; --cell-min-h: 96px;
   display: grid; grid-template-columns: repeat(6, minmax(var(--cell-min), 1fr)); grid-template-rows: repeat(4, minmax(var(--cell-min-h), auto));
-  gap: 6px; width: 100%; max-width: 900px; position: relative; margin: auto; flex-shrink: 0;
+  gap: 6px; width: 100%; max-width: 900px; position: relative; flex-shrink: 0; transform-origin: center center;
 }
 .ring-grid.ring-lg { --cell-min: 96px; --cell-min-h: 80px; max-width: 1120px; gap: 5px; }
 .ring-grid.ring-xl { --cell-min: 84px; --cell-min-h: 68px; max-width: 1320px; gap: 4px; }

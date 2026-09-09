@@ -279,12 +279,32 @@ export const VARIANT_LIST: VariantSummary[] = VARIANT_IDS.map(id => {
   }
 })
 
+/** 外圈最少 4 行：中间要留 ≥ 2 行放景气牌与公共区 */
+export const RING_MIN_ROWS = 4
+
+/**
+ * n 格外圈可选的行数（从"最扁"到"最方"）：每种行数对应 cols = n/2 − rows + 2 列，
+ * 要求 cols > rows（横向为主，座位栏在上方）且 rows ≥ 4。
+ * 16 → [4]；24 → [4, 5, 6]；32 → [4, 5, 6, 7, 8]。版图区域越扁（宽屏 / 矮窗口）越该选少的行数。
+ */
+export function ringRowOptions(n: number): number[] {
+  const out: number[] = []
+  for (let rows = RING_MIN_ROWS; ; rows++) {
+    const cols = Math.round((n - 2 * (rows - 2)) / 2)
+    if (cols <= rows) break
+    out.push(rows)
+  }
+  return out.length ? out : [Math.max(2, Math.round(n / 4))]
+}
+
 /**
  * 环形版图布局：n 格排成 cols × rows 的外圈（n = 2·cols + 2·(rows−2)）。
- * 16 → 6×4、24 → 8×6、32 → 10×8；返回每格（1 起）的网格行列，顺时针：上排 → 右列 → 下排 → 左列。
+ * 默认取最"方"的一种（16 → 6×4、24 → 8×6、32 → 10×8）；可指定行数换成更扁的外圈（如 32 → 13×5）。
+ * 返回每格（1 起）的网格行列，顺时针：上排 → 右列 → 下排 → 左列。
  */
-export function ringLayout(n: number): { cols: number; rows: number; cells: Array<{ row: number; col: number }> } {
-  const rows = Math.max(2, Math.round(n / 4))
+export function ringLayout(n: number, rowsWanted?: number): { cols: number; rows: number; cells: Array<{ row: number; col: number }> } {
+  const options = ringRowOptions(n)
+  const rows = rowsWanted != null && options.includes(rowsWanted) ? rowsWanted : options[options.length - 1]
   const cols = Math.max(2, Math.round((n - 2 * (rows - 2)) / 2))
   const cells: Array<{ row: number; col: number }> = []
   for (let c = 1; c <= cols; c++) cells.push({ row: 1, col: c })

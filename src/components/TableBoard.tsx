@@ -2,8 +2,9 @@
 // TableBoard — 环形版图（16 / 24 / 32 格，按变体自适应）+ 中央景气牌 + 公共区 + 座位
 // ============================================================
 
+import { useLayoutEffect, useRef, useState } from 'react'
 import type { GameState, BoardSpace, SpaceKind } from '../engine/types'
-import { FAMILIES, ringLayout, getVariant } from '../engine/config'
+import { FAMILIES, ringLayout, ringRowOptions, getVariant } from '../engine/config'
 import { getCurrentTile, getGrossValue, getEndProbability, isRequiredGroup, canCompleteAlone, effectiveShareValue } from '../engine/rules'
 import { getActingPlayerId } from '../engine/validator'
 import { spaceKindName, spaceKindEffect } from '../text/narrate'
@@ -18,6 +19,64 @@ interface TableBoardProps {
 
 const KIND_ICON: Record<SpaceKind, string> = { STANDARD: '', LANDMARK: '🏛', PREMIUM: '🔥', BLACK_MARKET: '🕶', HEADHUNT: '🎯' }
 
+/** 三档格子尺寸（与 game.css 的 .ring-grid / .ring-lg / .ring-xl 对应）：最小宽、典型高（含内容撑高余量）、间距 */
+const RING_METRICS = {
+  '': { w: 112, h: 100, gap: 6 },
+  ' ring-lg': { w: 96, h: 84, gap: 5 },
+  ' ring-xl': { w: 84, h: 72, gap: 4 },
+} as const
+type SizeClass = keyof typeof RING_METRICS
+
+/**
+ * 按版图区域的实际宽高挑外圈行数：越扁的区域（宽屏 / 矮窗口）用越少的行、越多的列。
+ * 对每种行数估算外圈的自然尺寸，取"缩放最少"的一种；同样放得下时保留更方的（行数更多的）。
+ */
+function pickRingRows(n: number, availW: number, availH: number, m: { w: number; h: number; gap: number }): number {
+  const options = ringRowOptions(n)
+  let best = options[options.length - 1]
+  let bestFit = -1
+  for (const rows of options) {
+    const cols = Math.round((n - 2 * (rows - 2)) / 2)
+    const need = { w: cols * m.w + (cols - 1) * m.gap, h: rows * m.h + (rows - 1) * m.gap }
+    const fit = Math.min(1, availW / need.w, availH / need.h)
+    if (fit >= bestFit - 1e-6) { best = rows; bestFit = fit }
+  }
+  return best
+}
+
+/**
+ * 让整张版图始终完整可见：量出版图区域尺寸 → 选行数；再量外圈自然尺寸 → 放不下就整体等比缩小。
+ * 之前外圈在区域内滚动，大版图 / 矮窗口下上排会被滚出视野，看起来像少了一排。
+ */
+function useRingFit(n: number, sizeClass: SizeClass) {
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const gridRef = useRef<HTMLDivElement>(null)
+  const [avail, setAvail] = useState<{ w: number; h: number } | null>(null)
+  const [scale, setScale] = useState(1)
+
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current
+    const grid = gridRef.current
+    if (!wrap || !grid) return
+    const measure = () => {
+      const w = wrap.clientWidth - 4, h = wrap.clientHeight - 4 // 扣掉 .ring-wrap 的 2px 内边距
+      setAvail(prev => (prev && prev.w === w && prev.h === h ? prev : { w, h }))
+      // offsetWidth / offsetHeight 不受 transform 影响：量的是未缩放的自然尺寸
+      const gw = grid.offsetWidth, gh = grid.offsetHeight
+      const k = Math.min(1, gw > 0 ? w / gw : 1, gh > 0 ? h / gh : 1)
+      setScale(prev => (Math.abs(prev - k) < 0.005 ? prev : k))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(wrap)
+    ro.observe(grid)
+    return () => ro.disconnect()
+  }, [])
+
+  const rows = avail ? pickRingRows(n, avail.w, avail.h, RING_METRICS[sizeClass]) : undefined
+  return { wrapRef, gridRef, rows, scale }
+}
+
 function spaceTooltip(state: GameState, space: BoardSpace): string {
   const parts = space.groups.map(g => isRequiredGroup(g)
     ? `必需：${g.families.map(f => `${f}·${FAMILIES[f].name}`).join('、')}`
@@ -31,8 +90,9 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBo
   const tile = getCurrentTile(state)
   const nextTile = state.dealTiles[state.dealTileIndex + 1]
   const gross = getGrossValue(state)
-  const layout = ringLayout(state.board.length)
-  const sizeClass = state.board.length > 24 ? ' ring-xl' : state.board.length > 16 ? ' ring-lg' : ''
+  const sizeClass: SizeClass = state.board.length > 24 ? ' ring-xl' : state.board.length > 16 ? ' ring-lg' : ''
+  const fit = useRingFit(state.board.length, sizeClass)
+  const layout = ringLayout(state.board.length, fit.rows)
   const currentSpace = state.board.find(b => b.id === state.markerPos)
   const shareNow = currentSpace ? effectiveShareValue(state, currentSpace) : (tile?.shareValue ?? 0)
   const variant = getVariant(state.variantId)
@@ -54,12 +114,14 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBo
         ))}
       </div>
 
-      <div className="ring-wrap">
+      <div className="ring-wrap" ref={fit.wrapRef}>
         <div
           className={`ring-grid${sizeClass}`}
+          ref={fit.gridRef}
           style={{
             gridTemplateColumns: `repeat(${layout.cols}, minmax(var(--cell-min), 1fr))`,
             gridTemplateRows: `repeat(${layout.rows}, minmax(var(--cell-min-h), auto))`,
+            transform: fit.scale < 1 ? `scale(${fit.scale})` : undefined,
           }}
         >
           {state.board.map((space, idx) => {

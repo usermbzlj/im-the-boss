@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { InfluenceCard, GameState, PlayerAction, FamilyId } from '../engine/types'
 import { FAMILIES, HAND_LIMIT, BOOM_BONUS, BUST_PENALTY } from '../engine/config'
-import { findRep, oneShareOf, canReclaim, recruitCost, getGrossValue, swapTargetType, isSick } from '../engine/rules'
+import { findRep, oneShareOf, canReclaim, recruitCost, standardRecruitCost, getGrossValue, swapTargetType, isSick } from '../engine/rules'
 import { grossAfterDelta } from '../text/labels'
 
 /** 手牌多选模式：弃牌（超上限）/ 兑换（桌规：两张异类牌换招募） */
@@ -85,6 +85,7 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
 
   const neg = state.negotiation
   const recruitCount = player.hand.filter(c => c.type === 'RECRUITMENT').length
+  const recruitNeed = standardRecruitCost(state)
   const openCard = player.hand.find(c => c.id === openCardId) ?? null
   const openActions = openCard ? actionsForCard(legal, openCard) : []
 
@@ -297,7 +298,7 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
         {selectMode === 'discard' && <span className="red">点选要弃的牌</span>}
         {selectMode === 'trade' && <span className="gold">兑换：点选两张不同种类的牌（{selection.size}/2）</span>}
         {sick && !selecting && <span className="red" title="本回合内不能主动出牌 / 换牌，只能喊话、报价、应答、跳过；阻止牌仍可打">🤒 病假中</span>}
-        {recruitCount > 0 && recruitCount < 3 && <span className="muted">招募 {recruitCount}/3</span>}
+        {recruitCount > 0 && recruitCount < recruitNeed && <span className="muted" title={recruitNeed < 3 ? '猎头格：本笔交易中招募只需 2 张' : '3 张招募牌一组'}>招募 {recruitCount}/{recruitNeed}</span>}
         {player.reclaim && <span className="gold" title="你的最后一位常驻投资者被夺走了：只需 1 张招募牌即可抢回">夺回权：{FAMILIES[player.reclaim].name}</span>}
       </div>
       <div className="hand-cards">
