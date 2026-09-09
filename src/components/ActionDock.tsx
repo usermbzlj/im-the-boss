@@ -4,21 +4,26 @@
 
 import { useEffect, useState } from 'react'
 import type { GameState, PlayerAction, FamilyId, Quote } from '../engine/types'
-import { FAMILIES, HAND_LIMIT, MAX_SPEECHES_PER_PLAYER } from '../engine/config'
+import { FAMILIES, HAND_LIMIT, MAX_SPEECHES_PER_PLAYER, TRADE_RECRUIT_COUNT } from '../engine/config'
 import {
   getGrossValue, oneShareOf, offerShareOf, demandOf, getCurrentSpace, tableCanComplete, canCompleteAlone,
   soleRepFamilies, rivalReps, missingFamilies, playerRelevantFamilies, demandsOf, repPriceOf, commitmentPrice, usedFamiliesOf,
+  buyCardsCost, tradeCost, isSick, recruitCountAfterTrade, isValidTradePair, countCards,
 } from '../engine/rules'
 import { canClose } from '../engine/validator'
 import { describeReactionTarget } from '../text/labels'
 import { reactionKindName, describePayouts } from '../text/narrate'
 import FamilyChip from './FamilyChip'
+import type { HandSelectMode } from './CardHand'
 
 interface ActionDockProps {
   state: GameState
   legal: PlayerAction[]
   act: (action: PlayerAction) => void
-  discardSelection: Set<number>
+  /** 手牌多选（弃牌 / 兑换）当前选中的牌 */
+  selection: Set<number>
+  selectMode: HandSelectMode
+  onToggleTradeMode: () => void
   onOpenOfferEditor: () => void
 }
 
@@ -26,7 +31,7 @@ const HUMAN_ID = 0
 /** 价格框的键：家族字母 = 该家族代表的价；HUSH = 没有代表时的封口费 */
 const HUSH = '*'
 
-export default function ActionDock({ state, legal, act, discardSelection, onOpenOfferEditor }: ActionDockProps) {
+export default function ActionDock({ state, legal, act, selection, selectMode, onToggleTradeMode, onOpenOfferEditor }: ActionDockProps) {
   const [speakText, setSpeakText] = useState('')
   /** 每个代表一个价格框（喊话报价 / 拒绝时的反报价共用）；空 = 这一家不动 */
   const [prices, setPrices] = useState<Record<string, string>>({})
@@ -41,6 +46,8 @@ export default function ActionDock({ state, legal, act, discardSelection, onOpen
   const travelled = new Set(neg?.travelledInvestors ?? [])
   const myInvestors = state.investors.filter(i => i.ownerId === HUMAN_ID)
   const myClanReps = neg?.reps.filter(r => r.ownerId === HUMAN_ID && r.source === 'CLAN') ?? []
+  const sick = isSick(state, HUMAN_ID)
+  const tradeMode = selectMode === 'trade'
 
   // 阶段或方案一换，价格框清空：别把上一份方案的反报价带进下一次喊话
   useEffect(() => { setPrices({}) }, [state.phase, neg?.offer?.id])
@@ -85,8 +92,43 @@ export default function ActionDock({ state, legal, act, discardSelection, onOpen
       )}
       {myDemandLabel() && <span className="status-group" title="报价即承诺（每个代表）：Boss 的方案付到这个价，视为你自动同意"><span className="status-label">你的承诺价</span><b className="gold">{myDemandLabel()}</b></span>}
       {neg?.offer && offerShareOf(neg.offer, HUMAN_ID) > 0 && <span className="status-group"><span className="status-label">方案分你</span><b className="gold">${offerShareOf(neg.offer, HUMAN_ID)}M</b></span>}
+      {sick && <span className="status-group red" title="病假牌生效：本回合内不能主动出牌 / 换牌，只能喊话、报价、应答、跳过；阻止牌仍可打">🤒 病假中</span>}
     </div>
   )
+
+  /** 桌规：买牌（1/2/3 张）与兑换招募牌（两张异类牌 + 一份股价）的操作条；只在合法动作里有时出现 */
+  const renderHouseRules = () => {
+    const buys = legal.filter(a => a.type === 'BUY_CARDS')
+    const canTrade = has('TRADE_CARDS')
+    if (buys.length === 0 && !canTrade) return null
+    const picked = [...selection]
+    const pairOk = tradeMode && isValidTradePair(state, HUMAN_ID, picked)
+    const after = pairOk ? recruitCountAfterTrade(state, HUMAN_ID, picked) : countCards(me.hand, 'RECRUITMENT') + TRADE_RECRUIT_COUNT
+    return (
+      <div className="dock-house">
+        <span className="dock-house-label" title="桌规动作：不结束你的行动，每回合各限一次">桌规</span>
+        {buys.map(a => a.type === 'BUY_CARDS' && (
+          <button key={a.count} className="btn btn-sm" onClick={() => send(a)}
+            title={`付 $${buyCardsCost(state, a.count)}M 给银行（钱不会回来），立刻多抽 ${a.count} 张`}>
+            🃏 买 {a.count} 张 <b>${buyCardsCost(state, a.count)}M</b>
+          </button>
+        ))}
+        {canTrade && !tradeMode && (
+          <button className="btn btn-sm" onClick={onToggleTradeMode}
+            title={`交出两张不同种类的牌 + 付 $${tradeCost(state)}M 给银行，换 ${TRADE_RECRUIT_COUNT} 张招募牌（不可逆）`}>
+            🔁 兑换招募牌 <b>${tradeCost(state)}M</b>
+          </button>
+        )}
+        {tradeMode && (
+          <>
+            <span className="dock-hint gold">在手牌里点选两张<b>不同种类</b>的牌交出（已选 {selection.size}/2）→ 付 ${tradeCost(state)}M 换 {TRADE_RECRUIT_COUNT} 张招募牌{pairOk ? `，招募牌将有 ${after} 张` : ''}</span>
+            <button className="btn btn-success btn-sm" disabled={!pairOk} onClick={() => send({ type: 'TRADE_CARDS', playerId: HUMAN_ID, cardIds: picked })}>确认兑换</button>
+            <button className="btn btn-sm" onClick={onToggleTradeMode}>取消</button>
+          </>
+        )}
+      </div>
+    )
+  }
 
   const renderActions = () => {
     if (state.phase === 'GAME_OVER') return null
@@ -111,26 +153,30 @@ export default function ActionDock({ state, legal, act, discardSelection, onOpen
         const space = getCurrentSpace(state)!
         const canSolo = canCompleteAlone(state, HUMAN_ID, space)
         return (
-          <div className="dock-actions">
-            <button className="btn btn-success btn-lg" onClick={() => send({ type: 'OPEN_DEAL', playerId: HUMAN_ID })}>
-              Let's make a deal！发起 #{state.markerPos} 的交易 <b>${gross}M</b>
-              <small>{canSolo ? '你的投资者/家族卡可独立凑齐' : '需要向他人借代表'}</small>
-            </button>
-            {state.phase === 'TURN'
-              ? <button className="btn btn-lg" onClick={() => send({ type: 'ROLL_MOVE', playerId: HUMAN_ID })}>🎲 掷骰移动标记</button>
-              : <button className="btn btn-lg" onClick={() => send({ type: 'DRAW_CARDS', playerId: HUMAN_ID })}>🃏 抽 3 张牌，结束回合</button>}
-          </div>
+          <>
+            <div className="dock-actions">
+              <button className="btn btn-success btn-lg" disabled={tradeMode} onClick={() => send({ type: 'OPEN_DEAL', playerId: HUMAN_ID })}>
+                Let's make a deal！发起 #{state.markerPos} 的交易 <b>${gross}M</b>
+                <small>{canSolo ? '你的投资者/家族卡可独立凑齐' : '需要向他人借代表'}</small>
+              </button>
+              {state.phase === 'TURN'
+                ? <button className="btn btn-lg" disabled={tradeMode} onClick={() => send({ type: 'ROLL_MOVE', playerId: HUMAN_ID })}>🎲 掷骰移动标记</button>
+                : <button className="btn btn-lg" disabled={tradeMode} onClick={() => send({ type: 'DRAW_CARDS', playerId: HUMAN_ID })}>🃏 抽 3 张牌，结束回合</button>}
+              {has('PLAY_SICK') && !tradeMode && <span className="dock-hint">开单前可从手牌打病假牌，先放倒最可能搅局的人</span>}
+            </div>
+            {renderHouseRules()}
+          </>
         )
       }
 
       case 'HAND_LIMIT': {
         const over = me.hand.length - HAND_LIMIT
-        const ready = discardSelection.size === over
+        const ready = selection.size === over
         return (
           <div className="dock-actions">
-            <span className="dock-hint red">手牌 {me.hand.length} 张，需弃 {over} 张（已选 {discardSelection.size}）{has('PLAY_RECRUITMENT') ? '；或点招募牌夺取投资者' : ''}</span>
-            <button className="btn btn-danger" disabled={!ready} onClick={() => send({ type: 'DISCARD', playerId: HUMAN_ID, cardIds: [...discardSelection] })}>
-              弃掉所选 {discardSelection.size}/{over} 张
+            <span className="dock-hint red">手牌 {me.hand.length} 张，需弃 {over} 张（已选 {selection.size}）{has('PLAY_RECRUITMENT') ? '；或点招募牌夺取投资者' : ''}</span>
+            <button className="btn btn-danger" disabled={!ready} onClick={() => send({ type: 'DISCARD', playerId: HUMAN_ID, cardIds: [...selection] })}>
+              弃掉所选 {selection.size}/{over} 张
             </button>
             <button className="btn" onClick={() => {
               const auto = legal.find(a => a.type === 'DISCARD')
@@ -163,8 +209,11 @@ export default function ActionDock({ state, legal, act, discardSelection, onOpen
         const quoteKeys = isBoss ? [] : mine.length ? mine : [HUSH]
         const pending = collectQuotes(quoteKeys)
         const canSend = !!speakText.trim() || pending.length > 0
+        const complete = tableCanComplete(state)
+        const passTitle = complete ? '本轮不行动（连续两轮全员跳过会流局）' : '桌上凑不齐代表：全员跳过一轮就直接流局'
         return (
           <div className="dock-neg">
+            {sick && <span className="dock-hint red">🤒 你本回合病假中：不能主动出牌 / 换牌，只能喊话、报价、应答、跳过（阻止牌仍可打）</span>}
             {has('SPEAK') && (
               <div className="speak-box">
                 {!isBoss && (
@@ -222,18 +271,22 @@ export default function ActionDock({ state, legal, act, discardSelection, onOpen
                     title={closable ? '进入"Going once, going twice"倒计时，无人干扰即结算' : '需先有全员同意的方案，或仅用自己的代表凑齐'}>
                     ✓ 宣布成交
                   </button>
-                  <button className="btn" onClick={() => send({ type: 'PASS', playerId: HUMAN_ID })} title="再听一轮叫价">再听一轮</button>
+                  <button className="btn" onClick={() => send({ type: 'PASS', playerId: HUMAN_ID })} title={complete ? '再听一轮叫价' : passTitle}>再听一轮{!complete && '（缺代表）'}</button>
                   {confirmAbandon
                     ? <><span className="red">确定放弃？家族卡收回，无人拿钱</span><button className="btn btn-danger" onClick={() => send({ type: 'ABANDON_DEAL', playerId: HUMAN_ID })}>确定</button><button className="btn" onClick={() => setConfirmAbandon(false)}>取消</button></>
                     : <button className="btn btn-danger" onClick={() => setConfirmAbandon(true)}>放弃交易</button>}
                 </>
               ) : (
                 <>
-                  <button className="btn" onClick={() => send({ type: 'PASS', playerId: HUMAN_ID })}>跳过</button>
-                  <span className="dock-hint">从下方手牌打出家族成员 / 旅行 / 招募 / 老板牌</span>
+                  <button className="btn" onClick={() => send({ type: 'PASS', playerId: HUMAN_ID })} title={passTitle}>跳过</button>
+                  <span className="dock-hint">
+                    {sick ? '病假中：只能喊话 / 报价 / 跳过' : `从下方手牌打出家族成员 / 旅行 / 招募 / 老板${state.houseRules ? ' / 病假' : ''}牌`}
+                    {!complete && <span className="muted">；桌上凑不齐代表，全员跳过一轮即流局</span>}
+                  </span>
                 </>
               )}
             </div>
+            {renderHouseRules()}
           </div>
         )
       }
@@ -291,7 +344,7 @@ export default function ActionDock({ state, legal, act, discardSelection, onOpen
           <div className="dock-actions">
             <span className="dock-hint">
               Boss 宣布成交，你{myShare > 0 ? <>将分得 <b className="gold">${myShare}M</b></> : '拿不到钱'}。
-              {canDisrupt ? '最后机会：放行，或从手牌打旅行 / 招募 / 老板牌' : '你没有可打的干扰牌，稍后自动放行'}
+              {canDisrupt ? `最后机会：放行，或从手牌打旅行 / 招募 / 老板${state.houseRules ? ' / 病假' : ''}牌` : sick ? '你病假中，不能打干扰牌，稍后自动放行' : '你没有可打的干扰牌，稍后自动放行'}
             </span>
             <button className="btn btn-success" onClick={() => send({ type: 'PASS_CLOSING', playerId: HUMAN_ID })}>放行</button>
           </div>

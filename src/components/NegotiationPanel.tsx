@@ -42,6 +42,7 @@ export default function NegotiationPanel({ state }: { state: GameState }) {
   if (neg.priceDelta > 0) badges.push({ text: `📈 利好 +$${neg.priceDelta}M/份`, tone: 'green', title: '利好牌生效' })
   if (neg.priceDelta < 0) badges.push({ text: `📉 利空 −$${-neg.priceDelta}M/份`, tone: 'red', title: '利空牌生效' })
   const name = (id: number) => `${state.players[id]?.name ?? '?'}${id === HUMAN_ID ? '（你）' : ''}`
+  if (state.turn.sick.length) badges.push({ text: `🤒 病假：${state.turn.sick.map(name).join('、')}（本回合不能主动出牌）`, tone: 'muted', title: '病假牌生效：只能被动打阻止牌' })
 
   const priceOf = (r: Representative) => {
     if (r.ownerId === neg.bossId) return 'Boss 自有'

@@ -6,8 +6,8 @@ import type { GameState, PlayerAction, FamilyId, CardType, InfluenceCard, GameVa
 import { createInitialState, gameReducer } from '../src/engine/gameEngine'
 import { isLegal, getActingPlayerId } from '../src/engine/validator'
 
-export function baseState(playerCount = 4, seed = 1, variantId?: GameVariantId): GameState {
-  const s = createInitialState(playerCount, '测试', seed, variantId)
+export function baseState(playerCount = 4, seed = 1, variantId?: GameVariantId, houseRules?: boolean): GameState {
+  const s = createInitialState(playerCount, '测试', seed, variantId, { houseRules })
   for (const p of s.players) p.isAI = true
   return s
 }

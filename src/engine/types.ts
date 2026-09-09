@@ -16,12 +16,13 @@ export interface Family {
 }
 
 /**
- * 影响牌种类。前五种是官方牌；后三种是扩展稀有牌（经典变体不含）：
+ * 影响牌种类。前五种是官方牌；BOOM / BUST / EXCLUSIVE 是扩展稀有牌（经典变体不含）：
  *   · BOOM 利好：Boss 打出，本笔股价 +$2M/份（方案分成不变，多出的全归 Boss）
  *   · BUST 利空：非 Boss 打出，本笔股价 −$1M/份（最低 $1M/份；砍的是 Boss 的净得）
  *   · EXCLUSIVE 独家协议：Boss 打出，本笔交易锁定——老板牌 / 旅行牌 / 利空牌不再能打（招募仍可）
+ * SICK 病假牌随桌规（houseRules）入堆：指定一名玩家，本回合内他不能主动出牌（仍可打阻止牌自保）。
  */
-export type CardType = 'CLAN' | 'TRAVEL' | 'RECRUITMENT' | 'BOSS' | 'STOP' | 'BOOM' | 'BUST' | 'EXCLUSIVE'
+export type CardType = 'CLAN' | 'TRAVEL' | 'RECRUITMENT' | 'BOSS' | 'STOP' | 'BOOM' | 'BUST' | 'EXCLUSIVE' | 'SICK'
 
 export interface InfluenceCard {
   id: number
@@ -217,25 +218,40 @@ export interface Negotiation {
   exclusive: boolean
 }
 
-export type ReactionKind = 'TRAVEL' | 'BOSS' | 'RECRUITMENT' | 'BOOM' | 'BUST' | 'EXCLUSIVE'
+export type ReactionKind = 'TRAVEL' | 'BOSS' | 'RECRUITMENT' | 'BOOM' | 'BUST' | 'EXCLUSIVE' | 'SICK'
 
 export interface PendingReaction {
   actorId: number
   kind: ReactionKind
-  /** 已从手牌移出的牌（旅行/老板/利好/利空/独家 1 张，招募 1~3 张） */
+  /** 已从手牌移出的牌（旅行/老板/利好/利空/独家/病假 1 张，招募 1~3 张） */
   cards: InfluenceCard[]
   /** 旅行牌目标代表 */
   targetRepKey?: string
   /** 招募目标投资者 */
   targetFamilyId?: FamilyId
+  /** 病假牌目标玩家 */
+  targetPlayerId?: number
   /** 当前被询问是否打阻止牌的玩家 */
   reactorId: number
   askedIds: number[]
-  /** 反应结束后回到哪个阶段 */
-  returnPhase: 'NEGOTIATION' | 'CLOSING' | 'HAND_LIMIT'
+  /** 反应结束后回到哪个阶段（TURN / AFTER_MOVE：开单前打出的病假牌，窗口结束后行动者继续自己的回合） */
+  returnPhase: 'NEGOTIATION' | 'CLOSING' | 'HAND_LIMIT' | 'TURN' | 'AFTER_MOVE'
 }
 
-export type FailReason = 'ABANDONED' | 'STALEMATE'
+/** 流局原因：Boss 放弃 / 连续多轮全员跳过 / 桌上凑不齐代表且全员跳过一轮（不必再多等） */
+export type FailReason = 'ABANDONED' | 'STALEMATE' | 'INCOMPLETE'
+
+/**
+ * 本回合的一次性标记，endTurn 时清空。桌规里的"每回合限一次"与病假都记在这里：
+ *   swapped / bought / traded：本回合已做过互换 / 买牌 / 兑换的玩家
+ *   sick：病假中的玩家（本回合不能主动出牌，只能被动打阻止牌）
+ */
+export interface TurnFlags {
+  swapped: number[]
+  bought: number[]
+  traded: number[]
+  sick: number[]
+}
 
 export interface DealRecord {
   id: number
@@ -263,8 +279,17 @@ export type GameEvent =
   | { kind: 'DECK_RESHUFFLED'; size: number }
   | { kind: 'HAND_LIMIT'; playerId: number; handSize: number }
   | { kind: 'CARDS_DISCARDED'; playerId: number; count: number }
+  /** 桌规：花钱补牌（cost 付给银行） */
+  | { kind: 'CARDS_BOUGHT'; playerId: number; count: number; cost: number; handSize: number }
+  /** 桌规：家族成员牌 ↔ 同家族旅行牌互换（to 为换到的牌种） */
+  | { kind: 'CARD_SWAPPED'; playerId: number; familyId: FamilyId; to: 'CLAN' | 'TRAVEL' }
+  /** 桌规：交出两张不同种类的牌 + 一份股价，换 2 张招募牌 */
+  | { kind: 'CARDS_TRADED'; playerId: number; given: CardType[]; cost: number; recruitCount: number }
   | { kind: 'CLAN_PLAYED'; playerId: number; familyId: FamilyId }
   | { kind: 'TRAVEL_PLAYED'; playerId: number; wildcard: boolean; target: RepRef }
+  | { kind: 'SICK_PLAYED'; playerId: number; targetId: number }
+  /** 病假生效：目标本回合不能主动出牌 */
+  | { kind: 'SICK_RESOLVED'; playerId: number; targetId: number }
   /** cost：本次消耗的招募牌张数（3 常规 / 2 猎头格 / 1 夺回权） */
   | { kind: 'RECRUITMENT_PLAYED'; playerId: number; familyId: FamilyId; fromId: number | null; cost: number }
   | { kind: 'BOSS_PLAYED'; playerId: number; bossId: number }
@@ -314,6 +339,15 @@ export interface GameState {
   saveVersion: number
   /** 对局变体（版图 / 景气牌 / 牌堆由它决定，开局时已落成到下面的字段里） */
   variantId: GameVariantId
+  /**
+   * 桌规（可选规则包，开局选择；扩展变体默认开、经典默认关）：
+   * 家族成员牌 ↔ 旅行牌互换、花钱补牌、两张异类牌 + 一份股价换 2 张招募牌、病假牌入堆
+   */
+  houseRules: boolean
+  /** 本回合的一次性标记（互换 / 买牌 / 兑换各限一次；病假名单），endTurn 清空 */
+  turn: TurnFlags
+  /** 银行从买牌 / 兑换收走的钱（现金守恒：Σ现金 = Σ成交总额 + Σ租金 − bank） */
+  bank: number
   phase: GamePhase
   players: Player[]
   investors: InvestorPlacard[]
@@ -367,6 +401,14 @@ export type PlayerAction =
   | (ActionBase & { type: 'PLAY_BOOM'; cardId: number })
   | (ActionBase & { type: 'PLAY_BUST'; cardId: number })
   | (ActionBase & { type: 'PLAY_EXCLUSIVE'; cardId: number })
+  /** 病假牌：目标玩家本回合不能主动出牌（进反应窗口，目标可打阻止牌） */
+  | (ActionBase & { type: 'PLAY_SICK'; cardId: number; targetPlayerId: number })
+  /** 桌规：手中的家族成员牌换成同家族旅行牌，或反之（须持有该家族投资者；每回合一次） */
+  | (ActionBase & { type: 'SWAP_CARD'; cardId: number })
+  /** 桌规：付 1 / 3 / 6 份股价，抽 1 / 2 / 3 张牌（自己回合内、开单前；每回合一次；不得超出手牌上限） */
+  | (ActionBase & { type: 'BUY_CARDS'; count: 1 | 2 | 3 })
+  /** 桌规：交出两张不同种类的牌 + 一份股价，换 2 张招募牌（每回合一次，不可逆） */
+  | (ActionBase & { type: 'TRADE_CARDS'; cardIds: number[] })
   | (ActionBase & { type: 'PLAY_STOP' })
   | (ActionBase & { type: 'PASS_REACTION' })
   /**
@@ -388,6 +430,6 @@ export type PlayerAction =
 export type PlayerActionType = PlayerAction['type']
 
 export type GameAction =
-  | { type: 'START_GAME'; playerCount: number; humanName: string; seed?: number; variantId?: GameVariantId }
+  | { type: 'START_GAME'; playerCount: number; humanName: string; seed?: number; variantId?: GameVariantId; houseRules?: boolean }
   | { type: 'LOAD_GAME'; state: GameState }
   | PlayerAction

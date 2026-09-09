@@ -19,6 +19,7 @@ import {
   activeRepsOfFamily, findRep, offerShareOf, offerOwners, repCost, payoutTotal, repsUsedOf,
   familyDemandOnBoard, groupOfFamily, soleRepFamilies, leaderIds, endChance, grudgeCount,
   commitmentPrice, repPriceOf, hasDemand, landmarkRentEstimate, canReclaim, isBlackMarketDeal, isExclusiveLocked,
+  isSick, swapTargetType, buyCardsCost, tradeCost, recruitCountAfterTrade, cardKeepValue, recruitTargets, recruitCost, countCards,
 } from '../engine/rules'
 import { getActingPlayerId, getLegalActions, isLegal, buildOfferCandidates, canClose, type OfferCandidate } from '../engine/validator'
 import type { Policy } from './policy'
@@ -61,8 +62,8 @@ export const heuristicPolicy: Policy = {
 function decide(state: GameState, id: number, legal: PlayerAction[]): PlayerAction | null {
   switch (state.phase) {
     case 'PLACE_MARKER': return placeMarker(state, id, legal)
-    case 'TURN': return wantsToOpen(state, id, false) ? { type: 'OPEN_DEAL', playerId: id } : { type: 'ROLL_MOVE', playerId: id }
-    case 'AFTER_MOVE': return wantsToOpen(state, id, true) ? { type: 'OPEN_DEAL', playerId: id } : { type: 'DRAW_CARDS', playerId: id }
+    case 'TURN': return preDeal(state, id, legal, false) ?? (wantsToOpen(state, id, false) ? { type: 'OPEN_DEAL', playerId: id } : { type: 'ROLL_MOVE', playerId: id })
+    case 'AFTER_MOVE': return preDeal(state, id, legal, true) ?? (wantsToOpen(state, id, true) ? { type: 'OPEN_DEAL', playerId: id } : { type: 'DRAW_CARDS', playerId: id })
     case 'HAND_LIMIT': return handLimit(state, id, legal)
     case 'NEGOTIATION': return state.negotiation!.bossId === id ? bossTurn(state, id, legal) : otherTurn(state, id, legal)
     case 'OFFER_RESPONSE': return respond(state, id)
@@ -196,6 +197,148 @@ function reclaimOption(state: GameState, id: number, legal: PlayerAction[]): Pla
   return legal.find(a => a.type === 'PLAY_RECRUITMENT' && canReclaim(state, id, a.targetFamilyId)) ?? null
 }
 
+// ---------- 桌规：买牌 / 互换 / 兑换 / 病假 ----------
+
+/** 谁对这单最危险：不在方案里拿钱、手牌最多的人（同牌数取现金多者 / 坑过我的人） */
+function mostDangerous(state: GameState, id: number, candidates: number[], minHand: number): number | null {
+  const neg = state.negotiation
+  let best: number | null = null
+  let bestScore = -Infinity
+  for (const q of candidates) {
+    const p = getPlayer(state, q)
+    if (!p || q === id || isSick(state, q) || p.hand.length < minHand) continue
+    if (neg && offerShareOf(neg.offer, q) > 0) continue
+    const score = p.hand.length * 2 + p.cash * 0.05 + grudgeCount(state, id, q) * 1.5
+    if (score > bestScore) { bestScore = score; best = q }
+  }
+  return best
+}
+
+function sickOptionFor(legal: PlayerAction[], target: number | null): PlayerAction | null {
+  if (target == null) return null
+  return legal.find(a => a.type === 'PLAY_SICK' && a.targetPlayerId === target) ?? null
+}
+
+/**
+ * 自己回合开单前的桌规动作：
+ *   · 手牌见底且现金宽裕（非终局）→ 花钱补 1 张（穷得只剩 1 张时补 2 张）
+ *   · 手里有能换来"下一步就能招"的兑换 → 先兑换
+ *   · 准备开一单值钱的交易 → 先把手牌最多的对手放倒（病假），他这一轮就翻不了桌
+ */
+function preDeal(state: GameState, id: number, legal: PlayerAction[], afterMove: boolean): PlayerAction | null {
+  if (!state.houseRules) return null
+  const me = getPlayer(state, id)!
+  const end = endChance(state)
+  const buy = (n: number) => legal.find(a => a.type === 'BUY_CARDS' && a.count === n)
+  // 一张牌的期望价值有限（省下一份分红的机会而已）：股价便宜时才买，贵了只有很有钱才买
+  const affordable = (n: number) => { const cost = buyCardsCost(state, n); return cost <= 3 * n || cost * 8 <= me.cash }
+  if (end === 0 && me.hand.length <= 2) {
+    const two = buy(2)
+    if (two && me.hand.length <= 1 && affordable(2) && me.cash >= buyCardsCost(state, 2) * 3 && rand(state, 101) < 0.4) return two
+    const one = buy(1)
+    if (one && affordable(1) && me.cash >= buyCardsCost(state, 1) * 3 && rand(state, 103) < 0.6) return one
+  }
+  const trade = tradeOption(state, id, legal)
+  if (trade) return trade
+  const gross = getGrossValue(state)
+  if (gross >= 10 && wantsToOpen(state, id, afterMove) && rand(state, 107) < 0.6) {
+    const target = mostDangerous(state, id, state.players.map(p => p.id), 3)
+    const sick = sickOptionFor(legal, target)
+    if (sick) return sick
+  }
+  return null
+}
+
+/**
+ * 兑换招募牌（两张异类牌 + 一份股价 → 2 张招募）值不值：换完就能招人才做——
+ * 夺回权只要 1 张（没招募牌时兑换即可立刻夺回）；猎头格 2 张；常规 3 张须已有 1 张。
+ * 交出的必须是废牌（已关闭家族的家族卡 / 定向旅行、凑不成组的单张招募），且别把现金掏空。
+ */
+function tradeOption(state: GameState, id: number, legal: PlayerAction[]): PlayerAction | null {
+  const trade = legal.find(a => a.type === 'TRADE_CARDS')
+  if (!trade || trade.type !== 'TRADE_CARDS') return null
+  const me = getPlayer(state, id)!
+  const have = countCards(me.hand, 'RECRUITMENT')
+  const after = recruitCountAfterTrade(state, id, trade.cardIds)
+  const given = trade.cardIds.map(cid => me.hand.find(c => c.id === cid)!)
+  const junkScore = given.reduce((s, c) => s + cardKeepValue(state, id, c), 0)
+  const reclaimable = !!me.reclaim && canReclaim(state, id, me.reclaim)
+  if (reclaimable && have < 1 && after >= 1 && junkScore <= 6) return trade
+  const targets = recruitTargets(state, id).filter(f => !canReclaim(state, id, f))
+  if (targets.length === 0 || junkScore > 2 || endChance(state) > 0) return null
+  const minCost = Math.min(...targets.map(f => recruitCost(state, id, f)))
+  if (have >= minCost || after < minCost) return null
+  if (me.cash < tradeCost(state) * 3) return null
+  return rand(state, 109) < 0.7 ? trade : null
+}
+
+/**
+ * 互换（家族成员 ↔ 同家族旅行牌，须持有该家族投资者）：
+ *   · 成员 → 旅行：桌上有别人的同家族代表在和我的投资者抢位置 → 换出旅行牌，下一步就把他打飞，Boss 只能找我
+ *   · 旅行 → 成员：我的投资者被打飞、这家又缺人 / 被别人顶了 → 换回成员卡补位
+ * 互换不结束行动，换完紧接着就能打。
+ */
+function swapOption(state: GameState, id: number, legal: PlayerAction[]): PlayerAction | null {
+  const neg = state.negotiation
+  if (!neg) return null
+  const space = getCurrentSpace(state)!
+  const me = getPlayer(state, id)!
+  const gross = getGrossValue(state)
+  const isBoss = neg.bossId === id
+  for (const a of legal) {
+    if (a.type !== 'SWAP_CARD') continue
+    const card = me.hand.find(c => c.id === a.cardId)
+    const f = card?.familyId
+    if (!card || !f || !groupOfFamily(space, f)) continue
+    const to = swapTargetType(card)
+    if (to === 'TRAVEL') {
+      if (isBoss || isExclusiveLocked(state) || gross < 8) continue
+      const myInvestorActive = neg.reps.some(r => r.familyId === f && r.source === 'INVESTOR' && r.ownerId === id && !r.travelled)
+      const rivals = activeRepsOfFamily(neg, f).filter(r => r.ownerId !== id)
+      if (!myInvestorActive || rivals.length === 0) continue
+      const rivalInOffer = rivals.some(r => neg.offer?.repKeys.includes(r.key))
+      const iAmUsed = !!neg.offer && neg.offer.repKeys.some(k => findRep(neg, k)?.ownerId === id && findRep(neg, k)?.familyId === f)
+      if (iAmUsed) continue
+      if (rivalInOffer || !neg.offer) { if (rand(state, 113) < 0.8) return a }
+    } else if (to === 'CLAN') {
+      if (!neg.travelledInvestors.includes(f)) continue
+      const rivals = activeRepsOfFamily(neg, f).filter(r => r.ownerId !== id)
+      const needed = isFamilyMissing(state, f) || (isBoss ? selectReps(state).repKeys.some(k => findRep(neg, k)?.familyId === f && findRep(neg, k)?.ownerId !== id) : rivals.some(r => neg.offer?.repKeys.includes(r.key)))
+      if (needed && gross >= 6) return a
+    }
+  }
+  return null
+}
+
+/** 清场：打飞与我的投资者同家族、正在和我抢位置的竞争代表（打掉后 Boss 只能找我） */
+function travelForMyInvestor(state: GameState, id: number, legal: PlayerAction[]): PlayerAction | null {
+  const neg = state.negotiation
+  if (!neg || getGrossValue(state) < 8) return null
+  const myInvestors = new Set(state.investors.filter(i => i.ownerId === id).map(i => i.familyId))
+  let best: PlayerAction | null = null
+  let bestScore = 0
+  for (const a of legal) {
+    if (a.type !== 'PLAY_TRAVEL') continue
+    const rep = findRep(neg, a.targetRepKey)
+    if (!rep || rep.ownerId === id || !myInvestors.has(rep.familyId) || neg.travelledInvestors.includes(rep.familyId)) continue
+    const inOffer = !!neg.offer?.repKeys.includes(rep.key)
+    const iAmUsed = !!neg.offer && neg.offer.repKeys.some(k => { const r = findRep(neg, k); return r?.ownerId === id && r.familyId === rep.familyId })
+    if (iAmUsed) continue
+    const others = activeRepsOfFamily(neg, rep.familyId).filter(r => r.key !== rep.key && r.ownerId !== id).length
+    const score = (inOffer ? 3 : 1) + (others === 0 ? 2 : 0) + (rep.ownerId === neg.bossId ? 1 : 0)
+    if (score > bestScore) { bestScore = score; best = a }
+  }
+  return best && bestScore >= 3 && rand(state, 127) < 0.85 ? best : null
+}
+
+/** 谈判中的病假：我在方案里有钱 → 把不在方案里、手牌多的人放倒，保住这单；Boss 落锤前也一样 */
+function protectiveSick(state: GameState, id: number, legal: PlayerAction[], chance: number): PlayerAction | null {
+  const neg = state.negotiation
+  if (!neg || getGrossValue(state) < 10 || rand(state, 131) >= chance) return null
+  const target = mostDangerous(state, id, state.players.filter(p => p.id !== neg.bossId).map(p => p.id), 3)
+  return sickOptionFor(legal, target)
+}
+
 // ---------- Boss ----------
 
 /** 用自己的家族卡替代别人要钱的代表能省多少（模拟加入该卡后的最省方案） */
@@ -222,11 +365,18 @@ function bossTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerAc
   const reclaim = reclaimOption(state, id, legal)
   if (reclaim) return reclaim
 
+  // 桌规：兑换 / 互换不结束行动，先做（兑换后下一步就能夺回；换回成员卡后下一步就能补位）
+  const exchange = tradeOption(state, id, legal) ?? swapOption(state, id, legal)
+  if (exchange) return exchange
+
   if (canClose(state)) {
     // 落锤前的"拼方案"牌：独家协议先把桌子锁上（别人手牌多、这单值钱时），利好再把盘子做大（分成已定，多出的全归我）
     const exclusive = legal.find(a => a.type === 'PLAY_EXCLUSIVE')
     const threat = state.players.some(q => q.id !== id && q.hand.length >= 3)
     if (exclusive && threat && gross >= 10 && !isBlackMarketDeal(state) && rand(state, 83) < 0.8) return exclusive
+    // 病假：把不在方案里、手牌最多的人放倒，他这一轮翻不了桌
+    const sick = protectiveSick(state, id, legal, 0.7)
+    if (sick) return sick
     const boom = legal.find(a => a.type === 'PLAY_BOOM')
     if (boom && rand(state, 89) < 0.9) return boom
     return { type: 'CLOSE_DEAL', playerId: id }
@@ -404,6 +554,13 @@ function otherTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerA
   const reclaim = reclaimOption(state, id, legal)
   if (reclaim) return reclaim
 
+  // 0b. 桌规：不结束行动的换牌先做——兑换后立刻能夺回 / 招募；互换出旅行牌后立刻能打飞竞争者，换回成员卡后立刻能补位
+  const exchange = tradeOption(state, id, legal) ?? swapOption(state, id, legal)
+  if (exchange) return exchange
+  // 0c. 清场：打飞正在和我的投资者抢同一个位置的代表，Boss 就只能找我
+  const clear = travelForMyInvestor(state, id, legal)
+  if (clear) return { ...clear, say: pick(['这位先出个差，这家的事找我谈。', '不好意思，同一家有我就够了。'], rand(state, 139)) }
+
   // 1. 夺权：交易值钱、我当 Boss 也能凑齐，且（被排除/分太少 | 我不用花钱就能独吞 | 拦领先者的终局单）
   const bossOpt = legal.find(a => a.type === 'PLAY_BOSS')
   if (bossOpt && prize >= 9 && canCompleteAsBoss(state, id)) {
@@ -411,6 +568,12 @@ function otherTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerA
     const strong = !neg.offer && cost <= share && prize - cost >= prize * 0.6
     const reason = (neg.offer && (excluded || underpaid)) || strong || st.blockLeader
     if (reason && rand(state, 11) < disruptChance(state, id, 0.45) + (strong ? 0.25 : 0) + (st.blockLeader ? 0.3 * st.end : 0)) return bossOpt
+  }
+
+  // 1b. 保住我的分成：方案里有我的钱 → 把不在方案里、手牌多的人放倒（病假）
+  if (myShare > 0) {
+    const sick = protectiveSick(state, id, legal, p.protect * 0.7)
+    if (sick) return sick
   }
 
   // 2. 打家族卡：补缺口（能拿钱），或与竞争者抢单
@@ -495,7 +658,7 @@ function otherTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerA
   }
 
   // 7. 跳过（被排除时偶尔放狠话——有牌是威胁，没牌是虚张声势；桌子被独家协议锁了就没牌可威胁）
-  const hasTeeth = !isExclusiveLocked(state) && getPlayer(state, id)!.hand.some(c => c.type === 'BOSS' || c.type === 'TRAVEL' || c.type === 'BUST')
+  const hasTeeth = !isExclusiveLocked(state) && getPlayer(state, id)!.hand.some(c => c.type === 'BOSS' || c.type === 'TRAVEL' || c.type === 'BUST' || c.type === 'SICK')
   if ((excluded || (relevantMine.length === 0 && myShare === 0)) && gross >= 8 && rand(state, 67) < (hasTeeth ? 0.35 : p.bluff * 0.5)) {
     const say = neg.offer
       ? pick(['方案里没我的份？Boss 你可想清楚了。', '我手里的牌可不是摆设。', '不带我玩，这单怕是成不了。'], rand(state, 71))
@@ -600,6 +763,15 @@ function reaction(state: GameState, id: number, legal: PlayerAction[]): PlayerAc
     if (!iAmBoss && teeth && myShare === 0 && r < p.protect) return stop
     return pass
   }
+  if (pr.kind === 'SICK') {
+    // 病假针对的是我：手里有能打的牌、而这单又与我有关（没我的份 / 单子够大）才值得用阻止牌保住出牌权
+    if (pr.targetPlayerId !== id) return pass
+    const me = getPlayer(state, id)!
+    const teeth = me.hand.some(c => c.type === 'BOSS' || c.type === 'TRAVEL' || c.type === 'BUST' || c.type === 'SICK' || c.type === 'CLAN')
+      || countCards(me.hand, 'RECRUITMENT') >= 2
+    if (teeth && (myShare === 0 || gross >= 12) && r < p.protect) return stop
+    return pass
+  }
   return pass
 }
 
@@ -608,7 +780,13 @@ function closing(state: GameState, id: number, legal: PlayerAction[]): PlayerAct
   const gross = getGrossValue(state)
   const myShare = offerShareOf(neg.offer, id)
   const pass: PlayerAction = { type: 'PASS_CLOSING', playerId: id }
-  if (myShare > 0) return pass
+  if (myShare > 0) {
+    // 倒计时里我有钱拿：还没轮到、手里有牌的局外人先放倒（病假），他就只能放行
+    const later = neg.closingOrder.slice(neg.closingIndex + 1)
+    const sick = sickOptionFor(legal, mostDangerous(state, id, later, 2))
+    if (sick && gross >= 10 && rand(state, 137) < persona(state, id).protect) return sick
+    return pass
+  }
   const st = stance(state, id)
   const chance = disruptChance(state, id, gross >= 12 ? 0.8 : 0.5)
   const r = rand(state, 41)
@@ -654,6 +832,19 @@ export function heuristicSpeech(state: GameState, action: PlayerAction): string 
     case 'PLAY_BOOM': return pick([`利好消息：这单每份再加 $${BOOM_BONUS}M——多出来的，归我。`, '行情看涨，这盘子我做大一点。'], r)
     case 'PLAY_BUST': return pick(['利空消息。这单，不值那个价了。', '不带我玩？那这单就没那么香了。'], r)
     case 'PLAY_EXCLUSIVE': return pick(['独家协议，签了。这单谁也别想再翻。', '桌子我锁上了，各位收好手里的牌。'], r)
+    case 'PLAY_SICK': {
+      const target = getPlayer(state, action.targetPlayerId)?.name ?? '你'
+      return pick([`${target}，脸色不太好，这一轮回去歇着吧。`, `${target}请病假——这单你就看着。`, `听说${target}病了？那手里的牌就先别动了。`], r)
+    }
+    case 'SWAP_CARD': {
+      const card = getPlayer(state, action.playerId)?.hand.find(c => c.id === action.cardId)
+      const fam = card?.familyId ? FAMILIES[card.familyId].name : '这家'
+      return card?.type === 'CLAN'
+        ? pick([`${fam}是我的人，换张机票用用。`, `我自家的${fam}，让他们换个差事。`], r)
+        : pick([`${fam}的人我叫得动，机票换成人。`, `不出差了，${fam}这边我再派个人来。`], r)
+    }
+    case 'BUY_CARDS': return pick(['手里没牌不行，花点钱补几张。', '钱是用来生钱的，先补牌。'], r)
+    case 'TRADE_CARDS': return pick(['废牌加点钱，换两张招募——猎头费。', '这几张没用了，换成招人的本钱。'], r)
     case 'PLAY_STOP': return pick(['想都别想！', '这招对我没用。'], r)
     case 'ACCEPT_OFFER': return pick(['成交，我同意出人。', '这个价可以，合作愉快。'], r)
     case 'DECLINE_OFFER': {

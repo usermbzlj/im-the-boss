@@ -152,6 +152,23 @@ export const BOOM_BONUS = 2
 export const BUST_PENALTY = 1
 export const MIN_SHARE_VALUE = 1
 
+// ---------- 桌规常量（houseRules） ----------
+
+/** 花钱补牌：抽 n 张要付几份当前股价（1 张 1 份、2 张 3 份、3 张 6 份） */
+export const BUY_CARDS_COST_SHARES = [1, 3, 6] as const
+export const MAX_BUY_CARDS = BUY_CARDS_COST_SHARES.length
+/** 兑换招募牌：交出的牌数（须两种不同种类）、附带的股价份数、换到的招募牌数 */
+export const TRADE_GIVE_COUNT = 2
+export const TRADE_COST_SHARES = 1
+export const TRADE_RECRUIT_COUNT = 2
+/** 病假牌张数：基础 3 张，每个补充包再加 1 张（长局稍多） */
+export const SICK_CARDS_BASE = 3
+
+/** 桌规牌堆里病假牌的张数 */
+export function sickCardCount(variant: Pick<GameVariant, 'supplementPacks'>): number {
+  return SICK_CARDS_BASE + variant.supplementPacks
+}
+
 // ---------- 牌堆 ----------
 
 /** 官方 98 张 */
@@ -183,12 +200,16 @@ function supplementPack(): Array<Pick<InfluenceCard, 'type' | 'familyId'>> {
   return out
 }
 
-/** 按变体组牌：官方 98 张 +（扩展变体）7 张稀有牌 + N 个补充包 */
-export function createDeckFor(variant: GameVariant): InfluenceCard[] {
+/**
+ * 按变体组牌：官方 98 张 +（扩展变体）7 张稀有牌 + N 个补充包 +（桌规开启时）病假牌。
+ * houseRules 省略则按该变体的默认值。
+ */
+export function createDeckFor(variant: GameVariant, houseRules: boolean = variant.houseRules): InfluenceCard[] {
   const cards = createInfluenceDeck()
   let id = cards.length + 1
   if (variant.rareCards) for (const { type, count } of RARE_CARDS) for (let i = 0; i < count; i++) cards.push({ id: id++, type })
   for (let p = 0; p < variant.supplementPacks; p++) for (const c of supplementPack()) cards.push({ id: id++, ...c })
+  if (houseRules) for (let i = 0; i < sickCardCount(variant); i++) cards.push({ id: id++, type: 'SICK' })
   return cards
 }
 
@@ -204,25 +225,27 @@ export interface GameVariant {
   spaces: SpaceSpec[]
   rareCards: boolean
   supplementPacks: number
+  /** 桌规默认开关（开局可改）：互换 / 买牌 / 兑换招募 / 病假牌 */
+  houseRules: boolean
   blurb: string
 }
 
 export const VARIANTS: Record<GameVariantId, GameVariant> = {
   classic: {
-    id: 'classic', name: '经典 · 15 笔', deals: 15, maxShare: 5, spaces: CLASSIC_SPACES, rareCards: false, supplementPacks: 0,
+    id: 'classic', name: '经典 · 15 笔', deals: 15, maxShare: 5, spaces: CLASSIC_SPACES, rareCards: false, supplementPacks: 0, houseRules: false,
     blurb: '官方规则原味：16 格版图、15 张景气牌、98 张影响牌，第 10 笔起可能终局。',
   },
   full: {
-    id: 'full', name: '完整 · 16 笔', deals: 16, maxShare: 5, spaces: CLASSIC_SPACES, rareCards: true, supplementPacks: 0,
-    blurb: '经典版图打到最后一格，第 11 笔起可能终局；牌堆加入 7 张稀有牌（利好 / 利空 / 独家协议）。',
+    id: 'full', name: '完整 · 16 笔', deals: 16, maxShare: 5, spaces: CLASSIC_SPACES, rareCards: true, supplementPacks: 0, houseRules: true,
+    blurb: '经典版图打到最后一格，第 11 笔起可能终局；牌堆加入 7 张稀有牌（利好 / 利空 / 独家协议）与桌规。',
   },
   expansion: {
-    id: 'expansion', name: '扩张 · 22 笔', deals: 22, maxShare: 6, spaces: interleave(CLASSIC_SPACES, EXPANSION_SPACES), rareCards: true, supplementPacks: 1,
-    blurb: '24 格版图混入地标 / 抢手 / 黑市 / 猎头格，股价升到 $6M，第 17 笔起可能终局；牌堆 117 张。',
+    id: 'expansion', name: '扩张 · 22 笔', deals: 22, maxShare: 6, spaces: interleave(CLASSIC_SPACES, EXPANSION_SPACES), rareCards: true, supplementPacks: 1, houseRules: true,
+    blurb: '24 格版图混入地标 / 抢手 / 黑市 / 猎头格，股价升到 $6M，第 17 笔起可能终局；含稀有牌与桌规。',
   },
   marathon: {
-    id: 'marathon', name: '马拉松 · 30 笔', deals: 30, maxShare: 7, spaces: interleave(CLASSIC_SPACES, [...EXPANSION_SPACES, ...MARATHON_SPACES]), rareCards: true, supplementPacks: 2,
-    blurb: '32 格版图、4 座地标，股价升到 $7M，第 25 笔起可能终局；牌堆 129 张，是一场长跑。',
+    id: 'marathon', name: '马拉松 · 30 笔', deals: 30, maxShare: 7, spaces: interleave(CLASSIC_SPACES, [...EXPANSION_SPACES, ...MARATHON_SPACES]), rareCards: true, supplementPacks: 2, houseRules: true,
+    blurb: '32 格版图、4 座地标，股价升到 $7M，第 25 笔起可能终局；含稀有牌与桌规，是一场长跑。',
   },
 }
 
@@ -235,7 +258,10 @@ export function getVariant(id: GameVariantId | undefined): GameVariant {
 /** 供开局界面 / 文档使用的变体概览（含派生数据） */
 export interface VariantSummary extends GameVariant {
   boardSize: number
+  /** 不含桌规病假牌的牌堆张数（经典 98、完整 105、扩张 117、马拉松 129） */
   deckSize: number
+  /** 桌规开启时的病假牌张数 */
+  sickCards: number
   specialSpaces: boolean
   /** 第几笔起可能终局（最后 6 张景气牌带终局骰面） */
   firstEndDeal: number
@@ -246,7 +272,8 @@ export const VARIANT_LIST: VariantSummary[] = VARIANT_IDS.map(id => {
   return {
     ...v,
     boardSize: v.spaces.length,
-    deckSize: createDeckFor(v).length,
+    deckSize: createDeckFor(v, false).length,
+    sickCards: sickCardCount(v),
     specialSpaces: v.spaces.some(s => (s.kind ?? 'STANDARD') !== 'STANDARD'),
     firstEndDeal: Math.max(1, v.deals - 5),
   }

@@ -10,13 +10,14 @@
 // ============================================================
 
 import type { GameState, PlayerAction, FamilyId, SpaceKind } from '../engine/types'
-import { MAX_OFFERS_PER_BOSS, HAND_LIMIT, getVariant, LANDMARK_RENT, BOOM_BONUS, BUST_PENALTY } from '../engine/config'
+import { MAX_OFFERS_PER_BOSS, HAND_LIMIT, getVariant, LANDMARK_RENT, BOOM_BONUS, BUST_PENALTY, sickCardCount } from '../engine/config'
 import {
   getCurrentSpace, getCurrentTile, getGrossValue, getEndProbability, oneShareOf,
   relevantFamilies, isRequiredGroup, demandOf, offerShareOf, offerOwners, findRep, playerActiveFamilies,
   selectReps, repCost, missingFamilies, soleRepFamilies, rivalReps, leaderIds, endChance, offerConsent,
   payoutTotal, activeRepsOfFamily, groupOfFamily, repPriceOf, commitmentPrice, playerRelevantFamilies, usedFamiliesOf,
   effectiveShareValue, landmarkRentEstimate, landlords, canReclaim, isBlackMarketDeal, isExclusiveLocked, remainingDeals,
+  isSick, swapTargetType, recruitCountAfterTrade, recruitTargets, recruitCost, countCards, tableCanComplete, buyCardsCost,
 } from '../engine/rules'
 import { canClose } from '../engine/validator'
 import { narrate, famLabel, famName, playerName, reactionKindName, spaceKindName, spaceKindEffect } from '../text/narrate'
@@ -35,6 +36,8 @@ export function rulesSummaryFor(state: GameState): string {
     maxShare: state.dealTiles[state.dealTiles.length - 1]?.shareValue ?? variant.maxShare,
     rareCards: variant.rareCards,
     specialSpaces: [...kinds].map(k => ({ name: spaceKindName(k), effect: spaceKindEffect(k) })),
+    houseRules: state.houseRules,
+    sickCards: sickCardCount(variant),
   })
 }
 
@@ -139,6 +142,46 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
     case 'PLAY_EXCLUSIVE':
       notes.push('之后本笔交易里谁都不能再打老板牌 / 旅行牌 / 利空牌（招募仍可），你的方案与 Boss 身份基本稳了（可被阻止牌取消）')
       break
+    case 'PLAY_SICK': {
+      const target = state.players[a.targetPlayerId]
+      if (!target) break
+      const targetShare = offerShareOf(neg?.offer, a.targetPlayerId)
+      const role = neg?.bossId === a.targetPlayerId ? '他是 Boss，仍能提案 / 成交，只是不能出牌' : targetShare > 0 ? `他在方案里拿 $${targetShare}M，本就不太会搅局` : neg ? '他不在方案里拿钱，正是可能翻桌的人' : '开单前先放倒他，这一单他翻不了桌'
+      notes.push(`${target.name} 手牌 ${target.hand.length} 张 → 本回合内他不能再打任何牌（阻止牌除外）；${role}${neg && a.playerId === neg.bossId ? '；打完回合仍在你手里' : ''}（可被他的阻止牌取消）`)
+      break
+    }
+    case 'SWAP_CARD': {
+      const card = state.players[actorId]?.hand.find(c => c.id === a.cardId)
+      if (!card?.familyId) break
+      const f = card.familyId
+      if (swapTargetType(card) === 'TRAVEL') {
+        const rivals = neg ? activeRepsOfFamily(neg, f).filter(r => r.ownerId !== actorId) : []
+        notes.push(rivals.length
+          ? `换到的 ${famName(f)} 旅行牌可立刻打飞 ${rivals.map(r => `${playerName(state, r.ownerId)} 的 ${famName(f)} 代表`).join(' / ')}，之后 ${famName(f)} 只剩你的投资者`
+          : `换到 ${famName(f)} 旅行牌备用（目前桌上没有别人的 ${famName(f)} 代表）`)
+      } else {
+        const travelled = !!neg?.travelledInvestors.includes(f)
+        notes.push(travelled ? `你的 ${famName(f)} 投资者本笔已被打飞：换回成员卡可立刻补位入场` : `换到 ${famName(f)} 成员卡备用（你的投资者仍在场，成员卡此刻多余）`)
+      }
+      notes.push('不结束你的行动，本回合只能换这一次')
+      break
+    }
+    case 'BUY_CARDS': {
+      const cash = state.players[actorId]?.cash ?? 0
+      notes.push(`现金 $${cash}M → 付完剩 $${cash - buyCardsCost(state, a.count)}M；抽到什么全凭运气，钱不会回来；之后仍可开单 / 掷骰`)
+      break
+    }
+    case 'TRADE_CARDS': {
+      const after = recruitCountAfterTrade(state, actorId, a.cardIds)
+      const have = countCards(state.players[actorId]?.hand ?? [], 'RECRUITMENT')
+      const targets = recruitTargets(state, actorId)
+      const cheapest = targets.length ? Math.min(...targets.map(f => recruitCost(state, actorId, f))) : null
+      const usable = cheapest != null && after >= cheapest
+        ? `之后可招 ${targets.filter(f => recruitCost(state, actorId, f) <= after).map(f => `${famName(f)}(${recruitCost(state, actorId, f)}张)`).join('、')}${neg ? '——不结束行动，紧接着就能打' : ''}`
+        : `招募牌 ${have} → ${after} 张，仍不够招人（常规 3 张）`
+      notes.push(`${usable}；钱付给银行不会回来`)
+      break
+    }
     case 'SPEAK': {
       if (!neg) break
       const mine = playerRelevantFamilies(state, actorId)
@@ -183,7 +226,7 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
       notes.push('取消这张牌的效果，两张牌都弃掉')
       break
     case 'PASS':
-      notes.push(neg?.bossId === actorId ? '让其他人先叫价 / 出牌' : '本轮不行动（连续两轮全员跳过会流局）')
+      notes.push(neg?.bossId === actorId ? '让其他人先叫价 / 出牌' : tableCanComplete(state) ? '本轮不行动（连续两轮全员跳过会流局）' : '本轮不行动（桌上凑不齐代表：全员跳过一轮就直接流局）')
       break
     case 'OPEN_DEAL': {
       const space = getCurrentSpace(state)
@@ -249,6 +292,9 @@ export function describeSituation(state: GameState, playerId: number): string {
   if (isBlackMarketDeal(state)) lines.push('黑市里牌打出即生效：你的干扰牌不会被阻止，别人的也一样')
   if (isExclusiveLocked(state)) lines.push('独家协议已生效：本笔谁都不能再打老板牌 / 旅行牌 / 利空牌')
   if (neg.priceDelta !== 0) lines.push(`本笔股价已被${neg.priceDelta > 0 ? '利好抬高' : '利空压低'} $${Math.abs(neg.priceDelta)}M/份`)
+  if (isSick(state, playerId)) lines.push('你本回合病假中：不能主动出牌 / 换牌，只能喊话、报价、应答、跳过，以及用阻止牌自保')
+  const sickOthers = state.turn.sick.filter(id => id !== playerId)
+  if (sickOthers.length) lines.push(`病假中（本回合不能主动出牌）：${sickOthers.map(id => playerName(state, id)).join('、')}——他们手里的牌这一轮构不成威胁`)
 
   const missing = missingFamilies(state)
   lines.push(missing.length ? `需求缺口：${missing.map(famName).join('、')} 目前无人代表（需有人打家族卡 / 招募，否则做不成）` : '需求可凑齐')
@@ -370,6 +416,7 @@ function describePhaseHint(state: GameState, playerId: number): string {
       }
       if (pr.kind === 'BOSS' && neg?.bossId === playerId) lines.push('⚠️ 这会直接夺走你的Boss身份')
       if (pr.kind === 'RECRUITMENT' && state.investors.some(i => i.familyId === pr.targetFamilyId && i.ownerId === playerId)) lines.push('⚠️ 这会永久夺走你的投资者所有权')
+      if (pr.kind === 'SICK') lines.push(pr.targetPlayerId === playerId ? '⚠️ 目标是你：生效后本回合你不能再主动出牌（阻止牌除外）——手里有想打的牌就得现在拦' : `目标是 ${playerName(state, pr.targetPlayerId)}，与你的手牌无关`)
       return `\n【反应窗口：是否打阻止牌】\n${lines.join('\n')}\n`
     }
     case 'CLOSING': {
@@ -423,7 +470,7 @@ export function buildGameContext(state: GameState, playerId: number): string {
   const investors = state.investors.map(inv =>
     `${famLabel(inv.familyId)}(${inv.ownerId == null ? '公共区' : state.players[inv.ownerId]?.name})${travelled.has(inv.familyId) ? '[本局失效]' : ''}`).join('; ')
   const others = state.players.filter(p => p.id !== playerId).map(p =>
-    `${p.name}（ID=${p.id}）: $${p.cash}M，手牌${p.hand.length}张${state.negotiation?.bossId === p.id ? ' [Boss]' : ''}`).join('\n')
+    `${p.name}（ID=${p.id}）: $${p.cash}M，手牌${p.hand.length}张${state.negotiation?.bossId === p.id ? ' [Boss]' : ''}${isSick(state, p.id) ? ' [病假：本回合不能主动出牌]' : ''}`).join('\n')
   const hand = player.hand.map(c => `${describeCard(c)}#${c.id}`).join(', ')
   const shareNow = space ? effectiveShareValue(state, space) : (tile?.shareValue ?? 0)
   const shareNote = space && shareNow !== (tile?.shareValue ?? 0) ? `（景气牌 $${tile?.shareValue ?? 0}M${space.kind === 'PREMIUM' ? ' + 抢手' : ''}${state.negotiation?.priceDelta ? ' + 利好/利空' : ''}）` : ''

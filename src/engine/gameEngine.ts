@@ -12,10 +12,16 @@
 //   （无阻止牌者只能放行；询问所有人是为了不暴露谁持有阻止牌）；方案被打掉则回合回到 Boss
 //   黑市格的交易没有反应窗口：牌打出即生效
 //
-// 扩展规则（变体与特殊格见 config.ts / docs/rules.md §11）：
+// 扩展规则（变体与特殊格见 config.ts / docs/rules.md §10）：
 //   · 夺回权：最后一位常驻投资者被招募夺走 → 1 张招募牌即可抢回该家族
 //   · 猎头格：交易进行中招募只需 2 张；地标格：成交归 Boss，此后每笔成交收 $1M 租金
 //   · 抢手格：股价 +$1M/份；利好 / 利空牌改变本笔股价；独家协议锁定本笔交易
+// 桌规（state.houseRules，开局可选；docs/rules.md §11）：
+//   · 互换：持有某家族投资者时，手中该家族的成员牌可换成同家族旅行牌（反向亦可），每回合一次
+//   · 买牌：自己回合开单前付 1 / 3 / 6 份股价抽 1 / 2 / 3 张，每回合一次，不得超出手牌上限
+//   · 兑换：两张不同种类的牌 + 一份股价 → 2 张招募牌，每回合一次，不可逆（钱付给银行）
+//   · 病假牌：指定一人本回合不能主动出牌（进反应窗口，可被阻止牌取消）
+//   · 桌上凑不齐代表且全员跳过一轮 → 直接流局，不再多等
 //
 // 契约：
 //   · reducer 只接受通过 validator.isLegal 的动作；被拒绝的动作原样返回旧状态
@@ -25,22 +31,31 @@
 
 import type {
   GameState, GameAction, PlayerAction, Player, InfluenceCard, Negotiation, Offer, GameVariantId,
-  GameEvent, FamilyId, Payout, Representative, RepRef, ReactionKind, FailReason, Quote, ResolvedQuote,
+  GameEvent, FamilyId, Payout, Representative, RepRef, ReactionKind, FailReason, Quote, ResolvedQuote, TurnFlags,
 } from './types'
 import {
   FAMILY_IDS, AI_ROSTER,
   HAND_LIMIT, CARDS_PER_DRAW, STARTING_HAND, MAX_STALEMATE_ROUNDS, MAX_EVENTS,
-  LANDMARK_RENT, BOOM_BONUS, BUST_PENALTY,
+  LANDMARK_RENT, BOOM_BONUS, BUST_PENALTY, TRADE_RECRUIT_COUNT,
   getVariant, buildBoard, makeDealTiles, createDeckFor, shuffleWith, rollDieWith, randomSeed,
 } from './config'
 import {
   getPlayer, nextPlayerId, prevPlayerId, othersFrom, getSpace, getCurrentTile,
   getGrossValue, offerOwners, findRep, selectReps, investorRepKey, clanRepKey, payoutTotal, offerShareOf, meetsCommitment, repsUsedOf,
   commitmentPrice, playerRelevantFamilies, usedFamiliesOf, resolveQuotes, recruitCost, isBlackMarketDeal, landlords,
+  tableCanComplete, swapTargetType, buyCardsCost, tradeCost, countCards,
 } from './rules'
 import { isLegal } from './validator'
 
-export const SAVE_VERSION = 9
+export const SAVE_VERSION = 10
+
+export interface StartOptions {
+  variantId?: GameVariantId
+  /** 桌规开关；省略则按变体默认（经典关、其余开） */
+  houseRules?: boolean
+}
+
+const emptyTurn = (): TurnFlags => ({ swapped: [], bought: [], traded: [], sick: [] })
 
 // ---------- 工具 ----------
 
@@ -79,10 +94,32 @@ function takeFromHand(player: Player, cardIds: number[]): InfluenceCard[] {
   return taken
 }
 
+/**
+ * 从抽牌堆（先）/ 弃牌堆（后）里找出符合条件的牌——互换 / 兑换用。
+ * 调用方须先用 validator 确认数量足够；牌堆里的顺序对任何人都是未知的，从底部取不泄露信息。
+ */
+function fetchFromPiles(s: GameState, pred: (c: InfluenceCard) => boolean, count: number): InfluenceCard[] {
+  const out: InfluenceCard[] = []
+  for (const pile of [s.drawPile, s.discardPile]) {
+    for (let i = 0; i < pile.length && out.length < count; ) {
+      if (pred(pile[i])) out.push(pile.splice(i, 1)[0])
+      else i++
+    }
+  }
+  return out
+}
+
+/** 付钱给银行（买牌 / 兑换）：这些钱离开游戏，现金守恒时以 bank 计 */
+function payBank(s: GameState, player: Player, amount: number) {
+  player.cash -= amount
+  s.bank += amount
+}
+
 function endTurn(s: GameState, fromId: number) {
   s.currentId = nextPlayerId(s, fromId)
   s.phase = 'TURN'
   s.lastDie = null
+  s.turn = emptyTurn()
 }
 
 function clearSpeeches(s: GameState) {
@@ -139,9 +176,10 @@ function markDisruptor(neg: Negotiation, playerId: number) {
 
 // ---------- 初始化 ----------
 
-export function createInitialState(playerCount: number, humanName: string, seed?: number, variantId?: GameVariantId): GameState {
+export function createInitialState(playerCount: number, humanName: string, seed?: number, variantId?: GameVariantId, opts: StartOptions = {}): GameState {
   const count = Math.min(6, Math.max(3, playerCount))
-  const variant = getVariant(variantId)
+  const variant = getVariant(variantId ?? opts.variantId)
+  const houseRules = opts.houseRules ?? variant.houseRules
   const holder = { rng: seed ?? randomSeed() }
   const roster = shuffleWith(holder, AI_ROSTER)
 
@@ -158,7 +196,7 @@ export function createInitialState(playerCount: number, humanName: string, seed?
     ownerId: count === 3 ? Math.floor(idx / 2) : idx < count ? idx : null,
   }))
 
-  const drawPile = shuffleWith(holder, createDeckFor(variant))
+  const drawPile = shuffleWith(holder, createDeckFor(variant, houseRules))
   for (const p of players) for (let j = 0; j < STARTING_HAND; j++) p.hand.push(drawPile.pop()!)
 
   // 起始玩家：持有字母序最靠前投资者的人（投资者已随机分配，等价于随机起始）；其右手边玩家放置金钱标记
@@ -171,6 +209,9 @@ export function createInitialState(playerCount: number, humanName: string, seed?
   const s: GameState = {
     saveVersion: SAVE_VERSION,
     variantId: variant.id,
+    houseRules,
+    turn: emptyTurn(),
+    bank: 0,
     phase: 'PLACE_MARKER',
     players,
     investors,
@@ -257,12 +298,12 @@ function nextReactor(s: GameState, from: number, exclude: Set<number>): number |
   return null
 }
 
-function beginReaction(s: GameState, actorId: number, kind: ReactionKind, cards: InfluenceCard[], target: { targetRepKey?: string; targetFamilyId?: FamilyId }) {
-  const returnPhase = s.phase === 'HAND_LIMIT' ? 'HAND_LIMIT' : s.phase === 'CLOSING' ? 'CLOSING' : 'NEGOTIATION'
+function beginReaction(s: GameState, actorId: number, kind: ReactionKind, cards: InfluenceCard[], target: { targetRepKey?: string; targetFamilyId?: FamilyId; targetPlayerId?: number }) {
+  const returnPhase = s.phase === 'HAND_LIMIT' || s.phase === 'CLOSING' || s.phase === 'TURN' || s.phase === 'AFTER_MOVE' ? s.phase : 'NEGOTIATION'
   if (s.negotiation) markDisruptor(s.negotiation, actorId)
   s.pendingReaction = {
     actorId, kind, cards, reactorId: -1, askedIds: [actorId], returnPhase,
-    targetRepKey: target.targetRepKey, targetFamilyId: target.targetFamilyId,
+    targetRepKey: target.targetRepKey, targetFamilyId: target.targetFamilyId, targetPlayerId: target.targetPlayerId,
   }
   s.phase = 'REACTION'
   // 黑市：没有反应窗口，牌打出即生效（也就没有阻止牌的用武之地）
@@ -342,23 +383,35 @@ function resolveReaction(s: GameState) {
     neg.exclusive = true
     s.discardPile.push(...pr.cards)
     emit(s, { kind: 'EXCLUSIVE_RESOLVED', playerId: pr.actorId })
+  } else if (pr.kind === 'SICK') {
+    const target = pr.targetPlayerId!
+    if (!s.turn.sick.includes(target)) s.turn.sick.push(target)
+    s.discardPile.push(...pr.cards)
+    emit(s, { kind: 'SICK_RESOLVED', playerId: pr.actorId, targetId: target })
   } else {
     s.discardPile.push(...pr.cards)
   }
   afterReaction(s, false, hadOffer && !s.negotiation?.offer)
 }
 
-/** Boss 自己打的"拼方案"牌（利好 / 独家协议）：窗口结束后回合仍在 Boss，他紧接着就该提案 / 成交 */
-const BOSS_OWN_KINDS = new Set<ReactionKind>(['BOOM', 'EXCLUSIVE'])
+/** Boss 自己打的"拼方案"牌（利好 / 独家协议 / 病假）：窗口结束后回合仍在 Boss，他紧接着就该提案 / 成交 */
+const BOSS_OWN_KINDS = new Set<ReactionKind>(['BOOM', 'EXCLUSIVE', 'SICK'])
 
 /**
  * 反应窗口结束后回到原阶段。
  * 谈判中：方案被打掉 → 回合直接回到 Boss（他要立刻重新拿出方案）；否则出牌者的下一位继续。
+ * 开单前（TURN / AFTER_MOVE）打出的病假牌：行动者继续自己的回合。
+ * 倒计时里的病假牌不改变方案，倒计时不重来：同一位玩家继续（可放行）。
  */
 function afterReaction(s: GameState, cancelled: boolean, offerVoided = false) {
   const pr = s.pendingReaction!
   s.pendingReaction = null
   const neg = s.negotiation
+  if (pr.returnPhase === 'TURN' || pr.returnPhase === 'AFTER_MOVE') {
+    s.phase = pr.returnPhase
+    s.currentId = pr.actorId
+    return
+  }
   if (pr.returnPhase === 'HAND_LIMIT' || !neg) {
     const actor = getPlayer(s, pr.actorId)!
     s.currentId = pr.actorId
@@ -371,7 +424,7 @@ function afterReaction(s: GameState, cancelled: boolean, offerVoided = false) {
     return
   }
   if (pr.returnPhase === 'CLOSING') {
-    if (cancelled) {
+    if (cancelled || pr.kind === 'SICK') {
       s.phase = 'CLOSING' // 同一位玩家仍可继续出牌或放行
       return
     }
@@ -504,7 +557,7 @@ function finishGame(s: GameState) {
 // ---------- reducer ----------
 
 export function gameReducer(state: GameState | null, action: GameAction): GameState | null {
-  if (action.type === 'START_GAME') return createInitialState(action.playerCount, action.humanName, action.seed, action.variantId)
+  if (action.type === 'START_GAME') return createInitialState(action.playerCount, action.humanName, action.seed, action.variantId, { houseRules: action.houseRules })
   if (action.type === 'LOAD_GAME') return action.state.saveVersion === SAVE_VERSION ? structuredClone(action.state) : state
   if (!state) return state
   if (!isLegal(state, action)) return state
@@ -618,6 +671,45 @@ function apply(s: GameState, action: PlayerAction) {
       return
     }
 
+    case 'PLAY_SICK': {
+      const cards = takeFromHand(player, [action.cardId])
+      emit(s, { kind: 'SICK_PLAYED', playerId: player.id, targetId: action.targetPlayerId })
+      beginReaction(s, player.id, 'SICK', cards, { targetPlayerId: action.targetPlayerId })
+      return
+    }
+
+    case 'SWAP_CARD': {
+      // 家族成员 ↔ 同家族旅行牌：交出的牌进弃牌堆，从抽牌堆 / 弃牌堆找一张对应的牌回手。牌数守恒，回合不轮转
+      const [card] = takeFromHand(player, [action.cardId])
+      const to = swapTargetType(card)!
+      const [got] = fetchFromPiles(s, c => c.type === to && c.familyId === card.familyId, 1)
+      s.discardPile.push(card)
+      player.hand.push(got)
+      s.turn.swapped.push(player.id)
+      emit(s, { kind: 'CARD_SWAPPED', playerId: player.id, familyId: card.familyId!, to })
+      return
+    }
+
+    case 'BUY_CARDS': {
+      const cost = buyCardsCost(s, action.count)
+      payBank(s, player, cost)
+      drawCards(s, player.id, action.count)
+      s.turn.bought.push(player.id)
+      emit(s, { kind: 'CARDS_BOUGHT', playerId: player.id, count: action.count, cost, handSize: player.hand.length })
+      return
+    }
+
+    case 'TRADE_CARDS': {
+      const given = takeFromHand(player, action.cardIds)
+      const cost = tradeCost(s)
+      payBank(s, player, cost)
+      player.hand.push(...fetchFromPiles(s, c => c.type === 'RECRUITMENT', TRADE_RECRUIT_COUNT))
+      s.discardPile.push(...given)
+      s.turn.traded.push(player.id)
+      emit(s, { kind: 'CARDS_TRADED', playerId: player.id, given: given.map(c => c.type), cost, recruitCount: countCards(player.hand, 'RECRUITMENT') })
+      return
+    }
+
     case 'PLAY_STOP': {
       const pr = s.pendingReaction!
       const stop = player.hand.splice(player.hand.findIndex(c => c.type === 'STOP'), 1)[0]
@@ -647,6 +739,11 @@ function apply(s: GameState, action: PlayerAction) {
     case 'PASS':
       neg!.passStreak++
       if (neg!.passStreak >= s.players.length) {
+        // 桌上凑不齐代表、又没人愿意补（全员跳过一轮）：再转几圈也不会有结果，直接流局
+        if (!tableCanComplete(s)) {
+          failDeal(s, 'INCOMPLETE')
+          return
+        }
         neg!.passStreak = 0
         neg!.stalemateRounds++
         if (neg!.stalemateRounds >= MAX_STALEMATE_ROUNDS) {

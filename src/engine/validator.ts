@@ -6,7 +6,7 @@
 // 给人看的标签由 text/labels.ts 渲染，给 LLM 看的编号列表由 ai 层拼装。
 // ============================================================
 
-import type { GameState, PlayerAction, FamilyId, Payout, InfluenceCard } from './types'
+import type { GameState, PlayerAction, Payout, InfluenceCard } from './types'
 import { HAND_LIMIT, MAX_OFFERS_PER_BOSS, MAX_SPEECHES_PER_PLAYER } from './config'
 import {
   getPlayer, getCurrentSpace, getGrossValue, spaceInvestorCount,
@@ -14,6 +14,8 @@ import {
   selectReps, tableCanComplete, offerOwners, isOfferAgreed, offerStillValid, offerDecliners,
   validateOfferShape, repPriceOf, hasStop, payoutTotal, endChance, leaderIds,
   playerRelevantFamilies, usedFamiliesOf, validQuotes, recruitCost, isExclusiveLocked,
+  cardKeepValue, isSick, ACTIVE_CARD_ACTIONS, isExchangePhase, isSickPlayPhase, sickTargets,
+  canSwapCard, swappableCards, buyableCardCounts, canTradeCards, isValidTradePair, defaultTradePair,
 } from './rules'
 
 export function getActingPlayerId(state: GameState): number {
@@ -37,21 +39,7 @@ export function defaultDiscardIds(state: GameState, playerId: number): number[] 
   if (!player) return []
   const over = player.hand.length - HAND_LIMIT
   if (over <= 0) return []
-  const recruitCount = player.hand.filter(c => c.type === 'RECRUITMENT').length
-  const openFamilies = new Set<FamilyId>()
-  for (const s of state.board) if (s.closedByTileId == null) for (const g of s.groups) for (const f of g.families) openFamilies.add(f)
-  const value = (c: InfluenceCard): number => {
-    switch (c.type) {
-      case 'RECRUITMENT': return recruitCount >= 3 || player.reclaim ? 4 : 1
-      case 'CLAN': return c.familyId && openFamilies.has(c.familyId) ? 3 : 0
-      case 'TRAVEL': return c.familyId ? (openFamilies.has(c.familyId) ? 3 : 0) : 5
-      case 'BUST': return 4
-      case 'BOOM': return 5
-      case 'EXCLUSIVE': return 5
-      case 'BOSS': return 6
-      case 'STOP': return 7
-    }
-  }
+  const value = (c: InfluenceCard) => cardKeepValue(state, playerId, c)
   return [...player.hand].sort((a, b) => value(a) - value(b)).slice(0, over).map(c => c.id)
 }
 
@@ -201,6 +189,37 @@ function recruitOptions(state: GameState, playerId: number): PlayerAction[] {
   return out
 }
 
+/** 病假牌：每个可选目标一个选项（开单前 / 谈判中 / 倒计时都能打；病假中的人自己不能打） */
+function sickOptions(state: GameState, playerId: number): PlayerAction[] {
+  const player = getPlayer(state, playerId)
+  if (!player || !isSickPlayPhase(state.phase) || isSick(state, playerId)) return []
+  const card = player.hand.find(c => c.type === 'SICK')
+  if (!card) return []
+  return sickTargets(state, playerId).map(targetPlayerId => ({ type: 'PLAY_SICK' as const, playerId, cardId: card.id, targetPlayerId }))
+}
+
+/**
+ * 桌规里的换牌动作（自己回合开单前 / 谈判中轮到自己）：
+ *   · 互换：每张可换的家族成员 / 定向旅行牌一个选项
+ *   · 兑换招募牌：一个代表性选项（默认交出保留价值最低的两张异类牌；isLegal 接受任何合法的两张）
+ * 病假中不能做。
+ */
+function exchangeOptions(state: GameState, playerId: number): PlayerAction[] {
+  if (!state.houseRules || !isExchangePhase(state.phase) || isSick(state, playerId)) return []
+  const out: PlayerAction[] = []
+  for (const card of swappableCards(state, playerId)) out.push({ type: 'SWAP_CARD', playerId, cardId: card.id })
+  if (canTradeCards(state, playerId)) {
+    const pair = defaultTradePair(state, playerId)
+    if (pair) out.push({ type: 'TRADE_CARDS', playerId, cardIds: pair })
+  }
+  return out
+}
+
+/** 花钱补牌：能买几张就列几项（含费用的判断在 buyableCardCounts） */
+function buyOptions(state: GameState, playerId: number): PlayerAction[] {
+  return buyableCardCounts(state, playerId).map(n => ({ type: 'BUY_CARDS' as const, playerId, count: n as 1 | 2 | 3 }))
+}
+
 /**
  * 当前玩家的全部合法动作。含参数的动作给出一个代表性取值
  * （SPEAK 的 say 为占位、DISCARD 为默认弃牌、PROPOSE_OFFER 为候选方案）。
@@ -218,9 +237,11 @@ export function getLegalActions(state: GameState, playerId: number): PlayerActio
       break
     case 'TURN':
       out.push({ type: 'OPEN_DEAL', playerId }, { type: 'ROLL_MOVE', playerId })
+      out.push(...buyOptions(state, playerId), ...exchangeOptions(state, playerId), ...sickOptions(state, playerId))
       break
     case 'AFTER_MOVE':
       out.push({ type: 'OPEN_DEAL', playerId }, { type: 'DRAW_CARDS', playerId })
+      out.push(...buyOptions(state, playerId), ...exchangeOptions(state, playerId), ...sickOptions(state, playerId))
       break
     case 'HAND_LIMIT': {
       out.push(...recruitOptions(state, playerId))
@@ -231,9 +252,13 @@ export function getLegalActions(state: GameState, playerId: number): PlayerActio
       const neg = state.negotiation!
       const isBoss = neg.bossId === playerId
       if ((neg.speakCounts[playerId] ?? 0) < MAX_SPEECHES_PER_PLAYER) out.push({ type: 'SPEAK', playerId, say: '…' })
-      for (const card of playableClanCards(state, playerId)) out.push({ type: 'PLAY_CLAN', playerId, cardId: card.id })
-      out.push(...cardPlayOptions(state, playerId))
-      out.push(...bossCardOptions(state, playerId))
+      if (!isSick(state, playerId)) {
+        for (const card of playableClanCards(state, playerId)) out.push({ type: 'PLAY_CLAN', playerId, cardId: card.id })
+        out.push(...cardPlayOptions(state, playerId))
+        out.push(...bossCardOptions(state, playerId))
+        out.push(...sickOptions(state, playerId))
+        out.push(...exchangeOptions(state, playerId))
+      }
       if (isBoss) {
         if (neg.offersMade < MAX_OFFERS_PER_BOSS && tableCanComplete(state)) {
           for (const c of buildOfferCandidates(state)) out.push({ type: 'PROPOSE_OFFER', playerId, repKeys: c.repKeys, payouts: c.payouts })
@@ -252,7 +277,10 @@ export function getLegalActions(state: GameState, playerId: number): PlayerActio
       out.push({ type: 'PASS_REACTION', playerId })
       break
     case 'CLOSING':
-      out.push(...cardPlayOptions(state, playerId))
+      if (!isSick(state, playerId)) {
+        out.push(...cardPlayOptions(state, playerId))
+        out.push(...sickOptions(state, playerId))
+      }
       out.push({ type: 'PASS_CLOSING', playerId })
       break
     case 'END_ROLL':
@@ -295,9 +323,24 @@ export function isLegal(state: GameState, action: PlayerAction): boolean {
   if (getActingPlayerId(state) !== action.playerId) return false
   const player = getPlayer(state, action.playerId)
   if (!player) return false
+  // 病假：本回合不能主动出牌（阻止牌是被动的，不在此列）
+  if (ACTIVE_CARD_ACTIONS.has(action.type) && isSick(state, action.playerId)) return false
   const neg = state.negotiation
 
   switch (action.type) {
+    case 'PLAY_SICK':
+      return isSickPlayPhase(state.phase) &&
+        player.hand.some(c => c.id === action.cardId && c.type === 'SICK') &&
+        Number.isInteger(action.targetPlayerId) && sickTargets(state, action.playerId).includes(action.targetPlayerId)
+    case 'SWAP_CARD': {
+      if (!isExchangePhase(state.phase)) return false
+      const card = player.hand.find(c => c.id === action.cardId)
+      return !!card && canSwapCard(state, action.playerId, card)
+    }
+    case 'BUY_CARDS':
+      return buyableCardCounts(state, action.playerId).includes(action.count)
+    case 'TRADE_CARDS':
+      return canTradeCards(state, action.playerId) && isValidTradePair(state, action.playerId, action.cardIds)
     case 'SPEAK':
       return state.phase === 'NEGOTIATION' && !!neg &&
         (neg.speakCounts[action.playerId] ?? 0) < MAX_SPEECHES_PER_PLAYER &&

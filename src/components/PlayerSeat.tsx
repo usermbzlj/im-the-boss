@@ -4,6 +4,7 @@
 
 import type { GameState } from '../engine/types'
 import { HAND_LIMIT, FAMILIES, LANDMARK_RENT } from '../engine/config'
+import { isSick } from '../engine/rules'
 import FamilyChip from './FamilyChip'
 import { getPersonaForPlayer } from '../ai/personas'
 
@@ -67,6 +68,9 @@ export default function PlayerSeat({ state, playerId, isActing, isThinking }: Pl
           <span className="seat-reclaim" title={`最后一位常驻投资者被夺走：只需 1 张招募牌即可抢回 ${FAMILIES[player.reclaim].name}`}>
             夺回权 {player.reclaim}
           </span>
+        )}
+        {isSick(state, player.id) && (
+          <span className="seat-sick" title="病假牌生效：本回合内不能主动出牌 / 换牌，只能被动打阻止牌">🤒 病假</span>
         )}
         {landmarks.length > 0 && (
           <span className="seat-landmark" title={`地标主人：${landmarks.map(b => `#${b.id}`).join('、')}，每笔成交各收 $${LANDMARK_RENT}M`}>

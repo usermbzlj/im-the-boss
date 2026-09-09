@@ -21,7 +21,7 @@ export default function GameLog({ state }: { state: GameState }) {
       <div className="log-list" ref={listRef}>
         {state.events.map(e => {
           const { text, tone } = narrate(state, e)
-          return <div key={e.id} className={`log-entry ${tone}`}>{text}</div>
+          return <div key={e.id} className={`log-entry tone-${tone}`}>{text}</div>
         })}
       </div>
     </div>

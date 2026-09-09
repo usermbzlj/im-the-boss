@@ -232,7 +232,9 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
       }
       break
     }
-    case 'DISCARD': {
+    case 'DISCARD':
+    case 'TRADE_CARDS': {
+      // 弃牌 / 兑换：模型可自选牌；选得不合法就沿用默认选牌
       if (parsed.cardIds) {
         const candidate: PlayerAction = { ...action, cardIds: parsed.cardIds }
         if (isLegal(state, candidate)) action = candidate

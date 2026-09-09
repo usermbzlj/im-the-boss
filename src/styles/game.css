@@ -221,6 +221,7 @@ input[type="number"] { width: 90px; }
 .seat-share { color: var(--green); }
 .seat-reclaim { font-size: 10px; color: #d2b3ff; border: 1px dashed rgba(188, 140, 255, 0.6); border-radius: 3px; padding: 0 4px; white-space: nowrap; }
 .seat-landmark { font-size: 10px; color: #ffd966; border: 1px solid rgba(201, 162, 39, 0.5); border-radius: 3px; padding: 0 4px; white-space: nowrap; }
+.seat-sick { font-size: 10px; color: #8fd694; border: 1px solid rgba(143, 214, 148, 0.5); border-radius: 3px; padding: 0 4px; white-space: nowrap; }
 .seat-thinking { display: inline-flex; gap: 3px; }
 .seat-thinking .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--gold); animation: blink 1.2s infinite; }
 .seat-thinking .dot:nth-child(2) { animation-delay: 0.2s; }
@@ -263,6 +264,13 @@ input[type="number"] { width: 90px; }
 }
 .quote-row .demand-input { width: 72px; }
 .quote-name { font-size: 12px; color: var(--muted); white-space: nowrap; }
+/* 桌规操作条：买牌 / 兑换招募牌 */
+.dock-house {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 5px 8px;
+  border: 1px dashed rgba(240, 180, 41, 0.35); border-radius: 8px; background: rgba(240, 180, 41, 0.04);
+}
+.dock-house-label { font-size: 10px; color: var(--gold); border: 1px solid rgba(240, 180, 41, 0.5); border-radius: 4px; padding: 0 5px; }
+.dock-house .btn b { color: var(--gold); margin-left: 3px; }
 
 /* ---- Hand ---- */
 .hand { position: relative; background: var(--bg-panel); border-top: 1px solid var(--border); padding: 6px 14px 10px; flex-shrink: 0; }
@@ -285,6 +293,9 @@ input[type="number"] { width: 90px; }
 .card.type-boss .card-name { color: var(--red); }
 .card.type-stop .card-name { color: var(--blue); }
 .card.type-recruitment .card-name { color: #c9a0ff; }
+.card.type-sick .card-name { color: #8fd694; }
+.card.selected.trade-selected { border-color: var(--gold) !important; box-shadow: 0 0 0 2px var(--gold); }
+.card.selected.trade-selected .card-discard-mark { color: var(--gold); }
 .card-discard-mark { position: absolute; top: 4px; right: 6px; font-size: 11px; color: var(--red); font-weight: bold; }
 
 .card-popover {
@@ -299,18 +310,21 @@ input[type="number"] { width: 90px; }
 .target-btn { justify-content: space-between; text-align: left; }
 .target-btn em { font-style: normal; font-size: 11px; color: var(--muted); }
 .popover-close { position: absolute; top: 4px; right: 6px; background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; }
+.popover-swap { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.popover-swap .popover-title { padding-right: 0; }
 
 /* ---- Sidebar panels (log / history / negotiation) ---- */
 .log-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .log-list { flex: 1; overflow-y: auto; padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; }
 .log-entry { font-size: 12px; line-height: 1.45; padding: 3px 6px; border-radius: 4px; color: var(--muted); }
-.log-entry.deal { color: var(--green); background: rgba(63, 185, 80, 0.08); }
-.log-entry.fail { color: #ff9b95; background: rgba(248, 81, 73, 0.08); }
-.log-entry.card { color: var(--blue); }
-.log-entry.end { color: var(--gold); font-weight: bold; }
-.log-entry.speech { color: var(--text); font-style: italic; }
-.log-entry.system { color: var(--muted); font-size: 11px; }
-.log-entry.action { color: #c9d1d9; }
+/* tone-* 前缀避免与手牌 .card 等通用类名撞车 */
+.log-entry.tone-deal { color: var(--green); background: rgba(63, 185, 80, 0.08); }
+.log-entry.tone-fail { color: #ff9b95; background: rgba(248, 81, 73, 0.08); }
+.log-entry.tone-card { color: var(--blue); }
+.log-entry.tone-end { color: var(--gold); font-weight: bold; }
+.log-entry.tone-speech { color: var(--text); font-style: italic; }
+.log-entry.tone-system { color: var(--muted); font-size: 11px; }
+.log-entry.tone-action { color: #c9d1d9; }
 
 .deal-history-totals { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0 8px; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
 .totals-chip { font-size: 11px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 2px 8px; }
@@ -455,6 +469,11 @@ input[type="number"] { width: 90px; }
 .form-group label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
 .form-group input { width: 100%; }
 .form-hint { font-size: 11px; color: var(--muted); margin-top: 5px; }
+.check-row { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
+.check-row input { width: auto; margin: 0; }
+.house-rules-hint { line-height: 1.7; }
+.house-rules-hint b { color: var(--text); font-weight: 600; }
+.house-tag { color: #8fd694; border-color: rgba(143, 214, 148, 0.5); }
 .player-count-selector { display: flex; gap: 6px; }
 .player-count-btn { flex: 1; padding: 8px; border: 1px solid var(--border); background: var(--bg-card); color: var(--text); border-radius: 6px; cursor: pointer; }
 .player-count-btn.active { border-color: var(--gold); color: var(--gold); font-weight: bold; }

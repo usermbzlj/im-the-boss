@@ -44,8 +44,8 @@ export function useGameSession() {
     setGeneration(g => g + 1)
   }, [])
 
-  const start = useCallback((playerCount: number, humanName: string, seed?: number, variantId?: GameVariantId) => {
-    replaceSession(createSession(createInitialState(playerCount, humanName, seed, variantId)))
+  const start = useCallback((playerCount: number, humanName: string, seed?: number, variantId?: GameVariantId, houseRules?: boolean) => {
+    replaceSession(createSession(createInitialState(playerCount, humanName, seed, variantId, { houseRules })))
   }, [replaceSession])
 
   const load = useCallback((state: GameState) => {

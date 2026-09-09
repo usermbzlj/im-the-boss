@@ -3,7 +3,7 @@
 // UI 日志、座位气泡、LLM 提示词里的"最近发生了什么"都走这一份实现。
 // ============================================================
 
-import type { GameEvent, GameState, FamilyId, Payout, RepRef, ReactionKind, ResolvedQuote, SpaceKind, CardType } from '../engine/types'
+import type { GameEvent, GameState, FamilyId, Payout, RepRef, ReactionKind, ResolvedQuote, SpaceKind, CardType, FailReason } from '../engine/types'
 import { FAMILIES, HAND_LIMIT, MAX_OFFERS_PER_BOSS, getVariant, LANDMARK_RENT, PREMIUM_BONUS, HEADHUNT_RECRUIT_COST, BOOM_BONUS, BUST_PENALTY } from '../engine/config'
 
 export type EventTone = 'system' | 'action' | 'card' | 'deal' | 'fail' | 'end' | 'speech'
@@ -23,12 +23,16 @@ export function playerName(state: GameState, id: number | null | undefined): str
 
 export const reactionKindName = (kind: ReactionKind) =>
   kind === 'TRAVEL' ? '旅行牌' : kind === 'BOSS' ? '老板牌' : kind === 'RECRUITMENT' ? '招募牌'
-    : kind === 'BOOM' ? '利好牌' : kind === 'BUST' ? '利空牌' : '独家协议'
+    : kind === 'BOOM' ? '利好牌' : kind === 'BUST' ? '利空牌' : kind === 'SICK' ? '病假牌' : '独家协议'
 
 /** 牌种类的中文名 */
 export const cardTypeName = (type: CardType) =>
   type === 'CLAN' ? '家族成员' : type === 'TRAVEL' ? '旅行' : type === 'RECRUITMENT' ? '招募' : type === 'BOSS' ? '老板'
-    : type === 'STOP' ? '阻止' : type === 'BOOM' ? '利好' : type === 'BUST' ? '利空' : '独家协议'
+    : type === 'STOP' ? '阻止' : type === 'BOOM' ? '利好' : type === 'BUST' ? '利空' : type === 'SICK' ? '病假' : '独家协议'
+
+/** 流局原因的说法 */
+export const failReasonName = (reason: FailReason) =>
+  reason === 'ABANDONED' ? 'Boss 放弃' : reason === 'INCOMPLETE' ? '缺代表且全员跳过' : '僵局'
 
 /** 特殊格名称与一句话效果（STANDARD 返回空串） */
 export const spaceKindName = (kind: SpaceKind) =>
@@ -94,6 +98,18 @@ export function narrate(state: GameState, e: GameEvent): Narration {
       return { tone: 'system', text: `${n(e.playerId)} 手牌 ${e.handSize} 张，超过 ${HAND_LIMIT} 张上限，须弃牌或打出招募牌` }
     case 'CARDS_DISCARDED':
       return { tone: 'action', text: `${n(e.playerId)} 弃了 ${e.count} 张牌` }
+    case 'CARDS_BOUGHT':
+      return { tone: 'action', text: `${n(e.playerId)} 付给银行 $${e.cost}M，多抽了 ${e.count} 张牌（手牌 ${e.handSize} 张）` }
+    case 'CARD_SWAPPED':
+      return e.to === 'TRAVEL'
+        ? { tone: 'card', text: `${n(e.playerId)} 把手中的 ${famName(e.familyId)} 家族成员牌换成了 ${famName(e.familyId)} 旅行牌（他持有该家族投资者）` }
+        : { tone: 'card', text: `${n(e.playerId)} 把手中的 ${famName(e.familyId)} 旅行牌换成了 ${famName(e.familyId)} 家族成员牌（他持有该家族投资者）` }
+    case 'CARDS_TRADED':
+      return { tone: 'card', text: `${n(e.playerId)} 交出 ${e.given.map(cardTypeName).join(' + ')} 并付给银行 $${e.cost}M，换到 2 张招募牌（现有 ${e.recruitCount} 张）` }
+    case 'SICK_PLAYED':
+      return { tone: 'card', text: `${n(e.playerId)} 打出病假牌 → ${n(e.targetId)}：本回合内他将不能主动出牌` }
+    case 'SICK_RESOLVED':
+      return { tone: 'card', text: `${n(e.targetId)} 病倒了：本回合内不能主动出牌（家族 / 旅行 / 招募 / 老板 / 稀有牌与换牌都不行），只能被动打阻止牌` }
     case 'CLAN_PLAYED':
       return { tone: 'card', text: `${n(e.playerId)} 打出家族成员卡：${famName(e.familyId)}（本笔交易中可代替该投资者）` }
     case 'TRAVEL_PLAYED':
@@ -164,8 +180,12 @@ export function narrate(state: GameState, e: GameEvent): Narration {
       const pays = e.payouts.length ? `，其中 ${e.payouts.map(p => `${n(p.playerId)} 分得 $${p.amount}M`).join('、')}` : ''
       return { tone: 'deal', text: `成交！第 ${e.dealNumber} 笔：银行付给 ${n(e.bossId)} $${e.gross}M${pays}，${n(e.bossId)} 净得 $${e.bossKeep}M；景气牌 #${e.tileId} 盖在 #${e.spaceId} 上` }
     }
-    case 'DEAL_FAILED':
-      return { tone: 'fail', text: `#${e.spaceId} 的交易流局（${e.reason === 'ABANDONED' ? `${n(e.bossId)} 主动放弃` : '谈判陷入僵局，连续多轮无人行动'}）。家族卡收回，金钱标记留在原地` }
+    case 'DEAL_FAILED': {
+      const why = e.reason === 'ABANDONED' ? `${n(e.bossId)} 主动放弃`
+        : e.reason === 'INCOMPLETE' ? '桌上凑不齐代表，全员跳过一轮，不必再等'
+          : '谈判陷入僵局，连续多轮无人行动'
+      return { tone: 'fail', text: `#${e.spaceId} 的交易流局（${why}）。家族卡收回，金钱标记留在原地` }
+    }
     case 'END_ROLL_DUE':
       return { tone: 'end', text: `已进入终局阶段：${n(e.playerId)} 掷骰，掷出 ${e.faces.join('/')} 则游戏结束` }
     case 'END_ROLL':

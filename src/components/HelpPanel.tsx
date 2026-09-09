@@ -6,24 +6,28 @@ import type { GameVariantId } from '../engine/types'
 import {
   VARIANT_LIST, getVariant, HAND_LIMIT, MAX_OFFERS_PER_BOSS, MAX_SPEECHES_PER_PLAYER,
   RECRUIT_COST, HEADHUNT_RECRUIT_COST, RECLAIM_RECRUIT_COST, LANDMARK_RENT, PREMIUM_BONUS, BOOM_BONUS, BUST_PENALTY, MIN_SHARE_VALUE,
+  BUY_CARDS_COST_SHARES, TRADE_GIVE_COUNT, TRADE_COST_SHARES, TRADE_RECRUIT_COUNT,
 } from '../engine/config'
 
 interface HelpPanelProps {
   open: boolean
   onClose: () => void
   variantId?: GameVariantId
+  /** 本局是否开启桌规（未传时按版本默认显示） */
+  houseRules?: boolean
 }
 
-export default function HelpPanel({ open, onClose, variantId }: HelpPanelProps) {
+export default function HelpPanel({ open, onClose, variantId, houseRules }: HelpPanelProps) {
   if (!open) return null
   const variant = getVariant(variantId)
   const summary = VARIANT_LIST.find(v => v.id === variant.id) ?? VARIANT_LIST[0]
   const specials = summary.specialSpaces
   const rares = variant.rareCards
+  const house = houseRules ?? variant.houseRules
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="help-panel" onClick={e => e.stopPropagation()}>
-        <h2>📖 规则速查 <span className="muted help-variant">当前：{variant.name}</span></h2>
+        <h2>📖 规则速查 <span className="muted help-variant">当前：{variant.name}{house ? ' · 桌规开' : ''}</span></h2>
         <section>
           <h3>回合</h3>
           <ol>
@@ -51,11 +55,12 @@ export default function HelpPanel({ open, onClose, variantId }: HelpPanelProps) 
             <li>Boss <b>提出方案</b>：指定选用哪些代表、给谁多少钱 → 未达承诺价（或没报价）的持有者依次<b>同意 / 拒绝</b>（拒绝可反报价）</li>
             <li>全员同意后 Boss 可<b>宣布成交</b>（"Going once, going twice"）→ 其他玩家依次放行或打最后一张干扰牌（没有干扰牌会自动放行）→ 全员放行即结算</li>
             <li>每任 Boss 最多 {MAX_OFFERS_PER_BOSS} 次方案；方案中的代表被打飞 / 易主时方案作废，回合回到 Boss；Boss 可随时放弃（流局，家族卡收回）</li>
+            <li><b>缺代表速流局</b>：桌上凑不齐需求、又没人愿意补位（全员跳过一轮）时立即流局，不再空转两轮</li>
             <li>同一家族有多方代表时 Boss 只选其一——落选者一分钱拿不到，可主动压价抢单；Boss 也可以打自己的家族卡替代别人要钱的代表</li>
           </ul>
         </section>
         <section>
-          <h3>影响牌（本局 {summary.deckSize} 张）</h3>
+          <h3>影响牌（本局 {summary.deckSize + (house ? summary.sickCards : 0)} 张）</h3>
           <ul>
             <li><b>家族成员 ×24</b> — 每家族 4 张，谈判中打出即成为该家族的临时代表</li>
             <li><b>旅行 ×21</b> — 定向 18 张只能打同家族，万能 3 张任意；让目标代表本笔交易失效（投资者本局结束恢复，家族卡直接弃掉）</li>
@@ -70,8 +75,21 @@ export default function HelpPanel({ open, onClose, variantId }: HelpPanelProps) 
               </li>
             )}
             {variant.supplementPacks > 0 && <li><b>补充包 ×{variant.supplementPacks}</b> — 每包 12 张（家族成员 6、招募 3、万能旅行 1、老板 1、阻止 1），保证长局牌量</li>}
+            {house && <li><b>病假 ×{summary.sickCards}</b>（桌规，可被阻止）— 指定一名玩家，本回合内他不能主动出牌（家族 / 旅行 / 招募 / 老板 / 稀有牌与换牌都不行），只能被动打阻止牌；开单前、谈判中、倒计时里都能打</li>}
           </ul>
         </section>
+        {house && (
+          <section>
+            <h3>桌规（本局开启；可在开局关闭）</h3>
+            <ul>
+              <li><b>🔁 换牌</b> — 持有某家族投资者时，手里该家族的成员卡可换成同家族旅行牌（反向也行）；不结束行动，每回合一次。自家人多余的成员卡变成打飞竞争者的机票；投资者被打飞时换回成员卡补位</li>
+              <li><b>🃏 买牌</b> — 自己回合开单前，付 {BUY_CARDS_COST_SHARES.join(' / ')} 份当前股价给银行，多抽 1 / 2 / 3 张（不得超过手牌上限；钱不会回来）</li>
+              <li><b>🔁 兑换</b> — 交出 {TRADE_GIVE_COUNT} 张不同种类的牌 + 付 {TRADE_COST_SHARES} 份股价给银行，换 {TRADE_RECRUIT_COUNT} 张招募牌（不可逆；谈判中也可以，不结束行动）。凑招募三连 / 猎头两张 / 夺回权一张的捷径</li>
+              <li><b>🤒 病假牌</b> — 见上；病假只持续到本回合结束（成交 / 流局 / 抽牌结束回合）</li>
+              <li>换牌 / 买牌 / 兑换每回合各限一次；病假中不能做这三件事</li>
+            </ul>
+          </section>
+        )}
         {specials && (
           <section>
             <h3>特殊格</h3>

@@ -33,7 +33,9 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [showOffer, setShowOffer] = useState(false)
   const [sideTab, setSideTab] = useState<SideTab>('log')
-  const [discardSelection, setDiscardSelection] = useState<Set<number>>(new Set())
+  /** 手牌多选：弃牌阶段自动进入 discard；桌规兑换由玩家手动进入 trade */
+  const [selection, setSelection] = useState<Set<number>>(new Set())
+  const [tradeMode, setTradeMode] = useState(false)
   const [resultDismissed, setResultDismissed] = useState(false)
   const gameOver = state?.phase === 'GAME_OVER'
   useEffect(() => { if (!gameOver) setResultDismissed(false) }, [gameOver])
@@ -44,9 +46,12 @@ export default function App() {
   // 谈判开始自动切到谈判页，结束切回日志
   useEffect(() => { setSideTab(hasNeg ? 'neg' : 'log') }, [hasNeg])
 
-  // 离开手牌上限阶段 / 手牌变化时清空弃牌选择
+  // 选牌模式：弃牌优先；兑换只在动作仍合法时保持。状态一变（出牌 / 换手）就清空选择
   const inHandLimit = state?.phase === 'HAND_LIMIT' && state.currentId === HUMAN_ID
-  useEffect(() => { if (!inHandLimit) setDiscardSelection(new Set()) }, [inHandLimit, state?.stateVersion])
+  const canTrade = legal.some(a => a.type === 'TRADE_CARDS')
+  const selectMode: 'discard' | 'trade' | null = inHandLimit ? 'discard' : tradeMode && canTrade ? 'trade' : null
+  useEffect(() => { setSelection(new Set()) }, [selectMode, state?.stateVersion])
+  useEffect(() => { if (!canTrade) setTradeMode(false) }, [canTrade])
 
   // 方案编辑器只在我是 Boss 且轮到我时有效
   const canEditOffer = !!state && state.phase === 'NEGOTIATION' && state.negotiation?.bossId === HUMAN_ID && state.negotiation.turnId === HUMAN_ID
@@ -56,7 +61,7 @@ export default function App() {
     return (
       <>
         <StartScreen
-          onStart={(count, name, seed, variantId) => start(count, name, seed, variantId)}
+          onStart={(count, name, seed, variantId, houseRules) => start(count, name, seed, variantId, houseRules)}
           onContinue={() => { const saved = loadSavedGame(); if (saved) load(saved) }}
           onSettings={() => setShowSettings(true)}
         />
@@ -66,7 +71,7 @@ export default function App() {
   }
 
   const tile = getCurrentTile(state)
-  const toggleDiscard = (id: number) => setDiscardSelection(prev => {
+  const toggleSelect = (id: number) => setSelection(prev => {
     const next = new Set(prev)
     if (next.has(id)) next.delete(id)
     else next.add(id)
@@ -79,6 +84,7 @@ export default function App() {
         <h1>I'm the Boss!</h1>
         <div className="header-info">
           <span className="variant-tag" title={getVariant(state.variantId).blurb}>{getVariant(state.variantId).name}</span>
+          {state.houseRules && <span className="variant-tag house-tag" title="桌规已开启：换牌 / 买牌 / 兑换招募牌 / 病假牌">桌规</span>}
           <span>成交 {state.completedDeals}/{state.dealTiles.length}</span>
           <span>股价 ${tile?.shareValue ?? 0}M</span>
           {tile && tile.endFaces.length > 0 && <span className="endgame-tag">终局 {getEndProbability(tile)}%</span>}
@@ -96,8 +102,13 @@ export default function App() {
       <div className="app-body">
         <div className="table-area">
           <TableBoard state={state} thinkingId={thinkingId} onPlaceMarker={id => act({ type: 'PLACE_MARKER', playerId: HUMAN_ID, spaceId: id })} />
-          <ActionDock state={state} legal={legal} act={act} discardSelection={discardSelection} onOpenOfferEditor={() => setShowOffer(true)} />
-          <CardHand state={state} legal={legal} act={act} discardMode={!!inHandLimit} discardSelection={discardSelection} onToggleDiscard={toggleDiscard} />
+          <ActionDock
+            state={state} legal={legal} act={act}
+            selection={selection} selectMode={selectMode}
+            onToggleTradeMode={() => setTradeMode(v => !v)}
+            onOpenOfferEditor={() => setShowOffer(true)}
+          />
+          <CardHand state={state} legal={legal} act={act} selectMode={selectMode} selection={selection} onToggleSelect={toggleSelect} />
         </div>
 
         <aside className="sidebar">
@@ -148,7 +159,7 @@ export default function App() {
         </div>
       )}
 
-      <HelpPanel open={showHelp} onClose={() => setShowHelp(false)} variantId={state.variantId} />
+      <HelpPanel open={showHelp} onClose={() => setShowHelp(false)} variantId={state.variantId} houseRules={state.houseRules} />
       <SettingsPanel open={showSettings} onClose={() => setShowSettings(false)} />
     </div>
   )

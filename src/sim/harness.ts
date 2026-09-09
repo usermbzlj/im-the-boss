@@ -19,6 +19,8 @@ export interface SimOptions {
   seed: number
   mode: SimMode
   variantId?: GameVariantId
+  /** 桌规开关（省略按变体默认） */
+  houseRules?: boolean
   maxSteps?: number
   /** 记录每步摘要（失败时打印） */
   trace?: boolean
@@ -44,9 +46,9 @@ export interface SimResult {
 /** 兼容旧引用：经典牌堆张数 */
 export const TOTAL_CARDS = 98
 
-/** 该局牌堆总张数（由变体决定：经典 98、完整 105、扩张 117、马拉松 129） */
+/** 该局牌堆总张数（由变体与桌规决定：经典 98、完整 105、扩张 117、马拉松 129；桌规开启再加病假牌） */
 export function totalCardsOf(s: GameState): number {
-  return createDeckFor(getVariant(s.variantId)).length
+  return createDeckFor(getVariant(s.variantId), s.houseRules).length
 }
 
 function mulberry(seed: number) {
@@ -79,8 +81,20 @@ export function checkInvariants(s: GameState): string | null {
   if (s.phase !== 'GAME_OVER' && s.board.find(b => b.id === s.markerPos)?.closedByTileId != null) return `金钱标记落在已关闭格 #${s.markerPos}`
   const cash = s.players.reduce((n, p) => n + p.cash, 0)
   const paidOut = s.dealHistory.filter(d => d.success).reduce((n, d) => n + d.grossValue + d.rents.reduce((m, r) => m + r.amount, 0), 0)
-  if (cash !== paidOut) return `现金不守恒：玩家总现金 ${cash} ≠ 成交总额 + 地标租金 ${paidOut}`
+  if (cash + s.bank !== paidOut) return `现金不守恒：玩家总现金 ${cash} + 银行 ${s.bank} ≠ 成交总额 + 地标租金 ${paidOut}`
+  if (s.bank < 0) return '银行收入为负'
+  if (!s.houseRules && s.bank !== 0) return '未开桌规却有钱付给了银行'
   if (s.players.some(p => p.cash < 0)) return '出现负现金'
+  // 桌规：回合标记只指向真实玩家；病假名单里不该有当前回合的行动者（病假在 endTurn 清空，自己回合开始时必然健康）
+  for (const key of ['swapped', 'bought', 'traded', 'sick'] as const) {
+    const ids = s.turn[key]
+    if (ids.some(id => !s.players[id])) return `回合标记 ${key} 引用了不存在的玩家`
+    if (new Set(ids).size !== ids.length) return `回合标记 ${key} 有重复`
+    if (!s.houseRules && ids.length > 0) return `未开桌规却出现回合标记 ${key}`
+  }
+  if ((s.phase === 'TURN' || s.phase === 'AFTER_MOVE' || s.phase === 'HAND_LIMIT') && s.turn.sick.includes(s.currentId)) return '当前回合的行动者处于病假'
+  if (s.phase === 'PLACE_MARKER' && (s.turn.sick.length || s.turn.bought.length || s.turn.swapped.length || s.turn.traded.length)) return '放置标记阶段不该有回合标记'
+  if (s.players.some(p => p.hand.some(c => c.type === 'SICK')) && !s.houseRules) return '未开桌规却出现病假牌'
   for (const b of s.board) {
     if (b.kind !== 'LANDMARK' && b.landlordId != null) return `非地标格 #${b.id} 却有主人`
     if (b.kind === 'LANDMARK' && b.closedByTileId != null && b.landlordId == null) return `地标 #${b.id} 已成交却无主`
@@ -125,7 +139,7 @@ function finish(opts: SimOptions, state: GameState, steps: number, trace: string
 export function runGame(opts: SimOptions): SimResult {
   const maxSteps = opts.maxSteps ?? 30000
   const rng = mulberry(opts.seed * 7919 + 17)
-  let state = allAI(createInitialState(opts.playerCount, '测试玩家', opts.seed, opts.variantId))
+  let state = allAI(createInitialState(opts.playerCount, '测试玩家', opts.seed, opts.variantId, { houseRules: opts.houseRules }))
   const trace: string[] = []
   let steps = 0
 
@@ -155,9 +169,9 @@ export function runGame(opts: SimOptions): SimResult {
 }
 
 /** 通过 GameSession 运行时跑一局（验证运行时本身：调度、兜底、终止） */
-export async function runGameViaSession(opts: { playerCount: number; seed: number; policy?: Policy; maxSteps?: number; variantId?: GameVariantId }): Promise<SimResult> {
+export async function runGameViaSession(opts: { playerCount: number; seed: number; policy?: Policy; maxSteps?: number; variantId?: GameVariantId; houseRules?: boolean }): Promise<SimResult> {
   const maxSteps = opts.maxSteps ?? 30000
-  const initial = allAI(createInitialState(opts.playerCount, '测试玩家', opts.seed, opts.variantId))
+  const initial = allAI(createInitialState(opts.playerCount, '测试玩家', opts.seed, opts.variantId, { houseRules: opts.houseRules }))
   const errors: string[] = []
   let steps = 0
   let violation: string | null = null

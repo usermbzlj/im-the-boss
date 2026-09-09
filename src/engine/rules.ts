@@ -4,11 +4,12 @@
 // ============================================================
 
 import type {
-  GameState, BoardSpace, DealGroup, DealTile, FamilyId, Negotiation,
+  GameState, BoardSpace, DealGroup, DealTile, FamilyId, Negotiation, GamePhase, PlayerActionType,
   Representative, Offer, Payout, Player, InfluenceCard, Demand, Quote, ResolvedQuote,
 } from './types'
 import {
   FAMILY_IDS, RECRUIT_COST, HEADHUNT_RECRUIT_COST, RECLAIM_RECRUIT_COST, PREMIUM_BONUS, MIN_SHARE_VALUE, LANDMARK_RENT,
+  BUY_CARDS_COST_SHARES, MAX_BUY_CARDS, TRADE_GIVE_COUNT, TRADE_COST_SHARES, TRADE_RECRUIT_COUNT, HAND_LIMIT,
 } from './config'
 
 // ---------- 基础查询 ----------
@@ -627,4 +628,162 @@ export function travelTargets(state: GameState, card: InfluenceCard): Representa
   const neg = state.negotiation
   if (!neg || card.type !== 'TRAVEL') return []
   return neg.reps.filter(r => !r.travelled && (!card.familyId || r.familyId === card.familyId))
+}
+
+/**
+ * 一张牌对持有者的"保留价值"（越低越先弃 / 越适合拿去兑换）：
+ * 已关闭家族的家族卡 / 定向旅行牌几乎无用；招募牌凑不成组时价值低；阻止 / 老板牌最珍贵。
+ */
+export function cardKeepValue(state: GameState, playerId: number, c: InfluenceCard): number {
+  const player = getPlayer(state, playerId)
+  const recruitCount = player ? countCards(player.hand, 'RECRUITMENT') : 0
+  const open = new Set<FamilyId>()
+  for (const s of state.board) if (s.closedByTileId == null) for (const g of s.groups) for (const f of g.families) open.add(f)
+  switch (c.type) {
+    case 'RECRUITMENT': return recruitCount >= RECRUIT_COST || player?.reclaim ? 4 : 1
+    case 'CLAN': return c.familyId && open.has(c.familyId) ? 3 : 0
+    case 'TRAVEL': return c.familyId ? (open.has(c.familyId) ? 3 : 0) : 5
+    case 'SICK': return 4
+    case 'BUST': return 4
+    case 'BOOM': return 5
+    case 'EXCLUSIVE': return 5
+    case 'BOSS': return 6
+    case 'STOP': return 7
+  }
+}
+
+// ---------- 桌规（houseRules）：互换 / 买牌 / 兑换 / 病假 ----------
+
+/** 病假中：本回合不能主动出牌（家族 / 旅行 / 招募 / 老板 / 稀有牌 / 病假牌 / 互换 / 兑换），只能被动打阻止牌 */
+export function isSick(state: GameState, playerId: number): boolean {
+  return state.turn.sick.includes(playerId)
+}
+
+/** 病假期间被禁止的动作 */
+export const ACTIVE_CARD_ACTIONS: ReadonlySet<PlayerActionType> = new Set<PlayerActionType>([
+  'PLAY_CLAN', 'PLAY_TRAVEL', 'PLAY_RECRUITMENT', 'PLAY_BOSS', 'PLAY_BOOM', 'PLAY_BUST', 'PLAY_EXCLUSIVE', 'PLAY_SICK',
+  'SWAP_CARD', 'TRADE_CARDS',
+])
+
+/** 互换 / 兑换可以发生的阶段：自己回合开单前，或谈判中轮到自己（不含成交倒计时——那里只留干扰牌） */
+const EXCHANGE_PHASES: ReadonlySet<GamePhase> = new Set<GamePhase>(['TURN', 'AFTER_MOVE', 'NEGOTIATION'])
+export function isExchangePhase(phase: GamePhase): boolean {
+  return EXCHANGE_PHASES.has(phase)
+}
+
+/** 病假牌可以打出的阶段：开单前（先把危险人物放倒）、谈判中、成交倒计时 */
+const SICK_PHASES: ReadonlySet<GamePhase> = new Set<GamePhase>(['TURN', 'AFTER_MOVE', 'NEGOTIATION', 'CLOSING'])
+export function isSickPlayPhase(phase: GamePhase): boolean {
+  return SICK_PHASES.has(phase)
+}
+
+/** 病假牌的可选目标：其他尚未病假的玩家 */
+export function sickTargets(state: GameState, playerId: number): number[] {
+  return state.players.filter(p => p.id !== playerId && !isSick(state, p.id)).map(p => p.id)
+}
+
+/** 抽牌堆 + 弃牌堆里符合条件的牌数（互换 / 兑换要从这里"找"牌） */
+export function availableInPiles(state: GameState, pred: (c: InfluenceCard) => boolean): number {
+  return state.drawPile.filter(pred).length + state.discardPile.filter(pred).length
+}
+
+/** 一张牌互换后的种类：家族成员 → 旅行；定向旅行 → 家族成员；其他不可互换 */
+export function swapTargetType(card: InfluenceCard): 'CLAN' | 'TRAVEL' | null {
+  if (!card.familyId) return null
+  if (card.type === 'CLAN') return 'TRAVEL'
+  if (card.type === 'TRAVEL') return 'CLAN'
+  return null
+}
+
+/**
+ * 这张牌现在能否互换：桌规开启、本回合未换过、牌是家族成员 / 定向旅行、
+ * 我持有该家族的投资者（"与自己的常驻代表相同的家族"）、牌堆 / 弃牌堆里找得到对应的牌。
+ */
+export function canSwapCard(state: GameState, playerId: number, card: InfluenceCard): boolean {
+  if (!state.houseRules || state.turn.swapped.includes(playerId)) return false
+  const to = swapTargetType(card)
+  if (!to) return false
+  const inv = state.investors.find(i => i.familyId === card.familyId)
+  if (!inv || inv.ownerId !== playerId) return false
+  return availableInPiles(state, c => c.type === to && c.familyId === card.familyId) > 0
+}
+
+export function swappableCards(state: GameState, playerId: number): InfluenceCard[] {
+  const player = getPlayer(state, playerId)
+  if (!player) return []
+  return player.hand.filter(c => canSwapCard(state, playerId, c))
+}
+
+/** 当前景气牌股价（买牌 / 兑换的计价单位；不含抢手加成与本笔利好利空） */
+export function baseShareValue(state: GameState): number {
+  return getCurrentTile(state)?.shareValue ?? 0
+}
+
+/** 花钱补 n 张牌的价钱（1 张 1 份、2 张 3 份、3 张 6 份股价） */
+export function buyCardsCost(state: GameState, count: number): number {
+  const shares = BUY_CARDS_COST_SHARES[count - 1]
+  return shares == null ? Infinity : shares * baseShareValue(state)
+}
+
+/** 现在能买几张牌（0 = 不能买）：桌规、自己回合开单前、本回合未买过、付得起、不超手牌上限、牌够 */
+export function buyableCardCounts(state: GameState, playerId: number): number[] {
+  const player = getPlayer(state, playerId)
+  if (!player || !state.houseRules || state.turn.bought.includes(playerId)) return []
+  if (state.phase !== 'TURN' && state.phase !== 'AFTER_MOVE') return []
+  const out: number[] = []
+  for (let n = 1; n <= MAX_BUY_CARDS; n++) {
+    if (player.hand.length + n > HAND_LIMIT) break
+    if (player.cash < buyCardsCost(state, n)) break
+    if (state.drawPile.length + state.discardPile.length < n) break
+    out.push(n)
+  }
+  return out
+}
+
+/** 兑换招募牌要付的钱（一份股价） */
+export function tradeCost(state: GameState): number {
+  return TRADE_COST_SHARES * baseShareValue(state)
+}
+
+/** 兑换的前提（不含选牌）：桌规、可兑换阶段、本回合未兑换过、付得起、牌堆里还有两张招募牌、手里至少有两种牌 */
+export function canTradeCards(state: GameState, playerId: number): boolean {
+  const player = getPlayer(state, playerId)
+  if (!player || !state.houseRules || state.turn.traded.includes(playerId) || !isExchangePhase(state.phase)) return false
+  if (player.cash < tradeCost(state)) return false
+  if (availableInPiles(state, c => c.type === 'RECRUITMENT') < TRADE_RECRUIT_COUNT) return false
+  return new Set(player.hand.map(c => c.type)).size >= TRADE_GIVE_COUNT
+}
+
+/** 这组牌能否作为兑换的"两张不同种类的牌" */
+export function isValidTradePair(state: GameState, playerId: number, cardIds: unknown): cardIds is number[] {
+  const player = getPlayer(state, playerId)
+  if (!player || !Array.isArray(cardIds) || cardIds.length !== TRADE_GIVE_COUNT || new Set(cardIds).size !== TRADE_GIVE_COUNT) return false
+  const cards = cardIds.map(id => player.hand.find(c => c.id === id))
+  if (cards.some(c => !c)) return false
+  return new Set(cards.map(c => c!.type)).size === TRADE_GIVE_COUNT
+}
+
+/** 兑换的默认选牌：保留价值最低的两张不同种类的牌（AI 的代表性取值 / 界面的推荐） */
+export function defaultTradePair(state: GameState, playerId: number): number[] | null {
+  const player = getPlayer(state, playerId)
+  if (!player) return null
+  const sorted = [...player.hand].sort((a, b) => cardKeepValue(state, playerId, a) - cardKeepValue(state, playerId, b))
+  for (const a of sorted) {
+    const b = sorted.find(c => c.id !== a.id && c.type !== a.type)
+    if (b) return [a.id, b.id]
+  }
+  return null
+}
+
+/** 兑换后手里会有几张招募牌 */
+export function recruitCountAfterTrade(state: GameState, playerId: number, cardIds: number[]): number {
+  const player = getPlayer(state, playerId)
+  if (!player) return 0
+  const given = player.hand.filter(c => cardIds.includes(c.id) && c.type === 'RECRUITMENT').length
+  return countCards(player.hand, 'RECRUITMENT') - given + TRADE_RECRUIT_COUNT
+}
+
+/** 桌上是否有人病假（座位徽标 / 提示用） */
+export function sickPlayerIds(state: GameState): number[] {
+  return [...state.turn.sick]
 }

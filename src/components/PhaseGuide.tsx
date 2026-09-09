@@ -4,7 +4,7 @@
 
 import type { GameState } from '../engine/types'
 import { getActingPlayerId } from '../engine/validator'
-import { getGrossValue, offerShareOf, hasStop } from '../engine/rules'
+import { getGrossValue, offerShareOf, hasStop, isSick, tableCanComplete } from '../engine/rules'
 import { HAND_LIMIT, MAX_OFFERS_PER_BOSS } from '../engine/config'
 import { reactionKindName } from '../text/narrate'
 
@@ -14,6 +14,7 @@ export default function PhaseGuide({ state }: { state: GameState }) {
   const human = !!acting && !acting.isAI
   const neg = state.negotiation
   const gross = getGrossValue(state)
+  const house = state.houseRules ? '；桌规：可先买牌 / 兑换招募牌' : ''
 
   let text = ''
   switch (state.phase) {
@@ -21,10 +22,10 @@ export default function PhaseGuide({ state }: { state: GameState }) {
       text = human ? '请点击版图上的任意格子放置金钱标记（起始玩家将先决定是否交易那一格）' : `${acting?.name} 正在放置金钱标记`
       break
     case 'TURN':
-      text = human ? `你的回合：发起当前格 #${state.markerPos} 的交易（$${gross}M），或掷骰移动` : `${acting?.name} 的回合`
+      text = human ? `你的回合：发起当前格 #${state.markerPos} 的交易（$${gross}M），或掷骰移动${house}` : `${acting?.name} 的回合`
       break
     case 'AFTER_MOVE':
-      text = human ? `标记移到 #${state.markerPos}（$${gross}M）：发起交易，或抽 3 张牌结束回合` : `${acting?.name} 移动后抉择中`
+      text = human ? `标记移到 #${state.markerPos}（$${gross}M）：发起交易，或抽 3 张牌结束回合${house}` : `${acting?.name} 移动后抉择中`
       break
     case 'HAND_LIMIT':
       text = human ? `手牌超过 ${HAND_LIMIT} 张：点选要弃的牌，或打出招募牌夺取投资者` : `${acting?.name} 手牌超限，处理中`
@@ -37,6 +38,7 @@ export default function PhaseGuide({ state }: { state: GameState }) {
           ? (neg!.offer ? '你是 Boss：方案全员同意后可宣布成交；也可修改方案、再听一轮或放弃' : '你是 Boss：听完叫价，用自己的家族卡省钱，再提出方案')
           : (neg!.offer ? '轮到你：方案已在桌上——压价抢单、打干扰牌，或跳过' : '叫价轮：报出你的出借价（承诺价）、打家族卡入场、出牌，或跳过'))
         : `谈判中（Boss：${boss?.name}）— ${acting?.name}${role ? '（Boss）' : ''} 行动中`
+      if (human && isSick(state, 0)) text += '（你病假中：不能主动出牌）'
       break
     }
     case 'OFFER_RESPONSE':
@@ -44,14 +46,16 @@ export default function PhaseGuide({ state }: { state: GameState }) {
       break
     case 'REACTION': {
       const pr = state.pendingReaction!
-      const what = `${state.players[pr.actorId]?.name} 打出了${reactionKindName(pr.kind)}`
+      const what = `${state.players[pr.actorId]?.name} 打出了${reactionKindName(pr.kind)}${pr.kind === 'SICK' && pr.targetPlayerId === 0 ? '，目标是你' : ''}`
       text = human
         ? (hasStop(acting) ? `${what}：是否用阻止牌取消？` : `${what}，你没有阻止牌`)
         : '反应窗口：依次询问其他玩家是否阻止…'
       break
     }
     case 'CLOSING':
-      text = human ? 'Boss 已宣布成交，这是你最后的出牌机会：放行或打出干扰牌（没有干扰牌会自动放行）' : `成交倒计时：等待 ${acting?.name} 放行或出牌`
+      text = human
+        ? (isSick(state, 0) ? 'Boss 已宣布成交；你病假中不能打干扰牌，只能放行' : 'Boss 已宣布成交，这是你最后的出牌机会：放行或打出干扰牌（没有干扰牌会自动放行）')
+        : `成交倒计时：等待 ${acting?.name} 放行或出牌`
       break
     case 'END_ROLL':
       text = human ? '终局判定：掷骰！' : `${acting?.name} 掷终局骰`
@@ -69,6 +73,7 @@ export default function PhaseGuide({ state }: { state: GameState }) {
         <span className="guide-right">
           交易 #{neg.spaceId} · ${gross}M · 方案 {neg.offersMade}/{MAX_OFFERS_PER_BOSS}
           {neg.stalemateRounds > 0 && <b className="red"> · 再一轮无人行动将流局</b>}
+          {neg.stalemateRounds === 0 && state.phase === 'NEGOTIATION' && !tableCanComplete(state) && <b className="muted"> · 缺代表：全员跳过一轮即流局</b>}
         </span>
       )}
     </div>

@@ -5,6 +5,7 @@ import { describe, it, expect } from 'vitest'
 import {
   VARIANTS, VARIANT_IDS, VARIANT_LIST, getVariant, makeDealTiles, DEAL_TILES, buildBoard, createDeckFor, ringLayout,
   STARTING_HAND, LANDMARK_RENT, PREMIUM_BONUS, BOOM_BONUS, BUST_PENALTY, MIN_SHARE_VALUE, HEADHUNT_RECRUIT_COST, RECLAIM_RECRUIT_COST, RECRUIT_COST,
+  sickCardCount,
 } from '../src/engine/config'
 import { createInitialState, SAVE_VERSION, gameReducer } from '../src/engine/gameEngine'
 import { getActingPlayerId, getLegalActions } from '../src/engine/validator'
@@ -94,7 +95,10 @@ describe('变体配置', () => {
     expect(s.variantId).toBe('marathon')
     expect(s.board).toHaveLength(32)
     expect(s.dealTiles).toHaveLength(30)
-    expect(s.drawPile).toHaveLength(129 - STARTING_HAND * 5)
+    // 马拉松默认开桌规：牌堆多出病假牌
+    expect(s.houseRules).toBe(true)
+    expect(s.drawPile).toHaveLength(129 + sickCardCount(getVariant('marathon')) - STARTING_HAND * 5)
+    expect(createInitialState(5, '我', 3, 'marathon', { houseRules: false }).drawPile).toHaveLength(129 - STARTING_HAND * 5)
     expect(s.saveVersion).toBe(SAVE_VERSION)
     expect(eventsOf(s, 'GAME_STARTED')[0]).toMatchObject({ variantId: 'marathon', deals: 30 })
     expect(createInitialState(4, '我', 3).variantId).toBe('classic')
@@ -411,7 +415,8 @@ describe('各变体整局仿真', () => {
   it('完整 16 笔：把 16 格全部关闭时直接结束', () => {
     let found = false
     for (let seed = 0; seed < 60 && !found; seed++) {
-      const r = runGame({ playerCount: 3, seed, mode: 'random', variantId: 'full', maxSteps: 60000 })
+      // 关掉桌规：随机 AI 会乱打病假牌 / 缺代表速流局，16 笔全成交的样本会变稀
+      const r = runGame({ playerCount: 3, seed, mode: 'random', variantId: 'full', houseRules: false, maxSteps: 60000 })
       expect(r.ok, r.reason).toBe(true)
       if (r.deals === 16) {
         found = true

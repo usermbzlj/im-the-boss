@@ -7,10 +7,11 @@ import type { GameState, PlayerAction, BoardSpace, InfluenceCard, PendingReactio
 import { HAND_LIMIT, MAX_OFFERS_PER_BOSS, BOOM_BONUS, BUST_PENALTY, MIN_SHARE_VALUE } from '../engine/config'
 import {
   getPlayer, getCurrentSpace, getGrossValue, isRequiredGroup, findRep, offerOwners,
-  playerActiveFamilies, recruitCost, canReclaim, effectiveShareValue, type OfferError,
+  playerActiveFamilies, recruitCost, canReclaim, effectiveShareValue, swapTargetType, buyCardsCost, tradeCost,
+  recruitCountAfterTrade, type OfferError,
 } from '../engine/rules'
 import type { OfferCandidate } from '../engine/validator'
-import { famLabel, famName, playerName, describeRepRef, describePayouts, spaceKindName, spaceKindEffect, recruitCostName } from './narrate'
+import { famLabel, famName, playerName, describeRepRef, describePayouts, spaceKindName, spaceKindEffect, recruitCostName, cardTypeName } from './narrate'
 
 export function describeCard(c: InfluenceCard): string {
   switch (c.type) {
@@ -22,6 +23,7 @@ export function describeCard(c: InfluenceCard): string {
     case 'BOOM': return '利好(稀有)'
     case 'BUST': return '利空(稀有)'
     case 'EXCLUSIVE': return '独家协议(稀有)'
+    case 'SICK': return '病假(桌规)'
   }
 }
 
@@ -69,6 +71,8 @@ export function describeReactionTarget(state: GameState, pr: PendingReaction): s
       return `本笔股价 −$${BUST_PENALTY}M/份（总额 $${getGrossValue(state)}M → $${grossAfterDelta(state, -BUST_PENALTY)}M）`
     case 'EXCLUSIVE':
       return '锁定本笔交易（老板牌 / 旅行牌 / 利空牌失效）'
+    case 'SICK':
+      return `${playerName(state, pr.targetPlayerId)}（本回合内不能主动出牌，仍可打阻止牌）`
   }
 }
 
@@ -156,6 +160,25 @@ export function describeAction(state: GameState, a: PlayerAction): string {
     case 'PLAY_BOOM': return `打出利好牌（稀有）：本笔股价 +$${BOOM_BONUS}M/份`
     case 'PLAY_BUST': return `打出利空牌（稀有）：本笔股价 −$${BUST_PENALTY}M/份`
     case 'PLAY_EXCLUSIVE': return '打出独家协议（稀有）：锁定本笔交易，老板牌 / 旅行牌 / 利空牌不能再打'
+    case 'PLAY_SICK': {
+      const target = getPlayer(state, a.targetPlayerId)
+      return `打出病假牌 → ${target?.name ?? `#${a.targetPlayerId}`}（手牌 ${target?.hand.length ?? 0} 张）：本回合内他不能主动出牌，只能被动打阻止牌`
+    }
+    case 'SWAP_CARD': {
+      const card = player?.hand.find(c => c.id === a.cardId)
+      if (!card?.familyId) return '互换手牌'
+      const to = swapTargetType(card)
+      return to === 'TRAVEL'
+        ? `换牌：把 ${famLabel(card.familyId)} 家族成员牌换成 ${famName(card.familyId)} 旅行牌（你持有该家族投资者；每回合一次，不结束行动）`
+        : `换牌：把 ${famLabel(card.familyId)} 旅行牌换成 ${famName(card.familyId)} 家族成员牌（你持有该家族投资者；每回合一次，不结束行动）`
+    }
+    case 'BUY_CARDS':
+      return `花 $${buyCardsCost(state, a.count)}M（${a.count === 1 ? '1 份' : a.count === 2 ? '3 份' : '6 份'}股价，付给银行）多抽 ${a.count} 张牌，之后照常行动`
+    case 'TRADE_CARDS': {
+      const given = a.cardIds.map(id => player?.hand.find(c => c.id === id)).filter((c): c is InfluenceCard => !!c)
+      const names = given.map(c => c.type === 'CLAN' || (c.type === 'TRAVEL' && c.familyId) ? describeCard(c) : cardTypeName(c.type)).join(' + ')
+      return `兑换：交出 ${names} 并付 $${tradeCost(state)}M，换 2 张招募牌（之后共 ${recruitCountAfterTrade(state, a.playerId, a.cardIds)} 张；可用 cardIds 改选两张不同种类的牌；每回合一次，不可逆）`
+    }
     case 'PLAY_STOP': return '打出阻止牌，取消这张牌的效果'
     case 'PASS_REACTION': return '不阻止'
     case 'SPEAK': {
