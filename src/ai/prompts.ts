@@ -214,7 +214,7 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
       break
     }
     case 'CLOSE_DEAL':
-      notes.push(`进入倒计时，他人有最后出牌机会；无人干扰你净得 $${gross - (neg?.offer ? payoutTotal(neg.offer.payouts) : 0)}M`)
+      notes.push(`进入倒计时，他人有最后出牌机会；无人干扰你净得 $${Math.max(0, gross - (neg?.offer ? payoutTotal(neg.offer.payouts) : 0))}M`)
       break
     case 'ABANDON_DEAL':
       notes.push('流局，所有人一分不得，家族卡收回')
@@ -364,7 +364,7 @@ function describeNegotiation(state: GameState, playerId: number): string {
     const pays = neg.offer.payouts.map(p => `${name(p.playerId)}$${p.amount}M`).join('、') || '无人分成'
     const owners = offerOwners(neg, neg.offer)
     const resp = owners.map(id => `${name(id)}:${neg.offer!.responses[id] === 'ACCEPTED' ? '同意' : neg.offer!.responses[id] === 'DECLINED' ? '拒绝' : '未表态'}`).join('、')
-    offerStr = `方案#${neg.offersMade}：代表 ${reps}；分成 ${pays}；Boss净得$${gross - payoutTotal(neg.offer.payouts)}M${owners.length ? `；应答 ${resp}` : '；无需他人同意'}`
+    offerStr = `方案#${neg.offersMade}：代表 ${reps}；分成 ${pays}；Boss净得$${Math.max(0, gross - payoutTotal(neg.offer.payouts))}M${owners.length ? `；应答 ${resp}` : '；无需他人同意'}`
   }
 
   const bribes = neg.demands.filter(d => d.familyId == null && !playerActiveFamilies(neg, d.playerId).size && d.playerId !== neg.bossId)

@@ -76,7 +76,7 @@ docs/           规则、架构、AI、开发指南、重构对照
 
 ```bash
 npm run typecheck          # 严格模式 TypeScript（含 tests/）
-npm test                   # vitest：130 个用例，含 3~6 人整局仿真、四个版本与桌规
+npm test                   # vitest：136 个用例，含 3~6 人整局仿真、四个版本与桌规
 npm run simulate -- 400    # 400 局回归：启发式 / 随机各半、四个版本轮换，逐步断言不变量
 npm run check              # 以上三项串行
 ```

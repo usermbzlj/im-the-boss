@@ -143,6 +143,45 @@ describe('方案 / 应答 / 分成', () => {
     expect(s.dealHistory[0].payouts).toEqual([{ playerId: 1, amount: 3 }])
   })
 
+  it('任何人拒绝即结束应答、回到 Boss：排在后面的人不再被询问，也不会改写自己的承诺价', () => {
+    let s = baseState(4, 2)
+    setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
+    s.board[0].groups = [{ families: ['A', 'B', 'C'], need: 3 }]; s.board[0].dividends = 4 // #1 改为必需 A+B+C
+    s = openDealAt(s, 1, 0)
+    s = step(s, { type: 'PASS', playerId: 1 })
+    s = step(s, { type: 'SPEAK', playerId: 2, say: 'C 3 块', quotes: [{ familyId: 'C', amount: 3 }] })
+    s = toBoss(s)
+    const keys = [investorRepKey('A'), investorRepKey('B'), investorRepKey('C')]
+    s = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: keys, payouts: [{ playerId: 1, amount: 1 }, { playerId: 2, amount: 1 }] })
+    expect(s.phase).toBe('OFFER_RESPONSE')
+    expect(s.negotiation!.responseQueue).toEqual([1, 2])
+
+    s = step(s, { type: 'DECLINE_OFFER', playerId: 1 })
+    expect(s.phase).toBe('NEGOTIATION')
+    expect(getActingPlayerId(s)).toBe(0)
+    rejects(s, { type: 'ACCEPT_OFFER', playerId: 2 }) // 玩家 2 不再被询问
+    expect(s.negotiation!.offer!.responses[2]).toBeUndefined()
+    expect(demandOf(s.negotiation!, 2, 'C')).toBe(3) // 承诺价没有被"同意 $1M"改写
+    expect(eventsOf(s, 'OFFER_ACCEPTED')).toHaveLength(0)
+    expect(eventsOf(s, 'OFFER_RESOLVED').at(-1)).toMatchObject({ agreed: false, declinerIds: [1] })
+    expect(canClose(s)).toBe(false)
+  })
+
+  it('前面的人同意、后面的人拒绝：同样回到 Boss，方案不能成交', () => {
+    let s = baseState(4, 2)
+    setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
+    s.board[0].groups = [{ families: ['A', 'B', 'C'], need: 3 }]; s.board[0].dividends = 4
+    s = toBoss(openDealAt(s, 1, 0))
+    const keys = [investorRepKey('A'), investorRepKey('B'), investorRepKey('C')]
+    s = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: keys, payouts: [{ playerId: 1, amount: 2 }, { playerId: 2, amount: 2 }] })
+    s = step(s, { type: 'ACCEPT_OFFER', playerId: 1 })
+    expect(getActingPlayerId(s)).toBe(2)
+    s = step(s, { type: 'DECLINE_OFFER', playerId: 2 })
+    expect(s.phase).toBe('NEGOTIATION')
+    expect(getActingPlayerId(s)).toBe(0)
+    expect(canClose(s)).toBe(false)
+  })
+
   it('付不到承诺价则仍需表态；点头同意的价格成为新的承诺价', () => {
     let s = baseState(4, 2)
     setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })

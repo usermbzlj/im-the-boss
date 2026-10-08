@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'react'
 import type { GameState, PlayerAction, FamilyId, Quote } from '../engine/types'
-import { FAMILIES, HAND_LIMIT, MAX_SPEECHES_PER_PLAYER, TRADE_RECRUIT_COUNT } from '../engine/config'
+import { FAMILIES, HAND_LIMIT, MAX_OFFERS_PER_BOSS, MAX_SPEECHES_PER_PLAYER, TRADE_RECRUIT_COUNT } from '../engine/config'
 import {
   getGrossValue, oneShareOf, offerShareOf, demandOf, getCurrentSpace, tableCanComplete, canCompleteAlone,
   soleRepFamilies, rivalReps, missingFamilies, playerRelevantFamilies, demandsOf, repPriceOf, commitmentPrice, usedFamiliesOf,
@@ -210,6 +210,12 @@ export default function ActionDock({ state, legal, act, selection, selectMode, o
         const pending = collectQuotes(quoteKeys)
         const canSend = !!speakText.trim() || pending.length > 0
         const complete = tableCanComplete(state)
+        // 本任 Boss 的提案次数用完后不能再提案（与引擎 isLegal 同口径），按钮置灰并说明原因，不再让提交被静默丢弃
+        const offersLeft = MAX_OFFERS_PER_BOSS - neg!.offersMade
+        const canPropose = complete && offersLeft > 0
+        const proposeTitle = offersLeft <= 0
+          ? `本任 Boss 的 ${MAX_OFFERS_PER_BOSS} 次提案已用完：可宣布成交（若已有全员同意的方案）、再听一轮或放弃`
+          : complete ? '指定选用的代表与分成；付到对方承诺价的会自动同意' : '桌上代表还凑不齐需求，先等人打家族卡/报价'
         const passTitle = complete ? '本轮不行动（连续两轮全员跳过会流局）' : '桌上凑不齐代表：全员跳过一轮就直接流局'
         return (
           <div className="dock-neg">
@@ -263,9 +269,8 @@ export default function ActionDock({ state, legal, act, selection, selectMode, o
             <div className="dock-actions">
               {isBoss ? (
                 <>
-                  <button className="btn" disabled={!has('PROPOSE_OFFER') && !tableCanComplete(state)} onClick={onOpenOfferEditor}
-                    title={tableCanComplete(state) ? '指定选用的代表与分成；付到对方承诺价的会自动同意' : '桌上代表还凑不齐需求，先等人打家族卡/报价'}>
-                    {neg!.offer ? '修改方案' : '提出方案'}{!tableCanComplete(state) && '（代表不足）'}
+                  <button className="btn" disabled={!canPropose} onClick={onOpenOfferEditor} title={proposeTitle}>
+                    {neg!.offer ? '修改方案' : '提出方案'}{offersLeft <= 0 ? '（次数已用完）' : !complete && '（代表不足）'}
                   </button>
                   <button className="btn btn-success" disabled={!closable} onClick={() => send({ type: 'CLOSE_DEAL', playerId: HUMAN_ID })}
                     title={closable ? '进入"Going once, going twice"倒计时，无人干扰即结算' : '需先有全员同意的方案，或仅用自己的代表凑齐'}>

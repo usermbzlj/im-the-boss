@@ -43,7 +43,7 @@ import {
   getPlayer, nextPlayerId, prevPlayerId, othersFrom, getSpace, getCurrentTile,
   getGrossValue, offerOwners, findRep, selectReps, investorRepKey, clanRepKey, payoutTotal, offerShareOf, meetsCommitment, repsUsedOf,
   commitmentPrice, playerRelevantFamilies, usedFamiliesOf, resolveQuotes, recruitCost, isBlackMarketDeal, landlords,
-  tableCanComplete, swapTargetType, buyCardsCost, tradeCost, countCards,
+  tableCanComplete, swapTargetType, buyCardsCost, tradeCost, countCards, settlePayouts,
 } from './rules'
 import { isLegal } from './validator'
 
@@ -444,9 +444,13 @@ function afterReaction(s: GameState, cancelled: boolean, offerVoided = false) {
   else neg.turnId = nextPlayerId(s, pr.actorId)
 }
 
-function advanceResponse(s: GameState) {
+/**
+ * 应答推进到下一位。endNow：有人拒绝即方案作废、回到 Boss（docs/rules.md §9），
+ * 后面排队的人不再被询问，也不会再改写自己的承诺价。
+ */
+function advanceResponse(s: GameState, endNow = false) {
   const neg = s.negotiation!
-  neg.responseIndex++
+  neg.responseIndex = endNow ? neg.responseQueue.length : neg.responseIndex + 1
   if (neg.responseIndex < neg.responseQueue.length) return
   s.phase = 'NEGOTIATION'
   neg.turnId = neg.bossId
@@ -466,16 +470,16 @@ function finalizeDeal(s: GameState) {
   const boss = getPlayer(s, neg.bossId)!
 
   boss.cash += gross
+  // 分成合计可能因利空牌超过总额：按总额封顶（docs/rules.md §10.4）
   let paid = 0
   const finalPayouts: Payout[] = []
-  for (const p of offer.payouts) {
-    const amount = Math.max(0, Math.min(p.amount, gross - paid))
+  for (const p of settlePayouts(offer.payouts, gross, boss.id)) {
     const to = getPlayer(s, p.playerId)
-    if (!to || amount <= 0 || p.playerId === boss.id) continue
-    boss.cash -= amount
-    to.cash += amount
-    paid += amount
-    finalPayouts.push({ playerId: p.playerId, amount })
+    if (!to) continue
+    boss.cash -= p.amount
+    to.cash += p.amount
+    paid += p.amount
+    finalPayouts.push(p)
   }
 
   // 被选用的家族卡弃置；未选用且未被打飞的回手
@@ -806,7 +810,7 @@ function apply(s: GameState, action: PlayerAction) {
       // 反报价是对"方案里用到的我的代表"（每个）的出借价，可按家族分别给；不是封口费
       const counters = action.quotes?.length ? applyQuotes(s, player.id, action.quotes, usedFamiliesOf(neg!, neg!.offer!, player.id), true) : []
       emit(s, { kind: 'OFFER_DECLINED', playerId: player.id, counters })
-      advanceResponse(s)
+      advanceResponse(s, true)
       return
     }
 
