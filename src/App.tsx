@@ -18,7 +18,7 @@ import PhaseGuide from './components/PhaseGuide'
 import HelpPanel from './components/HelpPanel'
 import SettingsPanel from './components/SettingsPanel'
 import { getCurrentTile, getEndProbability } from './engine/rules'
-import { getVariant } from './engine/config'
+import { getVariant, MAX_OFFERS_PER_BOSS } from './engine/config'
 import { getLegalActions } from './engine/validator'
 import { loadSavedGame, clearSavedGame } from './utils/storage'
 
@@ -53,8 +53,9 @@ export default function App() {
   useEffect(() => { setSelection(new Set()) }, [selectMode, state?.stateVersion])
   useEffect(() => { if (!canTrade) setTradeMode(false) }, [canTrade])
 
-  // 方案编辑器只在我是 Boss 且轮到我时有效
-  const canEditOffer = !!state && state.phase === 'NEGOTIATION' && state.negotiation?.bossId === HUMAN_ID && state.negotiation.turnId === HUMAN_ID
+  // 方案编辑器只在我是 Boss、轮到我且还有提案次数时有效
+  const canEditOffer = !!state && state.phase === 'NEGOTIATION' && state.negotiation?.bossId === HUMAN_ID && state.negotiation.turnId === HUMAN_ID &&
+    state.negotiation.offersMade < MAX_OFFERS_PER_BOSS
   useEffect(() => { if (!canEditOffer) setShowOffer(false) }, [canEditOffer])
 
   if (!state) {

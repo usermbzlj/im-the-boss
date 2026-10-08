@@ -132,7 +132,7 @@ export default function NegotiationPanel({ state }: { state: GameState }) {
             )) : <div className="muted">不给任何人分成</div>}
             <div className="payout-line boss-net">
               <span>{boss?.name} 净得</span>
-              <b className="gold">${gross - offer.payouts.reduce((s, p) => s + p.amount, 0)}M</b>
+              <b className="gold">${Math.max(0, gross - offer.payouts.reduce((s, p) => s + p.amount, 0))}M</b>
             </div>
             <div className="offer-status">
               {offerOwners(neg, offer).length === 0

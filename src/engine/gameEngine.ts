@@ -36,14 +36,14 @@ import type {
 import {
   FAMILY_IDS, AI_ROSTER,
   HAND_LIMIT, CARDS_PER_DRAW, STARTING_HAND, MAX_STALEMATE_ROUNDS, MAX_EVENTS,
-  LANDMARK_RENT, BOOM_BONUS, BUST_PENALTY, TRADE_RECRUIT_COUNT,
+  LANDMARK_RENT, BOOM_BONUS, BUST_PENALTY, MIN_SHARE_VALUE, PREMIUM_BONUS, TRADE_RECRUIT_COUNT,
   getVariant, buildBoard, makeDealTiles, createDeckFor, shuffleWith, rollDieWith, randomSeed,
 } from './config'
 import {
   getPlayer, nextPlayerId, prevPlayerId, othersFrom, getSpace, getCurrentTile,
-  getGrossValue, offerOwners, findRep, selectReps, investorRepKey, clanRepKey, payoutTotal, offerShareOf, meetsCommitment, repsUsedOf,
+  getGrossValue, effectiveShareValue, offerOwners, findRep, selectReps, investorRepKey, clanRepKey, payoutTotal, offerShareOf, meetsCommitment, repsUsedOf,
   commitmentPrice, playerRelevantFamilies, usedFamiliesOf, resolveQuotes, recruitCost, isBlackMarketDeal, landlords,
-  tableCanComplete, swapTargetType, buyCardsCost, tradeCost, countCards,
+  tableCanComplete, swapTargetType, buyCardsCost, tradeCost, countCards, settlePayouts,
 } from './rules'
 import { isLegal } from './validator'
 
@@ -376,9 +376,16 @@ function resolveReaction(s: GameState) {
       voidOfferIfTouched(s, key, 'RECRUITED')
     }
   } else if ((pr.kind === 'BOOM' || pr.kind === 'BUST') && neg) {
-    neg.priceDelta += pr.kind === 'BOOM' ? BOOM_BONUS : -BUST_PENALTY
+    // 一张一张结算，下限在每张牌之后套，不能先把加减加总再封底（否则下限吃掉的利空会抵消后面的利好）
+    const before = effectiveShareValue(s)
+    const nominal = pr.kind === 'BOOM' ? BOOM_BONUS : -BUST_PENALTY
+    const after = Math.max(MIN_SHARE_VALUE, before + nominal)
+    const tile = getCurrentTile(s)!
+    const space = getSpace(s, neg.spaceId)!
+    const base = tile.shareValue + (space.kind === 'PREMIUM' ? PREMIUM_BONUS : 0)
+    neg.priceDelta = after - base
     s.discardPile.push(...pr.cards)
-    emit(s, { kind: 'PRICE_CHANGED', playerId: pr.actorId, delta: pr.kind === 'BOOM' ? BOOM_BONUS : -BUST_PENALTY, gross: getGrossValue(s) })
+    emit(s, { kind: 'PRICE_CHANGED', playerId: pr.actorId, delta: after - before, gross: getGrossValue(s) })
   } else if (pr.kind === 'EXCLUSIVE' && neg) {
     neg.exclusive = true
     s.discardPile.push(...pr.cards)
@@ -444,9 +451,13 @@ function afterReaction(s: GameState, cancelled: boolean, offerVoided = false) {
   else neg.turnId = nextPlayerId(s, pr.actorId)
 }
 
-function advanceResponse(s: GameState) {
+/**
+ * 应答推进到下一位。endNow：有人拒绝即方案作废、回到 Boss（docs/rules.md §9），
+ * 后面排队的人不再被询问，也不会再改写自己的承诺价。
+ */
+function advanceResponse(s: GameState, endNow = false) {
   const neg = s.negotiation!
-  neg.responseIndex++
+  neg.responseIndex = endNow ? neg.responseQueue.length : neg.responseIndex + 1
   if (neg.responseIndex < neg.responseQueue.length) return
   s.phase = 'NEGOTIATION'
   neg.turnId = neg.bossId
@@ -466,16 +477,16 @@ function finalizeDeal(s: GameState) {
   const boss = getPlayer(s, neg.bossId)!
 
   boss.cash += gross
+  // 分成合计可能因利空牌超过总额：按总额封顶（docs/rules.md §10.4）
   let paid = 0
   const finalPayouts: Payout[] = []
-  for (const p of offer.payouts) {
-    const amount = Math.max(0, Math.min(p.amount, gross - paid))
+  for (const p of settlePayouts(offer.payouts, gross, boss.id)) {
     const to = getPlayer(s, p.playerId)
-    if (!to || amount <= 0 || p.playerId === boss.id) continue
-    boss.cash -= amount
-    to.cash += amount
-    paid += amount
-    finalPayouts.push({ playerId: p.playerId, amount })
+    if (!to) continue
+    boss.cash -= p.amount
+    to.cash += p.amount
+    paid += p.amount
+    finalPayouts.push(p)
   }
 
   // 被选用的家族卡弃置；未选用且未被打飞的回手
@@ -790,12 +801,13 @@ function apply(s: GameState, action: PlayerAction) {
       const offer = neg!.offer!
       offer.responses[player.id] = 'ACCEPTED'
       emit(s, { kind: 'OFFER_ACCEPTED', playerId: player.id })
-      // 点头就是承诺：这个价（按每个代表折算）成为所用家族的公开出借价，方案若作废后 Boss 再按此价提案即自动同意
+      // 点头就是承诺：实付按代表数向上取整，成为所用家族的出借价。除不尽时不把价压低（5 块两个代表 → 各 3，不是各 2）
       const got = offerShareOf(offer, player.id)
       const used = Math.max(1, repsUsedOf(neg!, offer, player.id))
+      const per = Math.ceil(got / used)
       const committed = commitmentPrice(neg!, offer, player.id)
-      if (got % used === 0 && (committed == null || committed > got)) {
-        applyQuotes(s, player.id, [{ amount: got / used }], usedFamiliesOf(neg!, offer, player.id), true)
+      if (committed == null || committed > per * used) {
+        applyQuotes(s, player.id, [{ amount: per }], usedFamiliesOf(neg!, offer, player.id), true)
       }
       advanceResponse(s)
       return
@@ -806,14 +818,14 @@ function apply(s: GameState, action: PlayerAction) {
       // 反报价是对"方案里用到的我的代表"（每个）的出借价，可按家族分别给；不是封口费
       const counters = action.quotes?.length ? applyQuotes(s, player.id, action.quotes, usedFamiliesOf(neg!, neg!.offer!, player.id), true) : []
       emit(s, { kind: 'OFFER_DECLINED', playerId: player.id, counters })
-      advanceResponse(s)
+      advanceResponse(s, true)
       return
     }
 
     case 'CLOSE_DEAL': {
       if (!neg!.offer) {
+        // 只用自己的代表直接成交：不算一次提案。倒计时被打断、方案作废也不扣次数
         neg!.offer = { id: s.nextId++, bossId: player.id, repKeys: selectReps(s).repKeys, payouts: [], responses: {} }
-        neg!.offersMade++
       }
       neg!.closingOrder = othersFrom(s, player.id)
       neg!.closingIndex = 0

@@ -494,8 +494,12 @@ export type OfferError =
   | { code: 'BAD_AMOUNT' }
   | { code: 'OVER_GROSS'; total: number; gross: number }
 
-/** 校验方案结构：返回错误（结构化，文案由 text 层渲染），合法返回 null */
-export function validateOfferShape(state: GameState, repKeys: string[], payouts: Payout[]): OfferError | null {
+/**
+ * 校验方案结构：返回错误（结构化，文案由 text 层渲染），合法返回 null。
+ * allowOverGross：已提出的方案在利空牌压低总额后可能"分成 > 总额"——这不使方案作废（docs/rules.md §10.4），
+ * 结算时按总额封顶；新提案仍须分成 ≤ 总额。
+ */
+export function validateOfferShape(state: GameState, repKeys: string[], payouts: Payout[], opts: { allowOverGross?: boolean } = {}): OfferError | null {
   const neg = state.negotiation
   const space = getCurrentSpace(state)
   if (!neg || !space) return { code: 'NO_NEGOTIATION' }
@@ -529,13 +533,32 @@ export function validateOfferShape(state: GameState, repKeys: string[], payouts:
     total += p.amount
   }
   const gross = getGrossValue(state)
-  if (total > gross) return { code: 'OVER_GROSS', total, gross }
+  if (total > gross && !opts.allowOverGross) return { code: 'OVER_GROSS', total, gross }
   return null
 }
 
-/** 方案是否仍有效（代表未失效、未易主导致需重新确认等） */
+/**
+ * 方案是否仍有效（代表未失效、未易主导致需重新确认等）。
+ * 利空牌让总额低于分成合计时方案不作废：别人的分成不变，结算按总额封顶（docs/rules.md §10.4）。
+ */
 export function offerStillValid(state: GameState, offer: Offer): boolean {
-  return validateOfferShape(state, offer.repKeys, offer.payouts) === null
+  return validateOfferShape(state, offer.repKeys, offer.payouts, { allowOverGross: true }) === null
+}
+
+/**
+ * 结算时的实际付款（docs/rules.md §10.4）：先把 Boss 的净得减到 0，前面的收款人按方案顺序拿满；
+ * 总额仍不够时，差额从排在后面的收款人扣。不付给 Boss 自己、不付 0。
+ */
+export function settlePayouts(payouts: Payout[], gross: number, bossId: number): Payout[] {
+  let paid = 0
+  const out: Payout[] = []
+  for (const p of payouts) {
+    const amount = Math.max(0, Math.min(p.amount, gross - paid))
+    if (amount <= 0 || p.playerId === bossId) continue
+    paid += amount
+    out.push({ playerId: p.playerId, amount })
+  }
+  return out
 }
 
 // ---------- 手牌 ----------

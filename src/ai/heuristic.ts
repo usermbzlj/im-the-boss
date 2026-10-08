@@ -451,8 +451,8 @@ function bossTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerAc
 
   const choice = acceptable[0]
     ?? (neg.offersMade === 0 ? scored.sort(byValue).find(x => x.keep >= minKeep) : null)
-    // 最后一次机会：只要还有得赚就照单全付
-    ?? (neg.offersMade < MAX_OFFERS_PER_BOSS - 1 ? scored.filter(x => x.okAll && x.keep >= 1).sort(byValue)[0] : null)
+    // 只要还没到提案上限（含第 5 次，offersMade === 4）且有得赚，就照单全付，不要提前一拍放弃
+    ?? (neg.offersMade < MAX_OFFERS_PER_BOSS ? scored.filter(x => x.okAll && x.keep >= 1).sort(byValue)[0] : null)
   if (!choice) return { type: 'ABANDON_DEAL', playerId: id }
   // 终局：这单只会把对手送上领先位 → 宁可流局
   if (choice.value <= 0 && st.end > 0) {

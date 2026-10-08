@@ -11,7 +11,7 @@ import {
   getCurrentSpace, getGrossValue, oneShareOf, isRequiredGroup, selectReps, demandOf, repCost, validateOfferShape, offerConsent,
   findRep, repPriceOf, commitmentPrice,
 } from '../engine/rules'
-import { FAMILIES } from '../engine/config'
+import { FAMILIES, MAX_OFFERS_PER_BOSS } from '../engine/config'
 import { buildOfferCandidates } from '../engine/validator'
 import { candidateTitle, describeCandidate, describeOfferError } from '../text/labels'
 import FamilyChip from './FamilyChip'
@@ -150,7 +150,7 @@ export default function OfferEditor({ state, onSubmit, onClose }: OfferEditorPro
       <div className="offer-editor" onClick={e => e.stopPropagation()}>
         <div className="offer-editor-head">
           <h2>提出方案 · #{space.id} 总额 ${gross}M</h2>
-          <span className="muted">一份分红 ≈ ${share}M · 本任已提 {neg.offersMade}/5</span>
+          <span className="muted">一份分红 ≈ ${share}M · 本任已提 {neg.offersMade}/{MAX_OFFERS_PER_BOSS}</span>
         </div>
 
         {candidates.length > 0 && (

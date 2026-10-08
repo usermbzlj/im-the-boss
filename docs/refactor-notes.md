@@ -62,7 +62,7 @@
 | LLM 直接生成合约 | 大量非法结构（不存在的代表、超额、无关家族），失败后引擎拒绝、界面无反馈 | 按编号选择合法动作，只允许 `demand / payouts / cardIds` 微调，且必须通过 `isLegal`（`llmPolicy.ts`） |
 | AI 管线与 React 纠缠 | `useGame` 里 effect + ref + 300ms 看门狗计时器驱动 AI；StrictMode / HMR 下 `aiFlightRef` 去重导致 AI 永不行动；Node 仿真只能绕过这条管线，等于没测到真正跑游戏的代码 | 框架无关的 `GameSession`（`game/session.ts`）：状态一变就调度、`AbortSignal` 作废过期决策、非法 / 异常策略回退到启发式；进度靠"合法动作必被接受、接受必推进版本"的结构保证而不靠计时器；浏览器与 Node 仿真跑同一份运行时，`tests/session.test.ts` 直接测它 |
 | AI 没有统一接口 | LLM 与启发式各有函数签名，兜底逻辑散在调用方 | `Policy` 接口 + `withFallback` 组合子；`heuristicPolicy` 永远给出合法动作，作为最终兜底 |
-| 免费发言 | `ADD_SPEECH_BUBBLE` 不受阶段与次数限制 | 台词随动作附带（`say`），`SPEAK` 受每人 3 次限制，其他动作的台词不计次也不携带报价 |
+| 免费发言 | `ADD_SPEECH_BUBBLE` 不受阶段与次数限制 | 台词随动作附带（`say`），`SPEAK` 受每人 4 次限制（`MAX_SPEECHES_PER_PLAYER`），其他动作的台词不计次也不携带报价 |
 | 存档无版本 | 靠字段存在性猜旧档 | `saveVersion` 不匹配直接丢弃 |
 | 界面自带规则 | 组件内判断能否出牌 / 能否成交 | 按钮完全由 `getLegalActions` 驱动；方案编辑器用 `validateOfferShape` 实时校验 |
 | 弹层被裁切、结果卡遮挡 | 手牌弹层在横向滚动容器内被 `overflow` 裁掉；终局结果卡无法关闭 | 弹层挂在手牌容器外并随牌定位、点击外部关闭；结果卡可关闭复盘并随时重新打开 |
