@@ -180,10 +180,10 @@ END_ROLL ──ROLL_END──► 命中 ? GAME_OVER : 下一位 TURN
 1. Boss `PROPOSE_OFFER`。`validateOfferShape` 返回结构化 `OfferError`（缺家族 / 无关家族 / 重复家族 / 代表失效 / 给 Boss 分钱 / 超额 / 负数），界面用 `describeOfferError` 显示，引擎用它判定合法性。
 2. **报价即承诺**（`rules.offerConsent`）：对方案中每位代表持有者，若 `分成 ≥ commitmentPrice`（= 被选用的其每个代表按各自家族报价之和；任一代表没报价则无承诺，`meetsCommitment` 为假），引擎直接记为同意并发出 `OFFER_ACCEPTED{auto:true}`；`OFFER_PROPOSED` 事件带 `autoAccepted` 与 `waitingFor`。
 3. 若无人需要应答（全用 Boss 自己的代表，或全部自动同意），停在 `NEGOTIATION` 由 Boss 直接成交；否则进入 `OFFER_RESPONSE`，`waitingFor` 中的玩家按座位顺序应答。
-4. `ACCEPT_OFFER` 把 `实付 ÷ 代表数` 静默记为**所用家族**的新承诺价（之后付到这个价即自动同意）；任一 `DECLINE_OFFER` → 应答立即结束、回合回到 Boss，排在后面的人不再被询问；方案保留在 `offer` 上（供"绕开拒绝者"的候选方案使用）但 `canClose` 为假；其 `quotes`（每个代表的反报价，作用域 = 方案用到的我的家族）记为新承诺价，随 `OFFER_DECLINED{counters}` 一起叙述。Boss 可重提、改选他人代表或放弃。
+4. `ACCEPT_OFFER` 把 `实付 ÷ 代表数` 向上取整后静默记为**所用家族**的新承诺价（之后付到这个价即自动同意）；任一 `DECLINE_OFFER` → 应答立即结束、回合回到 Boss，排在后面的人不再被询问；方案保留在 `offer` 上（供"绕开拒绝者"的候选方案使用）但 `canClose` 为假；其 `quotes`（每个代表的反报价，作用域 = 方案用到的我的家族）记为新承诺价，随 `OFFER_DECLINED{counters}` 一起叙述。Boss 可重提、改选他人代表或放弃。
    报价的写入口径（`Quote[]`，`SPEAK.quotes` / `DECLINE_OFFER.quotes`）：一次动作可以给每个家族各报各的价——带 `familyId` 的条目只改那一家（必须在作用域内，否则整个动作不合法）；不带 `familyId` 的通用价补到作用域内其余未单独报价的家族；作用域为空（没有相关代表）时通用价就是封口费。`rules.resolveQuotes` 把它落成 `ResolvedQuote[]`（按金额归并的家族列表），引擎 `applyQuotes` 据此改写 `demands` 并发一条 `DEMAND{quotes}` 事件；`validQuotes` 负责校验（整数、`[0, 总额]`、家族在作用域内且不重复、通用价至多一条）。`PLAY_CLAN.demand` 只针对那张卡的家族。
 5. 方案中的代表被旅行牌打飞或被招募易主 → 方案立即置空并发出 `OFFER_VOIDED`，反应结束后回合回到 Boss。
-6. `CLOSE_DEAL` 要求 `canClose`：方案仍有效且全员同意（`offerStillValid` 不因利空牌让分成合计超过新总额而判失效，见 rules.md §10.4）；或没有方案但 `selectReps` 只用 Boss 自己的代表就能凑齐（此时自动生成无分成方案）。
+6. `CLOSE_DEAL` 要求 `canClose`：方案仍有效且全员同意（`offerStillValid` 不因利空牌让分成合计超过新总额而判失效，见 rules.md §10.4）；或没有方案但 `selectReps` 只用 Boss 自己的代表就能凑齐（此时自动生成无分成方案，**不增加** `offersMade`）。
 7. `CLOSING` 全员放行 → `finalizeDeal` 结算，付款经 `rules.settlePayouts` 按方案顺序、以总额封顶。运行时（`game/session.ts`）在人类玩家手中没有任何可打的干扰牌时自动替其放行，避免无意义的点击。
 
 ---

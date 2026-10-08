@@ -420,6 +420,55 @@ describe('稀有牌', () => {
     expect(totalCash(s)).toBe(3)
   })
 
+  it('利好利空逐张结算：下限套在每一张之后，$2M 两张利空再一张利好是 $3M', () => {
+    let s = table()
+    const [bust1] = giveCards(s, 2, [{ type: 'BUST' }])
+    const [bust2] = giveCards(s, 2, [{ type: 'BUST' }])
+    const [boom] = giveCards(s, 0, [{ type: 'BOOM' }])
+    s = toBoss(openDealAt(s, 1, 0))
+    expect(effectiveShareValue(s)).toBe(2)
+    const play = (cardId: number, playerId: number, type: 'PLAY_BUST' | 'PLAY_BOOM') => {
+      while (getActingPlayerId(s) !== playerId) s = step(s, { type: 'PASS', playerId: getActingPlayerId(s) })
+      s = step(s, { type, playerId, cardId })
+      while (s.phase === 'REACTION') s = step(s, { type: 'PASS_REACTION', playerId: getActingPlayerId(s) })
+    }
+    play(bust1.id, 2, 'PLAY_BUST')
+    expect(effectiveShareValue(s)).toBe(1)
+    expect(s.negotiation!.priceDelta).toBe(-BUST_PENALTY)
+    play(bust2.id, 2, 'PLAY_BUST')
+    expect(effectiveShareValue(s)).toBe(MIN_SHARE_VALUE) // 第二张停在下限，不再往下记
+    expect(s.negotiation!.priceDelta).toBe(-BUST_PENALTY)
+    expect(eventsOf(s, 'PRICE_CHANGED').at(-1)).toMatchObject({ delta: 0, gross: 3 })
+    play(boom.id, 0, 'PLAY_BOOM')
+    expect(effectiveShareValue(s)).toBe(3) // 1 + 2，不是把 −1−1+2 加总后的 2
+    expect(getGrossValue(s)).toBe(9)
+    expect(s.negotiation!.priceDelta).toBe(1)
+  })
+
+  it('利空后按顺序付钱：先把 Boss 净得减到 0，前面的人拿满，后面的人被扣', () => {
+    let s = table()
+    const [bust] = giveCards(s, 3, [{ type: 'BUST' }])
+    s.board[0].groups = [{ families: ['A', 'B', 'C'], need: 3 }]
+    s.board[0].dividends = 4 // 4 × $2M = 8；利空后 4 × $1M = 4
+    s = toBoss(openDealAt(s, 1, 0))
+    const keys = [investorRepKey('A'), investorRepKey('B'), investorRepKey('C')]
+    s = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: keys, payouts: [{ playerId: 1, amount: 4 }, { playerId: 2, amount: 4 }] })
+    s = step(s, { type: 'ACCEPT_OFFER', playerId: 1 })
+    s = step(s, { type: 'ACCEPT_OFFER', playerId: 2 })
+    while (getActingPlayerId(s) !== 3) s = step(s, { type: 'PASS', playerId: getActingPlayerId(s) })
+    s = step(s, { type: 'PLAY_BUST', playerId: 3, cardId: bust.id })
+    while (s.phase === 'REACTION') s = step(s, { type: 'PASS_REACTION', playerId: getActingPlayerId(s) })
+    expect(getGrossValue(s)).toBe(4)
+    expect(canClose(s)).toBe(true)
+    while (getActingPlayerId(s) !== 0) s = step(s, { type: 'PASS', playerId: getActingPlayerId(s) })
+    s = step(s, { type: 'CLOSE_DEAL', playerId: 0 })
+    while (s.phase === 'CLOSING') s = step(s, { type: 'PASS_CLOSING', playerId: getActingPlayerId(s) })
+    expect(s.players[1].cash).toBe(4)
+    expect(s.players[2].cash).toBe(0)
+    expect(s.players[0].cash).toBe(0)
+    expect(s.dealHistory[0].payouts).toEqual([{ playerId: 1, amount: 4 }])
+  })
+
   it('独家协议：只有 Boss 能打；生效后老板 / 旅行 / 利空牌全部封锁，招募仍可', () => {
     let s = table()
     const [excl] = giveCards(s, 0, [{ type: 'EXCLUSIVE' }])

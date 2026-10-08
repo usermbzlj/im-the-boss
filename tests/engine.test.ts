@@ -5,6 +5,7 @@ import { describe, it, expect } from 'vitest'
 import { HAND_LIMIT, MAX_STALEMATE_ROUNDS, MAX_OFFERS_PER_BOSS, MAX_SPEECHES_PER_PLAYER } from '../src/engine/config'
 import { getActingPlayerId, getLegalActions, canClose, isLegal } from '../src/engine/validator'
 import { findRep, investorRepKey, clanRepKey, getGrossValue, recruitTargets, demandOf, commitmentPrice } from '../src/engine/rules'
+import { heuristicAction } from '../src/ai/heuristic'
 import { baseState, setInvestors, giveCards, clearHand, step, rejects, openDealAt, toBoss, eventsOf, totalCash } from './helpers'
 
 describe('叫价轮', () => {
@@ -180,6 +181,60 @@ describe('方案 / 应答 / 分成', () => {
     expect(s.phase).toBe('NEGOTIATION')
     expect(getActingPlayerId(s)).toBe(0)
     expect(canClose(s)).toBe(false)
+  })
+
+  it('同意方案时实付除不尽代表数：承诺价向上取整，不会把出借价压低', () => {
+    let s = baseState(4, 2)
+    setInvestors(s, { A: 0, B: 1, C: 1, D: 3 })
+    s.board[0].groups = [{ families: ['A', 'B', 'C'], need: 3 }]; s.board[0].dividends = 4
+    s = toBoss(openDealAt(s, 1, 0)) // 总额 4 份 × $2M = 8
+    const keys = [investorRepKey('A'), investorRepKey('B'), investorRepKey('C')]
+    s = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: keys, payouts: [{ playerId: 1, amount: 5 }] })
+    expect(s.phase).toBe('OFFER_RESPONSE')
+    s = step(s, { type: 'ACCEPT_OFFER', playerId: 1 })
+    expect(demandOf(s.negotiation!, 1, 'B')).toBe(3) // ceil(5/2)，不是 2
+    expect(demandOf(s.negotiation!, 1, 'C')).toBe(3)
+    expect(commitmentPrice(s.negotiation!, { repKeys: keys }, 1)).toBe(6)
+    // 只付 5 不够新的承诺价，还要问；付到 6 才自动同意
+    const short = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: keys, payouts: [{ playerId: 1, amount: 5 }] })
+    expect(short.phase).toBe('OFFER_RESPONSE')
+    const met = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: keys, payouts: [{ playerId: 1, amount: 6 }] })
+    expect(met.phase).toBe('NEGOTIATION')
+    expect(canClose(met)).toBe(true)
+  })
+
+  it('只用自己的代表宣布成交不计入提案次数；倒计时被打断后次数仍在', () => {
+    let s = baseState(4, 2)
+    setInvestors(s, { C: 0, D: 0, E: 0 }) // #2 是 C/D/E 选 2，三家都在 Boss 手里
+    for (let i = 0; i < 4; i++) clearHand(s, i)
+    const [travel] = giveCards(s, 1, [{ type: 'TRAVEL', familyId: 'C' }])
+    s = toBoss(openDealAt(s, 2, 0))
+    expect(s.negotiation!.offersMade).toBe(0)
+    s = step(s, { type: 'CLOSE_DEAL', playerId: 0 })
+    expect(s.phase).toBe('CLOSING')
+    expect(s.negotiation!.offer!.repKeys).toContain(investorRepKey('C'))
+    expect(s.negotiation!.offersMade).toBe(0)
+    s = step(s, { type: 'PLAY_TRAVEL', playerId: 1, cardId: travel.id, targetRepKey: investorRepKey('C') })
+    while (s.phase === 'REACTION') s = step(s, { type: 'PASS_REACTION', playerId: getActingPlayerId(s) })
+    expect(s.negotiation!.offer).toBeNull()
+    expect(s.negotiation!.offersMade).toBe(0) // 隐式方案作废也不扣次数
+    expect(getActingPlayerId(s)).toBe(0)
+    expect(getLegalActions(s, 0).some(a => a.type === 'PROPOSE_OFFER')).toBe(true)
+  })
+
+  it('启发式：第 5 次提案（已提 4 次）仍会照单付有赚的价，而不是放弃', () => {
+    let s = baseState(4, 2)
+    setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
+    for (let i = 0; i < 4; i++) clearHand(s, i)
+    s = openDealAt(s, 1, 0) // 总额 $6M
+    s = step(s, { type: 'SPEAK', playerId: 1, say: '5 块', quotes: [{ familyId: 'B', amount: 5 }] })
+    s = toBoss(s)
+    s.negotiation!.offersMade = MAX_OFFERS_PER_BOSS - 1 // 已提 4 次，下一次是第 5 次
+    const action = heuristicAction(s)
+    expect(action?.type).toBe('PROPOSE_OFFER')
+    if (action?.type === 'PROPOSE_OFFER') {
+      expect(action.payouts).toEqual([{ playerId: 1, amount: 5 }])
+    }
   })
 
   it('付不到承诺价则仍需表态；点头同意的价格成为新的承诺价', () => {

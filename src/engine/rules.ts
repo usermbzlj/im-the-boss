@@ -546,8 +546,8 @@ export function offerStillValid(state: GameState, offer: Offer): boolean {
 }
 
 /**
- * 结算时的实际付款：按方案顺序付，合计不超过总额（利空牌压低总额后，差额从排在后面的分成里扣）。
- * 不付给 Boss 自己、不付 0。界面与提示词里的"Boss 净得"同样不低于 0。
+ * 结算时的实际付款（docs/rules.md §10.4）：先把 Boss 的净得减到 0，前面的收款人按方案顺序拿满；
+ * 总额仍不够时，差额从排在后面的收款人扣。不付给 Boss 自己、不付 0。
  */
 export function settlePayouts(payouts: Payout[], gross: number, bossId: number): Payout[] {
   let paid = 0

@@ -131,6 +131,7 @@ export function narrate(state: GameState, e: GameEvent): Narration {
     case 'RECLAIM_GRANTED':
       return { tone: 'system', text: `${n(e.playerId)} 失去了最后一位常驻投资者，获得夺回权：只需 1 张招募牌即可把 ${famName(e.familyId)} 投资者抢回来` }
     case 'PRICE_CHANGED':
+      if (e.delta === 0) return { tone: 'card', text: `利空打出，但股价已经在下限，交易总额仍是 $${e.gross}M` }
       return { tone: 'card', text: `${e.delta > 0 ? '利好' : '利空'}生效：本笔股价${e.delta > 0 ? '+' : '−'}$${Math.abs(e.delta)}M/份，交易总额变为 $${e.gross}M（已有方案的分成不变，变的是 Boss 净得）` }
     case 'EXCLUSIVE_RESOLVED':
       return { tone: 'card', text: `${n(e.playerId)} 的独家协议生效：本笔交易中老板牌、旅行牌、利空牌不能再打` }
