@@ -2,11 +2,12 @@
 // TableBoard — 环形版图（16 / 24 / 32 格，按变体自适应）+ 中央景气牌 + 公共区 + 座位
 // ============================================================
 
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { GameState, BoardSpace, SpaceKind } from '../engine/types'
 import { FAMILIES, ringLayout, ringRowOptions, getVariant } from '../engine/config'
 import { getCurrentTile, getGrossValue, getEndProbability, isRequiredGroup, canCompleteAlone, effectiveShareValue } from '../engine/rules'
 import { getActingPlayerId } from '../engine/validator'
+import { relationsToward } from '../ai/relations'
 import { spaceKindName, spaceKindEffect } from '../text/narrate'
 import FamilyChip from './FamilyChip'
 import PlayerSeat from './PlayerSeat'
@@ -107,12 +108,14 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBo
   const canPlace = state.phase === 'PLACE_MARKER' && state.markerChooserId === viewerId
   const neutral = state.investors.filter(inv => inv.ownerId === null)
   const closedCount = state.board.filter(b => b.closedByTileId != null).length
+  // 每位电脑玩家对视角玩家的态度：每次状态变化算一次，分发给各座位
+  const relations = useMemo(() => relationsToward(state, viewerId), [state, viewerId])
 
   return (
     <div className="table-board">
       <div className="seats-row">
         {state.players.map(p => (
-          <PlayerSeat key={p.id} state={state} playerId={p.id} isActing={actingId === p.id} isThinking={shownThinking === p.id} />
+          <PlayerSeat key={p.id} state={state} playerId={p.id} isActing={actingId === p.id} isThinking={shownThinking === p.id} relation={relations[p.id]} />
         ))}
       </div>
 

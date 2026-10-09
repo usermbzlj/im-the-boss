@@ -2,22 +2,46 @@
 // StartScreen — 开局设置：人数 / 版本（15·16·22·30 笔）/ 种子
 // ============================================================
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { GameVariantId } from '../engine/types'
 import { hasSavedGame } from '../utils/storage'
 import { parseSeed } from '../utils/seed'
-import { isLLMConfigured } from '../ai/llmClient'
+import { isLLMConfigured, loadLLMConfig, saveLLMConfig, TABLE_STYLES, type TableStyle } from '../ai/llmClient'
 import { AI_ROSTER, VARIANT_LIST, HAND_LIMIT, BUY_CARDS_COST_SHARES } from '../engine/config'
 
 interface StartScreenProps {
   onStart: (count: number, name: string, seed?: number, variantId?: GameVariantId, houseRules?: boolean) => void
   onContinue: () => void
   onSettings: () => void
+  /** 变化时重新读取桌风等配置（例如设置面板关闭后） */
+  syncKey?: unknown
 }
 
 const COUNTS = [3, 4, 5, 6]
 
-export default function StartScreen({ onStart, onContinue, onSettings }: StartScreenProps) {
+/** 桌风：电脑玩家整体的强硬程度 */
+export const TABLE_STYLE_INFO: Record<TableStyle, { name: string; blurb: string }> = {
+  friendly: { name: '友好', blurb: '电脑玩家讲人情、好说话，更愿意让利成交——适合熟悉规则。' },
+  business: { name: '商战', blurb: '各凭本事、讲价码，不白送也不赶尽杀绝——默认体验。' },
+  ruthless: { name: '冷血', blurb: '寸利不让，爱搅局也记仇，谈判更激烈、更考验你。' },
+}
+
+function readTableStyle(): TableStyle {
+  try {
+    const s = loadLLMConfig().tableStyle
+    return TABLE_STYLES.includes(s) ? s : 'business'
+  } catch {
+    return 'business'
+  }
+}
+
+export default function StartScreen({ onStart, onContinue, onSettings, syncKey }: StartScreenProps) {
+  const [tableStyle, setTableStyle] = useState<TableStyle>(readTableStyle)
+  useEffect(() => { setTableStyle(readTableStyle()) }, [syncKey])
+  const pickStyle = (next: TableStyle) => {
+    setTableStyle(next)
+    try { saveLLMConfig({ ...loadLLMConfig(), tableStyle: next }) } catch { /* 存储不可用：只对本次显示生效 */ }
+  }
   const [playerName, setPlayerName] = useState('')
   const [playerCount, setPlayerCount] = useState(4)
   const [variantId, setVariantId] = useState<GameVariantId>('classic')
@@ -31,6 +55,7 @@ export default function StartScreen({ onStart, onContinue, onSettings }: StartSc
   const deckSize = variant.deckSize + (houseRules ? variant.sickCards : 0)
 
   const start = () => {
+    pickStyle(tableStyle) // 确保开局读到的就是界面上选中的桌风
     const seed = parseSeed(seedText) // 注意：0 是合法种子，不能用 || 兜底成随机
     onStart(playerCount, playerName.trim() || '你', seed, variantId, houseRules)
   }
@@ -58,6 +83,19 @@ export default function StartScreen({ onStart, onContinue, onSettings }: StartSc
           </div>
           <p className="form-hint">{playerCount === 3 ? '每人 2 张投资者牌' : playerCount === 6 ? '每人 1 张投资者牌' : `每人 1 张投资者牌，${6 - playerCount} 张放公共区（需招募取得）`}</p>
           <p className="form-hint">{playerCount - 1} 位对手从牌桌常客中随机抽出：{AI_ROSTER.map(r => r.name).join('、')}</p>
+        </div>
+
+        <div className="form-group">
+          <label>桌风（电脑玩家的作风）</label>
+          <div className="table-style-selector" role="radiogroup" aria-label="桌风">
+            {TABLE_STYLES.map(s => (
+              <button key={s} type="button" role="radio" aria-checked={s === tableStyle}
+                className={`style-btn${s === tableStyle ? ' active' : ''}`} onClick={() => pickStyle(s)}>
+                {TABLE_STYLE_INFO[s].name}
+              </button>
+            ))}
+          </div>
+          <p className="form-hint">{TABLE_STYLE_INFO[tableStyle].blurb}</p>
         </div>
 
         <div className="form-group">

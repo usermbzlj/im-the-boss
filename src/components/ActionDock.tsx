@@ -8,12 +8,15 @@ import { FAMILIES, HAND_LIMIT, MAX_OFFERS_PER_BOSS, MAX_SPEECHES_PER_PLAYER, TRA
 import {
   getGrossValue, oneShareOf, offerShareOf, demandOf, getCurrentSpace, tableCanComplete, canCompleteAlone,
   soleRepFamilies, rivalReps, missingFamilies, playerRelevantFamilies, demandsOf, repPriceOf, commitmentPrice, usedFamiliesOf,
-  buyCardsCost, tradeCost, isSick, recruitCountAfterTrade, isValidTradePair, countCards,
+  buyCardsCost, tradeCost, isSick, recruitCountAfterTrade, isValidTradePair, countCards, closeDealMode,
 } from '../engine/rules'
 import { canClose } from '../engine/validator'
 import { describeReactionTarget } from '../text/labels'
 import { reactionKindName, describePayouts } from '../text/narrate'
+import { needsAttention } from '../ui/attention'
+import { acceptOutcome, describeAcceptOutcome, isCostly } from '../ui/consequences'
 import FamilyChip from './FamilyChip'
+import InfoTip from './InfoTip'
 import { useViewerId } from './ViewerContext'
 import type { HandSelectMode } from './CardHand'
 
@@ -37,6 +40,8 @@ export default function ActionDock({ state, legal, act, selection, selectMode, o
   /** 每个代表一个价格框（喊话报价 / 拒绝时的反报价共用）；空 = 这一家不动 */
   const [prices, setPrices] = useState<Record<string, string>>({})
   const [confirmAbandon, setConfirmAbandon] = useState(false)
+  /** 买牌花费较大时先确认一次：记下待确认的那一档 */
+  const [pendingBuy, setPendingBuy] = useState<number | null>(null)
 
   const me = state.players[viewerId]
   const neg = state.negotiation
@@ -52,12 +57,14 @@ export default function ActionDock({ state, legal, act, selection, selectMode, o
 
   // 阶段或方案一换，价格框清空：别把上一份方案的反报价带进下一次喊话
   useEffect(() => { setPrices({}) }, [state.phase, neg?.offer?.id])
+  useEffect(() => { setPendingBuy(null) }, [state.stateVersion])
 
   const send = (a: PlayerAction) => {
     act(a)
     setSpeakText('')
     setPrices({})
     setConfirmAbandon(false)
+    setPendingBuy(null)
   }
 
   const setPrice = (key: string, v: string) => setPrices(p => ({ ...p, [key]: v }))
@@ -76,8 +83,11 @@ export default function ActionDock({ state, legal, act, selection, selectMode, o
     return ds.map(d => `${d.familyId ? FAMILIES[d.familyId].name + ' ' : ds.length > 1 ? '封口费 ' : ''}$${d.amount}M`).join(' · ')
   }
 
+  const attention = needsAttention(state, legal)
+
   const renderStatus = () => (
     <div className="dock-status">
+      {attention && <span className="dock-turn-badge">👉 轮到你了</span>}
       <span className="status-cash" title="你的现金">💰 ${me.cash}M</span>
       <span className="status-group">
         <span className="status-label">投资者</span>
@@ -108,12 +118,26 @@ export default function ActionDock({ state, legal, act, selection, selectMode, o
     return (
       <div className="dock-house">
         <span className="dock-house-label" title="桌规动作：不结束你的行动，每回合各限一次">桌规</span>
-        {buys.map(a => a.type === 'BUY_CARDS' && (
-          <button key={a.count} className="btn btn-sm" onClick={() => send(a)}
-            title={`付 $${buyCardsCost(state, a.count)}M 给银行（钱不会回来），立刻多抽 ${a.count} 张`}>
-            🃏 买 {a.count} 张 <b>${buyCardsCost(state, a.count)}M</b>
-          </button>
-        ))}
+        {buys.map(a => {
+          if (a.type !== 'BUY_CARDS') return null
+          const cost = buyCardsCost(state, a.count)
+          if (pendingBuy === a.count) {
+            return (
+              <span key={a.count} className="buy-confirm">
+                <span className="red">花 ${cost}M 买 {a.count} 张？钱付给银行，不退</span>
+                <button className="btn btn-danger btn-sm" onClick={() => send(a)}>确认购买</button>
+                <button className="btn btn-sm" onClick={() => setPendingBuy(null)}>取消</button>
+              </span>
+            )
+          }
+          if (pendingBuy != null) return null
+          return (
+            <button key={a.count} className="btn btn-sm" onClick={() => (isCostly(cost, me.cash) ? setPendingBuy(a.count) : send(a))}
+              title={`付 $${cost}M 给银行（钱不会回来），立刻多抽 ${a.count} 张`}>
+              🃏 买 {a.count} 张 <b>${cost}M</b>
+            </button>
+          )
+        })}
         {canTrade && !tradeMode && (
           <button className="btn btn-sm" onClick={onToggleTradeMode}
             title={`交出两张不同种类的牌 + 付 $${tradeCost(state)}M 给银行，换 ${TRADE_RECRUIT_COUNT} 张招募牌（不可逆）`}>
@@ -218,9 +242,26 @@ export default function ActionDock({ state, legal, act, selection, selectMode, o
           ? `本任 Boss 的 ${MAX_OFFERS_PER_BOSS} 次提案已用完：可宣布成交（若已有全员同意的方案）、再听一轮或放弃`
           : complete ? '指定选用的代表与分成；付到对方承诺价的会自动同意' : '桌上代表还凑不齐需求，先等人打家族卡/报价'
         const passTitle = complete ? '本轮不行动（连续两轮全员跳过会流局）' : '桌上凑不齐代表：全员跳过一轮就直接流局'
+        /** 方案已全员同意：宣布成交是下一步最该点的按钮，放在最前并高亮 */
+        const agreedOffer = isBoss && closable && closeDealMode(state) === 'OFFER' && !!neg!.offer
+        const closeButton = (
+          <button className={`btn btn-success${agreedOffer ? ' btn-cta' : ''}`} disabled={!closable} onClick={() => send({ type: 'CLOSE_DEAL', playerId: viewerId })}
+            title={closable ? '进入"Going once, going twice"倒计时，无人干扰即结算' : '需先有全员同意的方案，或仅用自己的代表凑齐'}>
+            ✓ 宣布成交{agreedOffer ? '（方案已全员同意）' : ''}
+          </button>
+        )
         return (
           <div className="dock-neg">
             {sick && <span className="dock-hint red">🤒 你本回合病假中：不能主动出牌 / 换牌，只能喊话、报价、应答、跳过（阻止牌仍可打）</span>}
+            {has('SPEAK') && !isBoss && (
+              <div className="commit-callout" data-testid="commit-callout">
+                <b>报价即承诺</b>：Boss 付到这个价，你就自动同意、交易照常成交，不会再问你。
+                <InfoTip label="说明：什么是报价即承诺">
+                  你报的价就是你的承诺价（按代表计，用了你几个代表就是几个价相加）。Boss 的方案分给你的钱只要不低于它，你就视为同意，不能反悔。
+                  报低了容易被选中但亏；报高了可能被 Boss 换成别家的代表。你同意别人的方案后，承诺价也会改成你实际拿到的数。
+                </InfoTip>
+              </div>
+            )}
             {has('SPEAK') && (
               <div className="speak-box">
                 {!isBoss && (
@@ -264,19 +305,17 @@ export default function ActionDock({ state, legal, act, selection, selectMode, o
                 {myAsks.length > 0
                   ? <>。你当前承诺价（每个代表）<b className="gold">{myAsks.map(x => `${mine.length > 1 ? FAMILIES[x.f].name + ' ' : ''}$${x.price}M`).join('、')}</b>：Boss 付到即自动同意</>
                   : hush != null ? <>。你要的封口费 <b className="gold">${hush}M</b></>
-                    : '。报价即承诺：Boss 付到你的价就视为同意'}
+                    : ''}
               </span>
             )}
             <div className="dock-actions">
               {isBoss ? (
                 <>
+                  {agreedOffer && closeButton}
                   <button className="btn" disabled={!canPropose} onClick={onOpenOfferEditor} title={proposeTitle}>
                     {neg!.offer ? '修改方案' : '提出方案'}{offersLeft <= 0 ? '（次数已用完）' : !complete && '（代表不足）'}
                   </button>
-                  <button className="btn btn-success" disabled={!closable} onClick={() => send({ type: 'CLOSE_DEAL', playerId: viewerId })}
-                    title={closable ? '进入"Going once, going twice"倒计时，无人干扰即结算' : '需先有全员同意的方案，或仅用自己的代表凑齐'}>
-                    ✓ 宣布成交
-                  </button>
+                  {!agreedOffer && closeButton}
                   <button className="btn" onClick={() => send({ type: 'PASS', playerId: viewerId })} title={complete ? '再听一轮叫价' : passTitle}>再听一轮{!complete && '（缺代表）'}</button>
                   {confirmAbandon
                     ? <><span className="red">确定放弃？家族卡收回，无人拿钱</span><button className="btn btn-danger" onClick={() => send({ type: 'ABANDON_DEAL', playerId: viewerId })}>确定</button><button className="btn" onClick={() => setConfirmAbandon(false)}>取消</button></>
@@ -304,14 +343,19 @@ export default function ActionDock({ state, legal, act, selection, selectMode, o
         const toOthers = offer.payouts.filter(p => p.playerId !== viewerId && p.amount > 0)
         const used = usedFamiliesOf(neg!, offer, viewerId)
         const counters = collectQuotes(used)
+        const outcome = acceptOutcome(state, viewerId)
+        const outcomeText = outcome ? describeAcceptOutcome(outcome) : ''
         return (
           <div className="dock-actions">
             <span className="dock-hint">
               Boss {state.players[neg!.bossId]?.name} 要用你的 {used.map(f => FAMILIES[f].name).join('、')} 代表，分给你 <b className="gold">${myShare}M</b>{myAsk != null ? `（低于你对这些代表的承诺价合计 $${myAsk}M）` : ''}
               {toOthers.length > 0 && <span className="muted">；另付 {describePayouts(state, toOthers)}</span>}
-              <span className="muted">。同意后 ${myShare}M（按代表折算）成为你的承诺价；拒绝时可给每个代表分别反报价（成为新承诺价）</span>
+              <span className="muted">。拒绝时可给每个代表分别反报价（成为新承诺价）</span>
             </span>
-            <button className="btn btn-success" onClick={() => send({ type: 'ACCEPT_OFFER', playerId: viewerId })}>✓ 同意出借（拿 ${myShare}M）</button>
+            <button className="btn btn-success btn-lg accept-btn" onClick={() => send({ type: 'ACCEPT_OFFER', playerId: viewerId })}>
+              ✓ 同意出借（拿 ${myShare}M）
+              {outcomeText && <small className="accept-outcome">{outcomeText}</small>}
+            </button>
             <div className="quote-grid" title="每个代表分别反报价（$M）；留空 = 这一家不改">
               {used.map(f => {
                 const cur = demandOf(neg!, viewerId, f)
@@ -383,7 +427,7 @@ export default function ActionDock({ state, legal, act, selection, selectMode, o
   }
 
   return (
-    <div className="dock">
+    <div className={`dock${attention ? ' my-turn' : ''}`} data-my-turn={attention ? 'true' : 'false'}>
       {renderStatus()}
       {renderActions()}
     </div>

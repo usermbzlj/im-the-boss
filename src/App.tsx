@@ -18,18 +18,26 @@ import PhaseGuide from './components/PhaseGuide'
 import HelpPanel from './components/HelpPanel'
 import SettingsPanel from './components/SettingsPanel'
 import GameOverCard from './components/GameOverCard'
+import RecentStrip from './components/RecentStrip'
+import ToastLayer from './components/ToastLayer'
+import DealResultCard from './components/DealResultCard'
+import PaceControls from './components/PaceControls'
+import AiStatusBadge from './components/AiStatusBadge'
+import { useTurnAlert } from './components/useTurnAlert'
 import { ViewerProvider } from './components/ViewerContext'
 import { useSideTab } from './components/useSideTab'
 import { getCurrentTile, getEndProbability } from './engine/rules'
 import { getVariant, MAX_OFFERS_PER_BOSS } from './engine/config'
 import { getLegalActions } from './engine/validator'
+import { needsAttention, canSkipWait } from './ui/attention'
+import { proposeAndClose } from './ui/proposeAndClose'
 import { clearSavedGame } from './utils/storage'
 
 /** 视角玩家：单机版人类固定坐 0 号位；组件通过 ViewerProvider / useViewerId 取得，不再各自写死 */
 const VIEWER_ID = 0
 
 export default function App() {
-  const { snapshot, start, leave, act, continueSaved } = useGameSession()
+  const { snapshot, start, leave, act, continueSaved, getState, skipWait } = useGameSession()
   const state = snapshot?.state ?? null
   const thinkingId = snapshot?.thinkingId ?? null
   const [showHelp, setShowHelp] = useState(false)
@@ -44,6 +52,9 @@ export default function App() {
 
   const legal = useMemo(() => (state ? getLegalActions(state, VIEWER_ID) : []), [state])
   const hasNeg = !!state?.negotiation
+  // 轮到你且需要你做决定：行动区高亮；页面在后台时标题闪烁
+  const attention = !!state && needsAttention(state, legal)
+  useTurnAlert(attention)
 
   // 谈判开始自动切到谈判页（用户手动选过标签就不抢），结束时若停在谈判页则退回日志
   const { sideTab, pickTab } = useSideTab(hasNeg, !!state)
@@ -67,6 +78,7 @@ export default function App() {
           onStart={(count, name, seed, variantId, houseRules) => start(count, name, seed, variantId, houseRules)}
           onContinue={() => { continueSaved() }}
           onSettings={() => setShowSettings(true)}
+          syncKey={showSettings}
         />
         <SettingsPanel open={showSettings} onClose={() => setShowSettings(false)} />
       </>
@@ -95,6 +107,8 @@ export default function App() {
           <span className="muted">牌堆 {state.drawPile.length}</span>
         </div>
         <div className="header-actions">
+          <AiStatusBadge status={snapshot!.ai} />
+          <PaceControls canSkip={canSkipWait(state, legal)} onSkip={skipWait} syncKey={showSettings} />
           {gameOver && resultDismissed && (
             <button className="btn btn-sm result-fab" onClick={() => setResultDismissed(false)}>查看最终结果</button>
           )}
@@ -105,9 +119,12 @@ export default function App() {
       </header>
 
       <PhaseGuide state={state} />
+      <RecentStrip state={state} />
 
       <div className="app-body">
         <div className="table-area">
+          <ToastLayer state={state} />
+          <DealResultCard state={state} onDetails={() => pickTab('history')} />
           <TableBoard state={state} thinkingId={thinkingId} onPlaceMarker={id => act({ type: 'PLACE_MARKER', playerId: VIEWER_ID, spaceId: id })} />
           <ActionDock
             state={state} legal={legal} act={act}
@@ -136,7 +153,11 @@ export default function App() {
         <OfferEditor
           state={state}
           onClose={() => setShowOffer(false)}
-          onSubmit={(repKeys, payouts) => { act({ type: 'PROPOSE_OFFER', playerId: VIEWER_ID, repKeys, payouts }); setShowOffer(false) }}
+          onSubmit={(repKeys, payouts, closeNow) => {
+            setShowOffer(false)
+            if (closeNow) proposeAndClose(act, getState, VIEWER_ID, repKeys, payouts)
+            else act({ type: 'PROPOSE_OFFER', playerId: VIEWER_ID, repKeys, payouts })
+          }}
         />
       )}
 

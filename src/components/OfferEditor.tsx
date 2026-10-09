@@ -20,7 +20,8 @@ import { useModalDismiss } from './useModalDismiss'
 
 interface OfferEditorProps {
   state: GameState
-  onSubmit: (repKeys: string[], payouts: Payout[]) => void
+  /** closeNow：提出之后立刻宣布成交（"提案并宣布成交"按钮；只有所有人都会自动同意时才出现） */
+  onSubmit: (repKeys: string[], payouts: Payout[], closeNow?: boolean) => void
   onClose: () => void
 }
 
@@ -256,6 +257,12 @@ export default function OfferEditor({ state, onSubmit, onClose }: OfferEditorPro
                 : `${consent.asked.map(id => state.players[id]?.name).join('、')} 需表态${consent.auto.length ? `；${consent.auto.map(id => state.players[id]?.name).join('、')} 自动同意` : ''}。`}
           </p>}
         <div className="neg-actions">
+          {!error && consent.asked.length === 0 && (
+            <button className="btn btn-success btn-cta" onClick={() => onSubmit(repKeys, payouts, true)}
+              title="所有人都会按承诺价自动同意：提出方案后立刻宣布成交，进入最后出牌倒计时">
+              提案并宣布成交
+            </button>
+          )}
           <button className="btn btn-success" disabled={!!error} onClick={() => onSubmit(repKeys, payouts)}>提出方案</button>
           <button className="btn" onClick={requestClose}>取消</button>
         </div>
