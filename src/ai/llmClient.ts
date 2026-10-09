@@ -6,6 +6,10 @@ import { DECISION_PROMPTS } from './promptTexts'
 
 export type AISpeed = 'fast' | 'normal' | 'slow'
 
+/** 桌风：电脑玩家整体的强硬程度（启发式参数缩放 + LLM 提示语气） */
+export type TableStyle = 'friendly' | 'business' | 'ruthless'
+export const TABLE_STYLES: readonly TableStyle[] = ['friendly', 'business', 'ruthless']
+
 export interface LLMConfig {
   baseUrl: string
   apiKey: string
@@ -14,6 +18,8 @@ export interface LLMConfig {
   enabled: boolean
   /** AI 出牌/思考前的模拟停顿档位，只影响体验节奏，不影响请求本身 */
   aiSpeed: AISpeed
+  /** 桌风（默认商战） */
+  tableStyle: TableStyle
   /** 请求超时（秒）。thinking/reasoning 类模型响应慢，需要更长的窗口 */
   timeoutSecs: number
   /**
@@ -43,6 +49,7 @@ export const DEFAULT_LLM_CONFIG: LLMConfig = {
   temperature: 0.5,
   enabled: false,
   aiSpeed: 'normal',
+  tableStyle: 'business',
   timeoutSecs: 60,
   extraBodyJson: '',
 }

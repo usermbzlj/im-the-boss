@@ -60,6 +60,10 @@ export function useGameSession(envFactory: () => SessionEnv = createBrowserEnv) 
   /** 当前动作日志（只读；随 snapshot.logLength 增长，组件读它即可按动作分组事件） */
   const getLog = useCallback((): readonly ActionLogEntry[] => sessionRef.current?.log ?? NO_LOG, [])
   const getOrigin = useCallback((): StartParams | null => sessionRef.current?.origin ?? null, [])
+  /** 最新状态（同步读取：连续发两个动作时，第二个要基于第一个之后的状态判断） */
+  const getState = useCallback((): GameState | null => sessionRef.current?.state ?? null, [])
+  /** 快进：跳过当前电脑行动前的停顿 */
+  const skipWait = useCallback(() => { sessionRef.current?.skipWait() }, [])
 
   // 卸载即销毁 session。StrictMode / HMR 会"卸载后立即重挂"，此时用同一份存档重建（含动作日志），
   // 避免 ref 指向一个已销毁、再也不会推进的 session。
@@ -74,5 +78,5 @@ export function useGameSession(envFactory: () => SessionEnv = createBrowserEnv) 
     }
   }, [replaceSession])
 
-  return { snapshot, start, load, leave, act, continueSaved, getLog, getOrigin }
+  return { snapshot, start, load, leave, act, continueSaved, getLog, getOrigin, getState, skipWait }
 }

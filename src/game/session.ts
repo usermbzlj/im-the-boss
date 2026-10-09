@@ -47,10 +47,26 @@ export interface SessionOptions {
   onError?: (message: string) => void
 }
 
+/** 电脑玩家运行状况（界面据此显示 LLM 是否在线、是否已降级为启发式） */
+export interface AiRuntimeStatus {
+  /** 本局是否启用了 LLM（未配置 = false，全程启发式） */
+  llmEnabled: boolean
+  /** ok：LLM 正常；degraded：近期有回退；down：熔断中，暂时全用启发式 */
+  health: 'ok' | 'degraded' | 'down'
+  /** 最近一次回退原因（中文短句） */
+  lastFallbackReason: string | null
+  /** 本局累计回退次数 */
+  fallbackCount: number
+}
+
+export const IDLE_AI_STATUS: AiRuntimeStatus = { llmEnabled: false, health: 'ok', lastFallbackReason: null, fallbackCount: 0 }
+
 export interface SessionSnapshot {
   state: GameState
   /** 正在思考的电脑玩家 id（用于 UI 提示） */
   thinkingId: number | null
+  /** 电脑玩家运行状况 */
+  ai: AiRuntimeStatus
   /** 最近一次被接受的动作（载入 / 替换状态后为 null）；订阅者据此拿到最新日志条目 */
   lastEntry: ActionLogEntry | null
   /** 日志条数：每条动作 +1，可用于判断日志是否增长 */
@@ -78,7 +94,7 @@ export class GameSession {
   constructor(initial: GameState, private readonly opts: SessionOptions) {
     this.adopt(opts.replay)
     this.checkContinuity(initial)
-    this.snap = { state: initial, thinkingId: null, lastEntry: null, logLength: this.entries.length }
+    this.snap = { state: initial, thinkingId: null, ai: IDLE_AI_STATUS, lastEntry: null, logLength: this.entries.length }
     this.fallback = opts.fallback ?? heuristicPolicy
     this.schedule()
   }
@@ -117,6 +133,11 @@ export class GameSession {
     this.adopt(replay)
     this.checkContinuity(state)
     this.commit(state, null)
+  }
+
+  /** 跳过当前电脑行动前的节奏停顿（"快进"）；不影响正在进行的决策本身 */
+  skipWait() {
+    // 待实现
   }
 
   /** 等待直到谓词成立或游戏结束（仿真 / 测试用） */
@@ -177,7 +198,7 @@ export class GameSession {
   }
 
   private commit(state: GameState, entry: ActionLogEntry | null) {
-    this.snap = { state, thinkingId: null, lastEntry: entry, logLength: this.entries.length }
+    this.snap = { state, thinkingId: null, ai: this.snap?.ai ?? IDLE_AI_STATUS, lastEntry: entry, logLength: this.entries.length }
     this.opts.onChange?.(state)
     if (entry) this.opts.onAction?.(entry, state)
     this.notify()
