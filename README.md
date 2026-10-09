@@ -8,7 +8,7 @@ Sid Sackson 经典谈判桌游《I'm the Boss!》的网页单机版：1 名人�
 - **桌规**（开局可开关，经典默认关、其余默认开）：**换牌**（持有某家族投资者时，该家族成员卡 ↔ 同家族旅行牌，每回合一次）、**买牌**（回合开始付 1 / 3 / 6 份股价多抽 1 / 2 / 3 张）、**兑换**（两张不同种类的牌 + 一份股价 → 2 张招募牌）、**病假牌**（指定一人本回合不能主动出牌，只能被动打阻止牌）。另有对所有版本生效的**缺代表速流局**：桌上凑不齐代表且全员跳过一轮即流局，不再空转。
 - 对手从八位牌桌常客里随机抽出——沈砚青、陆峥、顾曼宁、何烬、周慕言、苏澜、程亦舟、白珩——各有出身、谈判风格与软肋。
 - 电脑玩家可接入任意 OpenAI 兼容接口：模型拿到的是角色卡与一张看得清的牌桌，自己判断、自己说话，还会给下一回合的自己记笔记；未配置或调用失败时由内置启发式策略按同一人物接管。两者都只能从引擎枚举的合法动作中选择，游戏不会因为 AI 出错而卡住。
-- 无后端、无数据库。对局自动存档在浏览器 `localStorage`；开局可填种子，同一种子的发牌、骰子与启发式决策完全可复现。
+- 无后端、无数据库。对局自动存档在浏览器 `localStorage`（含终局，"继续上一局"回到存档那一刻）；开局可填种子，同一种子的发牌、骰子与启发式决策完全可复现，每局记录动作日志，"开局参数 + 日志"可完整重放。
 
 ## 快速开始
 
@@ -26,7 +26,7 @@ npm run build        # 类型检查 + 产物构建（dist/）
 4. **报价即承诺**：你公开报的出借价（每个代表）在本笔交易内有效——Boss 付到这个价你就自动同意；付不到才会问你同意 / 拒绝（可反报价）。报低了会被照价成交，报高了会被竞争者压价顶替。报价按家族分开记：手里有几个相关代表，行动区就有几个价格框，一句话报完各家的价——给唯一代表的那家报高价、给有竞争者的那家报低价；留空的家族价不动。拒绝方案时同样可以对每个被选用的代表分别反报价。
 5. 作为 Boss：用方案编辑器挑代表、定分成（编辑器会标出谁会自动同意、谁还需应答），全员同意后宣布成交；其他玩家有一次最后出牌的机会。
 6. 作为非 Boss：喊话报价、打家族卡入局或压价抢单、用旅行 / 招募 / 老板牌搅局或夺权，或者索要封口费。行动区会提示你的筹码（唯一代表 / 有竞争者 / 缺口）。
-7. 右侧标签页：谈判桌（席位竞价与当前方案）、日志、交易历史（每笔分成与累计现金）。
+7. 右侧标签页：谈判桌（席位竞价与当前方案）、日志（默认折叠跳过 / 放行，可勾选显示）、交易历史（每笔分成与累计收入，含地标租金）。
 8. 扩张 / 马拉松版里留意格子上的徽标：🏛 地标成交后每笔收租、🔥 抢手股价 +$1M、🕶 黑市出牌无人能阻止、🎯 猎头两张招募牌就能挖人。谁的最后一位投资者被挖走，座位上会亮出"夺回权"——1 张招募牌抢回来。
 9. 开了桌规：回合开始时行动区多一条"桌规"操作条（按价买 1 / 2 / 3 张、兑换招募牌——点选两张不同种类的牌确认）；持有某家族投资者时，点该家族的成员卡 / 旅行牌会多出"换牌"按钮；病假牌点开选目标。座位上的 🤒 表示这个人本回合出不了牌。
 10. 点 📖 查看规则速查（按当前版本与桌规开关显示扩展规则），点 ⚙️ 配置 LLM。
@@ -48,7 +48,7 @@ npm run build        # 类型检查 + 产物构建（dist/）
 | 文档 | 内容 |
 | --- | --- |
 | [docs/rules.md](./docs/rules.md) | 完整规则：组件、开局、回合、交易需求与金额、谈判、影响牌、终局、判例、数字版实现约定、扩展内容（四个版本 / 夺回权 / 特殊格 / 稀有牌 / 桌规） |
-| [docs/architecture.md](./docs/architecture.md) | 代码分层与核心契约：纯函数引擎、事件流、合法动作单一口径、GameSession 运行时、文案层、前端、存档 |
+| [docs/architecture.md](./docs/architecture.md) | 代码分层与核心契约：纯函数引擎、事件流、合法动作单一口径、GameSession 运行时（动作日志、重放、依赖注入）、文案层、前端（视角玩家、信息隐藏）、分层存档与迁移 |
 | [docs/ai.md](./docs/ai.md) | 电脑玩家：Policy 接口、牌桌上的八个人物与启发式参数、LLM 按编号选择协议、回退链、信息边界 |
 | [docs/development.md](./docs/development.md) | 开发指南：脚本、测试体系、仿真回归、目录约定、如何新增动作 / 修改规则 / 变更状态结构 |
 | [docs/refactor-notes.md](./docs/refactor-notes.md) | 重构对照：旧版确认的问题与新版处理方式 |
@@ -62,12 +62,12 @@ src/
   engine/       纯函数引擎：types / config / rules / validator / gameEngine（不含任何文案）
   text/         文案层：narrate（事件 → 文字）、labels（动作 / 卡牌 / 方案 → 文字），UI 与 LLM 提示词共用
   ai/           电脑玩家：policy（接口）/ heuristic（启发式）/ llmPolicy + prompts + promptTexts + personas / llmClient
-  game/         GameSession：框架无关的对局运行时（持有状态、驱动电脑玩家、节奏停顿、AbortSignal）
-  hooks/        useGameSession：把 GameSession 接进 React
-  components/   React 界面（ActionDock、CardHand、OfferEditor、NegotiationPanel、TableBoard …）
-  sim/          仿真工具：整局运行 + 不变量检查（CLI 与测试共用）
-  utils/        storage：带版本号的 localStorage 存档
-tests/          vitest：静态数据 / 规则场景 / 合法动作性质 / 运行时 / LLM 协议 / 整局仿真 / 版本与扩展规则 / 桌规
+  game/         对局运行时（框架无关）：session（GameSession：持有状态、驱动电脑玩家、节奏停顿、动作日志）/ replay（开局参数 + 动作日志完整重放）/ createSession（依赖注入）/ autosave（节流存档）
+  hooks/        useGameSession：把 GameSession 接进 React；browserEnv：装配浏览器环境（LLM + 启发式回退、localStorage、停顿）
+  components/   React 界面（ActionDock、CardHand、OfferEditor、NegotiationPanel、TableBoard、GameOverCard …）；ViewerContext（视角玩家）、useModalDismiss（弹层关闭规则）、useSideTab
+  sim/          仿真工具：整局运行 + 不变量检查 + 重放校验（CLI 与测试共用）
+  utils/        storage（分层存档：head + 日志分块）/ saveMigrations（两级版本迁移）/ seed（种子输入解析）
+tests/          vitest：静态数据 / 规则场景 / 合法动作性质 / 运行时 / 重放与存档 / LLM 协议 / 整局仿真 / 版本与扩展规则 / 桌规；ui/ 为 jsdom 组件测试
 scripts/        simulate.ts：命令行批量仿真与单局追踪（四个版本轮换或指定，桌规可开关，打印桌规用量）
 docs/           规则、架构、AI、开发指南、重构对照
 ```
@@ -76,7 +76,7 @@ docs/           规则、架构、AI、开发指南、重构对照
 
 ```bash
 npm run typecheck          # 严格模式 TypeScript（含 tests/）
-npm test                   # vitest：141 个用例，含 3~6 人整局仿真、四个版本与桌规
-npm run simulate -- 400    # 400 局回归：启发式 / 随机各半、四个版本轮换，逐步断言不变量
+npm test                   # vitest：规则 / 运行时 / 重放与存档 / 组件测试，含 3~6 人整局仿真、四个版本与桌规
+npm run simulate -- 400    # 400 局回归：启发式 / 随机各半、四个版本轮换，逐步断言不变量（SIM_REPLAY=1 另校验每局可重放）
 npm run check              # 以上三项串行
 ```

@@ -60,7 +60,7 @@ export default function DealHistoryPanel({ state }: { state: GameState }) {
                 <div className="deal-record-payout muted">独吞 ${rec.grossValue}M</div>
               )
             ) : (
-              <div className="deal-record-payout muted">{rec.failReason === 'ABANDONED' ? `${name(rec.bossId)} 主动放弃` : rec.failReason === 'STALEMATE' ? '谈判僵局，连续多轮无人行动' : '未知原因'}</div>
+              <div className="deal-record-payout muted">{rec.failReason === 'ABANDONED' ? `${name(rec.bossId)} 主动放弃` : rec.failReason === 'STALEMATE' ? '谈判僵局，连续多轮无人行动' : rec.failReason === 'INCOMPLETE' ? '桌上凑不齐代表，全员跳过一轮' : '未知原因'}</div>
             )}
             {rec.disruptors.length > 0 && (
               <div className="deal-record-disruptors">搅局：{rec.disruptors.map(name).join('、')}</div>

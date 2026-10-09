@@ -318,6 +318,7 @@ input[type="number"] { width: 90px; }
 
 /* ---- Sidebar panels (log / history / negotiation) ---- */
 .log-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.log-filter { display: flex; align-items: center; gap: 4px; padding: 4px 10px 0; font-size: 11px; cursor: pointer; }
 .log-list { flex: 1; overflow-y: auto; padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; }
 .log-entry { font-size: 12px; line-height: 1.45; padding: 3px 6px; border-radius: 4px; color: var(--muted); }
 /* tone-* 前缀避免与手牌 .card 等通用类名撞车 */

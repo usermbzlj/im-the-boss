@@ -108,10 +108,10 @@ LLM 电脑玩家的不确定性只在"决策"这一步：它的台词（`action.
 
 - `reps: Representative[]` —— 桌上的代表。有主的投资者牌在开局谈判时全部入桌（key `INV:A`，易主时 `ownerId` 变、key 不变）；家族成员牌打出时入桌（key `CLAN:<cardId>`）；招募成功的公共区投资者随即入桌。`travelled` 标记本笔交易失效。
 - `offer` —— 当前方案（`repKeys` + `payouts` + 各持有者的 `responses`）；`offersMade` 为本任 Boss 已提案次数。
-- `turnId / passStreak / stalemateRounds` —— 谈判轮转与僵局计数。
+- `turnId / passStreak / stalemateRounds` —— 谈判轮转与僵局计数。`stalemateRounds` 是"全员连续跳过的完整轮数"：除 `PASS / PASS_CLOSING / PASS_REACTION` 外，任何被接受的动作（喊话、出牌、提案、应答、宣布成交……）都把它清零，所以是真正的"连续"。
 - `responseQueue / responseIndex` —— OFFER_RESPONSE 的应答顺序；`closingOrder / closingIndex` —— CLOSING 的询问顺序。
 - `demands: Demand[]` —— 公开报价，**按 (玩家, 家族) 记录**：`familyId` 有值 = 该家族代表每个的出借价；无值 = 通用价（没有相关代表时是封口费，有代表但该家族没单独报价时作兜底）。同一玩家可有多条，各家族互不覆盖。查询用 `rules.demandOf(neg, playerId, familyId?)` / `repPriceOf(neg, rep)` / `commitmentPrice(neg, offer, playerId)`（= 方案中所用其代表各自价之和）。
-- `speeches / speakCounts / disruptors / openerId / travelledInvestors` —— 供界面、AI 与结算使用的谈判记录。
+- `speeches / speakCounts / disruptors / openerId / travelledInvestors` —— 供界面、AI 与结算使用的谈判记录。老板牌夺权成功后，新 Boss 从 `disruptors` 里移除（他现在是主人，不再算"搅局者"）。
 - `priceDelta / exclusive` —— 稀有牌对本笔交易的影响：股价增减（利好 +2 / 利空 −1，`rules.effectiveShareValue` 还叠加抢手格 +1 并以 $1M 封底）与独家协议锁定。成交后随 `negotiation` 一起消失，不影响景气牌。
 
 ### 3.1 事件（`GameEvent`）
@@ -123,10 +123,19 @@ LLM 电脑玩家的不确定性只在"决策"这一步：它的台词（`action.
 | 流程 | `GAME_STARTED`（含 `variantId / deals`）`MARKER_PLACED` `MARKER_MOVED` `DEAL_OPENED` `CARDS_DRAWN` `DECK_RESHUFFLED` `HAND_LIMIT` `CARDS_DISCARDED` |
 | 出牌 | `CLAN_PLAYED` `TRAVEL_PLAYED` `RECRUITMENT_PLAYED`（含 `cost`）`BOSS_PLAYED` `STOP_PLAYED` `BOOM_PLAYED` `BUST_PLAYED` `EXCLUSIVE_PLAYED` `SICK_PLAYED` `BLACK_MARKET`（黑市格跳过反应窗口）`TRAVEL_RESOLVED` `RECRUITMENT_RESOLVED` `RECLAIM_GRANTED` `BOSS_RESOLVED` `PRICE_CHANGED` `EXCLUSIVE_RESOLVED` `SICK_RESOLVED` |
 | 桌规 | `CARD_SWAPPED`（家族 / 换成的类型）`CARDS_BOUGHT`（张数 / 花费 / 手牌数）`CARDS_TRADED`（交出的类型 / 花费 / 之后的招募牌数）；`DEAL_FAILED.reason` 多了 `INCOMPLETE`（缺代表速流局） |
-| 谈判 | `SPEECH` `DEMAND` `STALEMATE_ROUND` `OFFER_PROPOSED` `OFFER_ACCEPTED` `OFFER_DECLINED` `OFFER_RESOLVED` `OFFER_VOIDED` `CLOSING_STARTED` `CLOSING_INTERRUPTED` |
+| 谈判 | `SPEECH` `DEMAND` `PASSED`（次要）`STALEMATE_ROUND` `OFFER_PROPOSED` `OFFER_ACCEPTED` `COMMITMENT_UPDATED` `OFFER_DECLINED` `OFFER_RESOLVED` `OFFER_VOIDED` `CLOSING_STARTED` `CLOSING_INTERRUPTED` |
 | 结算 | `DEAL_CLOSED` `LANDMARK_CLAIMED` `RENT_PAID` `DEAL_FAILED` `END_ROLL_DUE` `END_ROLL` `GAME_OVER` |
 
 `RepRef` 是代表在事件发生时刻的快照（家族 / 持有者 / 来源），因为代表随后可能失效或易主。
+
+几类事件的附加字段（都是发生时刻的快照，供叙述与提示词使用）：
+
+- `PASSED { playerId, phase: 'NEGOTIATION' | 'CLOSING' | 'REACTION' }`：`PASS / PASS_CLOSING / PASS_REACTION` 各发一条。它是**次要事件**：`narrate` 返回 `minor: true`，`isMinorEvent(e)` 可不生成文案直接判定；日志面板默认折叠、LLM 提示词的"最近动态"跳过。
+- `COMMITMENT_UPDATED { playerId, changes: { familyId, from: number | null, to }[] }`：`ACCEPT_OFFER` 改写了承诺价才发（`from = null` 表示此前没报过价）；语义见 4.2。
+- `STOP_PLAYED` 与 `CLOSING_INTERRUPTED` 带被取消 / 生效那张牌的目标：`targetRep`（旅行）、`targetFamilyId`（招募）、`targetPlayerId`（病假，仅 `STOP_PLAYED`）；`CLOSING_INTERRUPTED` 另带 `by`（牌种）与 `actorId`（出牌者）。
+- `DEAL_CLOSED.reps`：本笔所用代表的 `RepRef` 快照；`DEAL_FAILED.missing`：`reason = INCOMPLETE` 时桌上还缺哪些家族。
+
+`LoggedEvent = GameEvent & { id, dealNo? }`。`dealNo` 是该事件所属的开单序号（第几次开单，成交与流局都占号，从 1 起，等于 `dealHistory` 下标 + 1）：`emit` 在 `state.negotiation` 存在时自动带上；成交 / 流局记入 `dealHistory` 之后才发的 `DEAL_CLOSED / RENT_PAID / DEAL_FAILED` 显式传入同一个号。谈判之外的事件（掷骰、抽牌、手牌上限……）没有 `dealNo`。
 
 ---
 
@@ -153,11 +162,12 @@ NEGOTIATION（turnId 轮转；开局 turnId = Boss 左手边 ⇒ 叫价轮，Bos
   │     ├─ 全员已同意 ──► NEGOTIATION（Boss，可 CLOSE_DEAL）
   │     └─ 否则 ──► OFFER_RESPONSE（未自动同意者逐个 ACCEPT/DECLINE；任一 DECLINE 立即结束）──► NEGOTIATION（回到 Boss）
   ├─CLOSE_DEAL（Boss，canClose）──► CLOSING
-  └─ABANDON_DEAL（Boss）/ 僵局 / 缺代表且全员跳过一轮 ──► 流局 ──► 下一位 TURN
+  └─ABANDON_DEAL（Boss，且轮到他自己的谈判回合）/ 僵局 / 缺代表且全员跳过一轮 ──► 流局 ──► 下一位 TURN
 
 CLOSING（closingOrder 依次）
   ├─PASS_CLOSING ──► 全员放行 ⇒ 结算 ──► (景气牌带终局骰面 ? END_ROLL | 下一位 TURN | 景气牌用完 ⇒ GAME_OVER)
   ├─PLAY_TRAVEL / PLAY_RECRUITMENT / PLAY_BOSS / PLAY_BUST ──► REACTION ──► 被阻止 ? CLOSING（同一人继续）: NEGOTIATION
+  │     （旅行 / 招募只能指向将要成交的方案所用的代表：`travelTargets` / `recruitTargets` 在 CLOSING 里按 `closingRepKeys` 过滤）
   └─PLAY_SICK ──► REACTION ──► CLOSING（同一人继续；不打断倒计时）
 
 REACTION（按座位顺序询问出牌者以外的所有人）
@@ -173,7 +183,7 @@ END_ROLL ──ROLL_END──► 命中 ? GAME_OVER : 下一位 TURN
 
 - 每人每笔交易最多 4 次 `SPEAK`（`MAX_SPEECHES_PER_PLAYER`）。
 - 每任 Boss 最多 5 次 `PROPOSE_OFFER`（`MAX_OFFERS_PER_BOSS`），易主后清零。
-- 全员连续 `PASS` 一整轮记 1 次停滞，连续 2 轮停滞流局（`MAX_STALEMATE_ROUNDS`）；桌上凑不齐需求时一轮即流局（`INCOMPLETE`）。
+- 全员连续 `PASS` 一整轮记 1 次停滞，连续 2 轮停滞流局（`MAX_STALEMATE_ROUNDS`）；任何非跳过的动作都清零已累计的轮数，所以 `STALEMATE_ROUND` 事件里"再一轮无人行动将流局"的提示是准确的。桌上凑不齐需求时一轮即流局（`INCOMPLETE`）。
 - 每张影响牌只能打一次，手牌有限；桌规的换牌 / 买牌 / 兑换每回合各一次（`TurnFlags`），且不会凭空造牌（从抽牌堆 / 弃牌堆里找）。
 
 因此任何策略（包括纯随机）下谈判都在有限步内结束；`tests/simulation.test.ts` 与 `npm run simulate` 的 random 模式为此提供回归证据。
@@ -183,11 +193,12 @@ END_ROLL ──ROLL_END──► 命中 ? GAME_OVER : 下一位 TURN
 1. Boss `PROPOSE_OFFER`。`validateOfferShape` 返回结构化 `OfferError`（缺家族 / 无关家族 / 重复家族 / 代表失效 / 给 Boss 分钱 / 超额 / 负数），界面用 `describeOfferError` 显示，引擎用它判定合法性。
 2. **报价即承诺**（`rules.offerConsent`）：对方案中每位代表持有者，若 `分成 ≥ commitmentPrice`（= 被选用的其每个代表按各自家族报价之和；任一代表没报价则无承诺，`meetsCommitment` 为假），引擎直接记为同意并发出 `OFFER_ACCEPTED{auto:true}`；`OFFER_PROPOSED` 事件带 `autoAccepted` 与 `waitingFor`。
 3. 若无人需要应答（全用 Boss 自己的代表，或全部自动同意），停在 `NEGOTIATION` 由 Boss 直接成交；否则进入 `OFFER_RESPONSE`，`waitingFor` 中的玩家按座位顺序应答。
-4. `ACCEPT_OFFER` 把 `实付 ÷ 代表数` 向上取整后静默记为**所用家族**的新承诺价（之后付到这个价即自动同意）；任一 `DECLINE_OFFER` → 应答立即结束、回合回到 Boss，排在后面的人不再被询问；方案保留在 `offer` 上（供"绕开拒绝者"的候选方案使用）但 `canClose` 为假；其 `quotes`（每个代表的反报价，作用域 = 方案用到的我的家族）记为新承诺价，随 `OFFER_DECLINED{counters}` 一起叙述。Boss 可重提、改选他人代表或放弃。
+4. `ACCEPT_OFFER` 用 `rules.acceptedCommitments(neg, offer, playerId)` 改写**所用家族**的承诺价，并发 `COMMITMENT_UPDATED`（没有变动则不发）。原则：所用家族新价之和**恰为实付**（将来 Boss 对同一组代表付同样总额即自动同意）、不抬高任何家族的价、按原价比例保留家族间价差、金额取整数——已有报价之和不足实付且有没报价的家族时，已有价不动、差额在没报价的家族间平分（余数给靠前者）；已有报价之和超过实付时，全部按原价比例压到实付（余数按小数部分大者优先）；每家都报过价且之和不低于实付则不改。任一 `DECLINE_OFFER` → 应答立即结束、回合回到 Boss，排在后面的人不再被询问；方案保留在 `offer` 上（供"绕开拒绝者"的候选方案使用）但 `canClose` 为假；其 `quotes`（每个代表的反报价，作用域 = 方案用到的我的家族）记为新承诺价，随 `OFFER_DECLINED{counters}` 一起叙述。Boss 可重提、改选他人代表或放弃。
    报价的写入口径（`Quote[]`，`SPEAK.quotes` / `DECLINE_OFFER.quotes`）：一次动作可以给每个家族各报各的价——带 `familyId` 的条目只改那一家（必须在作用域内，否则整个动作不合法）；不带 `familyId` 的通用价补到作用域内其余未单独报价的家族；作用域为空（没有相关代表）时通用价就是封口费。`rules.resolveQuotes` 把它落成 `ResolvedQuote[]`（按金额归并的家族列表），引擎 `applyQuotes` 据此改写 `demands` 并发一条 `DEMAND{quotes}` 事件；`validQuotes` 负责校验（整数、`[0, 总额]`、家族在作用域内且不重复、通用价至多一条）。`PLAY_CLAN.demand` 只针对那张卡的家族。
 5. 方案中的代表被旅行牌打飞或被招募易主 → 方案立即置空并发出 `OFFER_VOIDED`，反应结束后回合回到 Boss。
-6. `CLOSE_DEAL` 要求 `canClose`：方案仍有效且全员同意（`offerStillValid` 不因利空牌让分成合计超过新总额而判失效，见 rules.md §10.4）；或没有方案但 `selectReps` 只用 Boss 自己的代表就能凑齐（此时自动生成无分成方案，**不增加** `offersMade`）。
-7. `CLOSING` 全员放行 → `finalizeDeal` 结算，付款经 `rules.settlePayouts` 按方案顺序、以总额封顶。运行时（`game/session.ts`）在人类玩家手中没有任何可打的干扰牌时自动替其放行，避免无意义的点击。
+6. `CLOSE_DEAL` 要求 `canClose`（= `rules.closeDealMode(state) !== null`），有两种依据：`'OFFER'`——方案仍有效且全员同意（`offerStillValid` 不因利空牌让分成合计超过新总额而判失效，见 rules.md §10.4）；`'SOLO'`——方案不存在、已失效或**已被人拒绝**，但 `selectReps` 只用 Boss 自己的代表就能凑齐。被拒 / 无效的旧方案不挡"自成交"：reducer 把 `offer` 换成一份只含自己代表、无分成的新方案（旧方案作废），**不增加** `offersMade`。
+7. `CLOSING` 里旅行 / 招募牌只能指向将要成交的方案所用的代表（`rules.closingRepKeys`），打向别处对本笔交易没有影响，不再作为合法动作列出。`rules.hasMeaningfulClosingPlay(state, playerId)` 判断某人除放行外是否还有这类合法动作，口径与 `getLegalActions` 的 CLOSING 分支一致（`tests/validator.test.ts` 校验）。
+8. `CLOSING` 全员放行 → `finalizeDeal` 结算，付款经 `rules.settlePayouts` 按方案顺序、以总额封顶。运行时（`game/session.ts`）在人类玩家的合法动作里只剩 `PASS_CLOSING` 时自动替其放行（停顿同长），避免无意义的点击。
 
 ---
 
@@ -295,29 +306,35 @@ flushAutosave(session)                                  // 立即落盘（pagehi
 
 ## 7. 前端
 
-`useGameSession(envFactory = createBrowserEnv)`（`hooks/`）用 `useSyncExternalStore` 订阅 `GameSession`，暴露 `{ snapshot, start, load, leave, act, continueSaved, getLog, getOrigin }`（前五个是原有字段，其余为新增）；
+`useGameSession(envFactory = createBrowserEnv)`（`hooks/`）用 `useSyncExternalStore` 订阅 `GameSession`，暴露 `{ snapshot, start, load, leave, act, continueSaved, getLog, getOrigin }`；
 换 session 时递增 `generation` 使订阅函数身份变化，从而重新订阅。`leave()` 销毁 session：电脑玩家不会在后台继续推进。
 `load(state | SavedGame)`：传 `loadSavedGame()` 刚读出的那份 `GameState` 时自动带回开局参数与日志（`storage.savedGameFor`）；`continueSaved()` 直接读存档并续局。
 存档由 `createSession` 里的 `Autosaver` 负责（见第 8 节），终局也存；换局时先销毁旧 session 再建新的，避免旧局的收尾存档盖掉新局。StrictMode / HMR 重挂时用 `toSaved()` 重建，日志不丢。
 
 | 组件 | 职责 |
 | --- | --- |
-| `App.tsx` | 布局与全局状态：开始页 / 牌桌、侧栏标签、帮助与设置弹层、方案编辑器开关、终局结果卡（可关闭后复盘、可再打开） |
+| `App.tsx` | 布局与全局状态：开始页（"继续上一局"走 `continueSaved`）/ 牌桌、侧栏标签（`useSideTab`）、帮助与设置弹层、方案编辑器开关、终局结果卡（可关闭后复盘、可再打开）；用 `ViewerProvider` 声明视角玩家（单机版固定 0 号位，`App` 内唯一出现座位号的地方） |
+| `ViewerContext`（`ViewerProvider` / `useViewerId`） | "我是谁"的唯一来源，默认 0。组件里凡是"自己 / 你"（座位标"你"、谈判记录的 `mine`、行动区的 `playerId`、引导条的"轮到你"、病假 / 目标是你的提示）都取 `useViewerId()`，不写死座位号；换视角（联机、观战、回放）只需换 `Provider` 的值 |
+| `GameOverCard` | 终局结果：胜者 + 按现金排名，现金相同并列同名次（`rankStandings`：1、1、3），并列者标"（并列）" |
+| `useModalDismiss(dirty, onClose)` | 弹层关闭规则（方案编辑器、设置面板用）：点遮罩**不**关闭，`Esc` 关闭；有未保存改动（`dirty`）时先 `window.confirm`。返回的 `requestClose` 同时给"关闭"按钮用 |
+| `useSideTab(hasNeg, active)` | 侧栏标签：谈判开始自动切到"谈判桌"（用户手动选过标签就不抢），谈判结束时若停在谈判桌则退回日志；离开牌桌后重置"手动选择"记忆 |
 | `PhaseGuide` | 顶部引导条：阶段、行动者、该做什么（病假 / 缺代表速流局也在这里提醒） |
 | `TableBoard` + `PlayerSeat` | 环形版图（`config.ringLayout` 按格数排成外圈；行数由 `useRingFit` 按版图区域实际宽高从 `ringRowOptions` 里挑——默认 6×4 / 8×6 / 10×8，宽屏或矮窗口自动换成更扁的外圈如 32 格 → 13×5，仍放不下则整体等比缩小，保证一屏看全、区域内不滚动；特殊格带色条与徽标，地标格显示主人）、中央景气牌（有效股价 / 版本 / 进度）、座位（现金 / 投资者 / 夺回权 / 地标数 / 病假徽标 / 手牌数 / 台词气泡 / 思考中） |
 | `ActionDock` | 人类的行动区：状态摘要 + 按当前阶段与 `getLegalActions` 渲染的按钮；开桌规时多一条"桌规"操作条（买 1 / 2 / 3 张按价标注、兑换招募牌进入选牌模式并确认） |
 | `CardHand` | 手牌；可打的牌由合法动作列表决定，点牌弹出目标 / 参数选择（招募弹层按 `recruitCost` 标注 3 / 2 / 夺回 1 张；稀有牌弹层给出股价变化；家族 / 定向旅行牌弹层附"换牌"按钮；病假牌弹层选目标玩家）；多选模式 `selectMode: 'discard' | 'trade'`——手牌上限时弃牌多选，兑换时限选两张不同种类 |
 | `OfferEditor` | Boss 的方案编辑器：每个需求组挑选代表、可选池勾选、逐人分成、预设方案（`buildOfferCandidates`）、实时校验（`validateOfferShape` + `describeOfferError`） |
 | `NegotiationPanel` | 谈判桌只读视图：本格特殊效果 / 独家协议 / 股价变动徽标、席位竞价（每个家族的多方代表与报价）、当前方案与应答、喊话记录 |
-| `GameLog` / `DealHistoryPanel` | 事件流渲染（`narrate`）；每笔交易的结算明细与累计现金 |
+| `GameLog` / `DealHistoryPanel` | `GameLog`：事件流渲染（`narrate`），默认折叠 `minor` 事件（跳过 / 放行），可勾选"显示跳过 / 放行"；`DealHistoryPanel`：每笔交易的结算明细与各玩家累计收入（`dealTotals` = Boss 净得 + 他人分成 + 地标租金，流局不计），面板上写明口径并并排列出当前现金（现金 = 累计收入 − 买牌 / 兑换支出），流局原因含"缺代表" |
 | `StartScreen` / `SettingsPanel` / `HelpPanel` | 开局（人数 / 版本 / 桌规开关 / 名字 / 种子 / 续档）、LLM 设置与调用日志、规则速查（按当前版本与桌规开关显示扩展规则） |
 
 界面从不自行判断规则：按钮出现与否只看 `getLegalActions`，参数合法性由 `rules.ts` 的查询函数给出结构化结果、`text/labels.ts` 转成提示文本。
 
 ### 7.1 信息隐藏
 
+信息隐藏以**视角玩家**（`useViewerId()`）为准，不是"人类 / 电脑"。
+
 - 反应窗口按座位顺序询问**所有**其他玩家，窗口是否出现与谁持有阻止牌无关。
-- 界面在 REACTION 阶段不显示"当前在等谁"：持牌者需要真正决策（LLM 模式下耗时更长），显示会暴露手牌。
+- 界面在 REACTION 与 CLOSING 阶段都不显示"当前在等谁 / 谁在思考"（`TableBoard` 把非视角玩家的行动者与 `thinkingId` 屏蔽，`PhaseGuide` 写"依次询问其他玩家…"，`ActionDock` 写"等待其他玩家放行…"）：持牌者需要真正决策（LLM 模式下耗时更长），显示会暴露手牌，倒计时里同理会暴露谁有干扰牌。轮到视角玩家自己时照常显示。
 - 人类没有阻止牌时，运行时在同样的停顿后自动放行；`PASS_REACTION` 附带的 `say` 被引擎丢弃（放行者说话也会暴露信息）。
 - 电脑玩家的手牌内容从不渲染，只显示张数；LLM 提示词只包含自己的手牌。
 

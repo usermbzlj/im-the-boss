@@ -23,13 +23,13 @@ import { useSideTab } from './components/useSideTab'
 import { getCurrentTile, getEndProbability } from './engine/rules'
 import { getVariant, MAX_OFFERS_PER_BOSS } from './engine/config'
 import { getLegalActions } from './engine/validator'
-import { loadSavedGame, clearSavedGame } from './utils/storage'
+import { clearSavedGame } from './utils/storage'
 
 /** 视角玩家：单机版人类固定坐 0 号位；组件通过 ViewerProvider / useViewerId 取得，不再各自写死 */
 const VIEWER_ID = 0
 
 export default function App() {
-  const { snapshot, start, load, leave, act } = useGameSession()
+  const { snapshot, start, leave, act, continueSaved } = useGameSession()
   const state = snapshot?.state ?? null
   const thinkingId = snapshot?.thinkingId ?? null
   const [showHelp, setShowHelp] = useState(false)
@@ -65,7 +65,7 @@ export default function App() {
       <>
         <StartScreen
           onStart={(count, name, seed, variantId, houseRules) => start(count, name, seed, variantId, houseRules)}
-          onContinue={() => { const saved = loadSavedGame(); if (saved) load(saved) }}
+          onContinue={() => { continueSaved() }}
           onSettings={() => setShowSettings(true)}
         />
         <SettingsPanel open={showSettings} onClose={() => setShowSettings(false)} />
