@@ -9,6 +9,7 @@ import { createInitialState } from '../src/engine/gameEngine'
 import { checkInvariants } from '../src/sim/harness'
 import { baseState, giveCards, setInvestors, openDealAt, clearHand } from './helpers'
 import { investorRepKey } from '../src/engine/rules'
+import { createGame, checkReplay, type ActionLogEntry } from '../src/game/replay'
 
 const tick = () => new Promise<void>(r => setTimeout(r, 0))
 
@@ -170,5 +171,100 @@ describe('GameSession', () => {
     session.destroy()
     expect(notifications).toBeGreaterThanOrEqual(3)
     expect(sawThinking).toBe(true)
+  })
+})
+
+describe('GameSession 动作日志', () => {
+  it('每个被接受的动作（人类 / 电脑 / 自动放行）都记一条：序号连续、提交前版本、事件 id 区间', async () => {
+    const { state, origin } = createGame({ playerCount: 4, humanName: '我', seed: 201 })
+    const session = new GameSession(state, { policy: heuristicPolicy, delayFor: () => 0, replay: { origin, log: [] } })
+    expect(session.log).toHaveLength(0)
+    const seen: ActionLogEntry[] = []
+    session.subscribe(() => { const e = session.snapshot.lastEntry; if (e && seen[seen.length - 1] !== e) seen.push(e) })
+    const s1 = await session.runUntil(s => !s.players[getActingPlayerId(s)].isAI)
+    expect(session.log.length).toBe(s1.stateVersion - 1)
+    expect(session.snapshot.logLength).toBe(session.log.length)
+    session.log.forEach((e, i) => {
+      expect(e.index).toBe(i)
+      expect(e.versionBefore).toBe(i + 1)
+      expect(e.source).toBe('ai')
+      expect(e.eventTo).toBeGreaterThanOrEqual(e.eventFrom - 1)
+      if (i > 0) expect(e.eventFrom).toBe(session.log[i - 1].eventTo + 1)
+    })
+    // 人类的动作也入日志，且区间覆盖它产生的事件
+    const before = session.state
+    const human = before.phase === 'PLACE_MARKER'
+      ? { type: 'PLACE_MARKER' as const, playerId: 0, spaceId: 3 }
+      : { type: 'ROLL_MOVE' as const, playerId: 0 }
+    expect(session.dispatch(human)).toBe(true)
+    const last = session.log[session.log.length - 1]
+    expect(last).toMatchObject({ source: 'human', versionBefore: before.stateVersion, eventFrom: before.nextId })
+    expect(last.action).toEqual(human)
+    const produced = session.state.events.filter(e => e.id >= before.nextId)
+    expect(produced.length).toBeGreaterThan(0)
+    expect(produced.every(e => e.id >= last.eventFrom && e.id <= last.eventTo)).toBe(true)
+    // 订阅者每次变化都能拿到最新条目
+    expect(session.snapshot.lastEntry).toBe(last)
+    expect(seen.length).toBeGreaterThan(0)
+    expect(seen.map(e => e.index)).toEqual([...seen.map(e => e.index)].sort((a, b) => a - b))
+    expect(checkReplay({ origin, log: session.log }, session.state)).toBeNull()
+    session.destroy()
+  })
+
+  it('被拒绝的动作不入日志；日志里的动作是副本，事后改外部对象不影响记录', () => {
+    const { state, origin } = createGame({ playerCount: 4, humanName: '我', seed: 202 })
+    const session = new GameSession(state, { policy: { name: 'hold', decide: () => new Promise(() => {}) }, delayFor: () => 0, replay: { origin, log: [] } })
+    expect(session.dispatch({ type: 'PASS', playerId: 3 })).toBe(false)
+    expect(session.log).toHaveLength(0)
+    const action = { type: 'PLACE_MARKER' as const, playerId: session.state.markerChooserId!, spaceId: 5 }
+    expect(session.dispatch(action)).toBe(true)
+    action.spaceId = 9
+    expect((session.log[0].action as { spaceId: number }).spaceId).toBe(5)
+    session.destroy()
+    expect(session.dispatch({ type: 'ROLL_MOVE', playerId: 0 })).toBe(false)
+    expect(session.log).toHaveLength(1)
+  })
+
+  it('没有开局参数的会话（自定义局面）：日志照记，但不可回放；日志对不上初始状态时同样降级', () => {
+    const hold: Policy = { name: 'hold', decide: () => new Promise(() => {}) }
+    const plain = new GameSession(baseState(4, 203), { policy: hold })
+    expect(plain.replayable).toBe(false)
+    expect(plain.origin).toBeNull()
+    expect(plain.toSaved().log).toEqual([])
+    plain.destroy()
+
+    const { state, origin } = createGame({ playerCount: 4, humanName: '我', seed: 204 })
+    const bogus = new GameSession({ ...state, stateVersion: 9 }, { policy: hold, replay: { origin, log: [] } })
+    expect(bogus.replayable).toBe(false) // 空日志只能接在 stateVersion 1 上
+    bogus.destroy()
+  })
+
+  it('replace() 载入另一份状态：日志按新来源重置', () => {
+    const hold: Policy = { name: 'hold', decide: () => new Promise(() => {}) }
+    const a = createGame({ playerCount: 3, humanName: '甲', seed: 205 })
+    const session = new GameSession(a.state, { policy: hold, replay: { origin: a.origin, log: [] } })
+    session.dispatch({ type: 'PLACE_MARKER', playerId: session.state.markerChooserId!, spaceId: 2 })
+    expect(session.log).toHaveLength(1)
+    const b = createGame({ playerCount: 3, humanName: '乙', seed: 206 })
+    session.replace(b.state)
+    expect(session.log).toHaveLength(0)
+    expect(session.replayable).toBe(false)
+    expect(session.snapshot.lastEntry).toBeNull()
+    session.replace(b.state, { origin: b.origin, log: [] })
+    expect(session.replayable).toBe(true)
+    session.destroy()
+  })
+
+  it('delayFor 优先于旧的 delay；二者都省略则不停顿', async () => {
+    const calls: string[] = []
+    const s1 = new GameSession(baseState(3, 207), { policy: heuristicPolicy, delay: () => { calls.push('delay'); return 0 }, delayFor: () => { calls.push('delayFor'); return 0 } })
+    await s1.runUntil(s => s.stateVersion >= 3)
+    s1.destroy()
+    expect(new Set(calls)).toEqual(new Set(['delayFor']))
+
+    const s2 = new GameSession(baseState(3, 208), { policy: heuristicPolicy })
+    const final = await s2.runUntil()
+    s2.destroy()
+    expect(final.phase).toBe('GAME_OVER')
   })
 })
