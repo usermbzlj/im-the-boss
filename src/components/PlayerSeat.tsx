@@ -1,12 +1,16 @@
 // ============================================================
-// PlayerSeat — 座位卡：名字 / 现金 / 投资者 / 手牌数 / 台词气泡
+// PlayerSeat — 座位卡：名字 / 现金 / 投资者 / 手牌数 / 台词气泡 / 人物主题色 / 对你的态度
 // ============================================================
 
+import { useState } from 'react'
+import type { CSSProperties } from 'react'
 import type { GameState } from '../engine/types'
 import { HAND_LIMIT, FAMILIES, LANDMARK_RENT } from '../engine/config'
 import { isSick } from '../engine/rules'
 import FamilyChip from './FamilyChip'
 import { getPersonaForPlayer } from '../ai/personas'
+import type { Relation } from '../ai/relations'
+import { monogram, seatColor } from '../ui/personaColor'
 import { useViewerId } from './ViewerContext'
 
 interface PlayerSeatProps {
@@ -14,16 +18,22 @@ interface PlayerSeatProps {
   playerId: number
   isActing: boolean
   isThinking: boolean
+  /** 这位电脑玩家对视角玩家的态度（来自 relationsToward）；score = 0 / 省略 = 不显示 */
+  relation?: Relation | null
 }
 
-/** 座位印章：中文名取姓（首字），拉丁名取首字母 */
-function monogram(name: string): string {
-  const first = [...name.trim()][0] ?? '?'
-  return /[a-z]/i.test(first) ? first.toUpperCase() : first
+/** 态度图标：-2 记仇 … +2 交好 */
+const RELATION_ICON: Record<number, { icon: string; label: string }> = {
+  [-2]: { icon: '😡', label: '对你很不满' },
+  [-1]: { icon: '😠', label: '对你有些不满' },
+  [1]: { icon: '🙂', label: '对你有好感' },
+  [2]: { icon: '🤝', label: '和你交情不错' },
 }
 
-export default function PlayerSeat({ state, playerId, isActing, isThinking }: PlayerSeatProps) {
+export default function PlayerSeat({ state, playerId, isActing, isThinking, relation }: PlayerSeatProps) {
   const viewerId = useViewerId()
+  /** 点开的气泡（记台词原文：换了新台词自动收起） */
+  const [openBubble, setOpenBubble] = useState<string | null>(null)
   const player = state.players[playerId]
   if (!player) return null
   const isViewer = playerId === viewerId
@@ -40,10 +50,26 @@ export default function PlayerSeat({ state, playerId, isActing, isThinking }: Pl
     : demands.length === 1 ? `要价 $${demands[0].amount}M`
       : demands.map(d => `${d.familyId ? FAMILIES[d.familyId].name : '封口'} $${d.amount}M`).join(' · ')
   const landmarks = state.board.filter(b => b.landlordId === playerId)
+  const color = seatColor(player, viewerId)
+  const style = { '--seat-accent': color.accent, '--seat-soft': color.soft } as CSSProperties
+  const speech = player.lastSpeech
+  const expanded = !!speech && openBubble === speech
+  const att = !isViewer && relation && relation.score !== 0 ? RELATION_ICON[relation.score] : null
 
   return (
-    <div className={`player-seat${isActing ? ' acting' : ''}${isBoss ? ' is-boss' : ''}${isViewer ? ' is-human' : ''}`}>
-      {player.lastSpeech && <div className="seat-bubble" title={player.lastSpeech}>{player.lastSpeech}</div>}
+    <div className={`player-seat${isActing ? ' acting' : ''}${isBoss ? ' is-boss' : ''}${isViewer ? ' is-human' : ''}`} style={style}>
+      {speech && (
+        <button
+          key={speech}
+          type="button"
+          className={`seat-bubble${expanded ? ' expanded' : ''}`}
+          title={expanded ? '点击收起' : '点击查看全文'}
+          aria-expanded={expanded}
+          onClick={() => setOpenBubble(expanded ? null : speech)}
+        >
+          {speech}
+        </button>
+      )}
       <div className="seat-head">
         <span className="seat-avatar" aria-hidden="true">{monogram(player.name)}</span>
         <div className="seat-title">
@@ -51,6 +77,12 @@ export default function PlayerSeat({ state, playerId, isActing, isThinking }: Pl
             {player.name}
             {isViewer && <span className="seat-you">你</span>}
             {isBoss && <span className="seat-boss">👑 Boss</span>}
+            {att && (
+              <span className="seat-relation" role="img" aria-label={att.label}
+                title={`${persona?.name ?? player.name}${att.label}${relation!.reasons.length ? `：\n${relation!.reasons.join('\n')}` : ''}`}>
+                {att.icon}
+              </span>
+            )}
           </div>
           <div className="seat-sub" title={persona?.title}>
             {persona ? persona.title.split(' · ')[0] : '人类玩家'}
