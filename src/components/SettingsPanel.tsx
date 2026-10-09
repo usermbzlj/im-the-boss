@@ -7,6 +7,7 @@ import {
   loadLLMConfig, saveLLMConfig, testLLMConnection, getLLMCallLog, clearLLMCallLog,
   validateExtraBodyJson, type LLMConfig, type AISpeed, DEFAULT_LLM_CONFIG,
 } from '../ai/llmClient'
+import { useModalDismiss } from './useModalDismiss'
 
 interface SettingsPanelProps {
   open: boolean
@@ -19,14 +20,21 @@ const SPEED_OPTIONS: Array<{ value: AISpeed; label: string; hint: string }> = [
   { value: 'slow', label: '慢', hint: '模拟真人思考停顿，更有临场感' },
 ]
 
+/** 每次打开都挂载一份新的编辑态：从已保存配置重新载入，上次没保存的修改不会残留 */
 export default function SettingsPanel({ open, onClose }: SettingsPanelProps) {
-  const [config, setConfig] = useState<LLMConfig>(loadLLMConfig)
+  return open ? <SettingsPanelBody onClose={onClose} /> : null
+}
+
+function SettingsPanelBody({ onClose }: { onClose: () => void }) {
+  const [saved] = useState<LLMConfig>(loadLLMConfig)
+  const [config, setConfig] = useState<LLMConfig>(saved)
   const [testResult, setTestResult] = useState<string | null>(null)
   const [testing, setTesting] = useState(false)
   const [showLog, setShowLog] = useState(false)
   const [logTick, setLogTick] = useState(0)
 
-  if (!open) return null
+  const dirty = JSON.stringify(config) !== JSON.stringify(saved)
+  const requestClose = useModalDismiss(dirty, onClose)
 
   const bodyError = validateExtraBodyJson(config.extraBodyJson)
 
@@ -47,8 +55,8 @@ export default function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   const log = getLLMCallLog()
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="settings-panel" onClick={e => e.stopPropagation()}>
+    <div className="modal-overlay">
+      <div className="settings-panel" role="dialog" aria-label="LLM 设置">
         <h2>⚙️ LLM 设置</h2>
         <p className="settings-hint">
           配置 OpenAI 兼容接口。未启用时使用基础 AI。<br />
@@ -141,6 +149,7 @@ export default function SettingsPanel({ open, onClose }: SettingsPanelProps) {
             {testing ? '测试中…' : '测试连接'}
           </button>
           <button className="btn" onClick={() => setConfig({ ...DEFAULT_LLM_CONFIG })}>重置</button>
+          <button className="btn" onClick={requestClose} title="不保存，直接关闭（Esc 同效）">关闭</button>
           <button className="btn-primary" onClick={handleSave} disabled={!!bodyError}
             title={bodyError ? '自定义请求体 JSON 有误，请先修正' : undefined}>保存</button>
         </div>

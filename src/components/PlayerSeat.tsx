@@ -7,6 +7,7 @@ import { HAND_LIMIT, FAMILIES, LANDMARK_RENT } from '../engine/config'
 import { isSick } from '../engine/rules'
 import FamilyChip from './FamilyChip'
 import { getPersonaForPlayer } from '../ai/personas'
+import { useViewerId } from './ViewerContext'
 
 interface PlayerSeatProps {
   state: GameState
@@ -22,8 +23,10 @@ function monogram(name: string): string {
 }
 
 export default function PlayerSeat({ state, playerId, isActing, isThinking }: PlayerSeatProps) {
+  const viewerId = useViewerId()
   const player = state.players[playerId]
   if (!player) return null
+  const isViewer = playerId === viewerId
   const neg = state.negotiation
   const isBoss = neg?.bossId === playerId
   const travelled = new Set(neg?.travelledInvestors ?? [])
@@ -39,14 +42,14 @@ export default function PlayerSeat({ state, playerId, isActing, isThinking }: Pl
   const landmarks = state.board.filter(b => b.landlordId === playerId)
 
   return (
-    <div className={`player-seat${isActing ? ' acting' : ''}${isBoss ? ' is-boss' : ''}${player.isAI ? '' : ' is-human'}`}>
+    <div className={`player-seat${isActing ? ' acting' : ''}${isBoss ? ' is-boss' : ''}${isViewer ? ' is-human' : ''}`}>
       {player.lastSpeech && <div className="seat-bubble" title={player.lastSpeech}>{player.lastSpeech}</div>}
       <div className="seat-head">
         <span className="seat-avatar" aria-hidden="true">{monogram(player.name)}</span>
         <div className="seat-title">
           <div className="seat-name">
             {player.name}
-            {!player.isAI && <span className="seat-you">你</span>}
+            {isViewer && <span className="seat-you">你</span>}
             {isBoss && <span className="seat-boss">👑 Boss</span>}
           </div>
           <div className="seat-sub" title={persona?.title}>

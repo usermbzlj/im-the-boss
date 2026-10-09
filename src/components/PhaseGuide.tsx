@@ -7,11 +7,14 @@ import { getActingPlayerId } from '../engine/validator'
 import { getGrossValue, offerShareOf, hasStop, isSick, tableCanComplete } from '../engine/rules'
 import { HAND_LIMIT, MAX_OFFERS_PER_BOSS } from '../engine/config'
 import { reactionKindName } from '../text/narrate'
+import { useViewerId } from './ViewerContext'
 
 export default function PhaseGuide({ state }: { state: GameState }) {
+  const viewerId = useViewerId()
   const actingId = getActingPlayerId(state)
   const acting = state.players[actingId]
-  const human = !!acting && !acting.isAI
+  /** 轮到视角玩家自己 */
+  const human = !!acting && actingId === viewerId
   const neg = state.negotiation
   const gross = getGrossValue(state)
   const house = state.houseRules ? '；桌规：可先买牌 / 兑换招募牌' : ''
@@ -34,19 +37,19 @@ export default function PhaseGuide({ state }: { state: GameState }) {
       const boss = state.players[neg!.bossId]
       const role = neg!.bossId === actingId ? 'Boss' : ''
       text = human
-        ? (neg!.bossId === 0
+        ? (neg!.bossId === viewerId
           ? (neg!.offer ? '你是 Boss：方案全员同意后可宣布成交；也可修改方案、再听一轮或放弃' : '你是 Boss：听完叫价，用自己的家族卡省钱，再提出方案')
           : (neg!.offer ? '轮到你：方案已在桌上——压价抢单、打干扰牌，或跳过' : '叫价轮：报出你的出借价（承诺价）、打家族卡入场、出牌，或跳过'))
         : `谈判中（Boss：${boss?.name}）— ${acting?.name}${role ? '（Boss）' : ''} 行动中`
-      if (human && isSick(state, 0)) text += '（你病假中：不能主动出牌）'
+      if (human && isSick(state, viewerId)) text += '（你病假中：不能主动出牌）'
       break
     }
     case 'OFFER_RESPONSE':
-      text = human ? `Boss 的方案要用你的代表，分给你 $${offerShareOf(neg?.offer, 0)}M：同意或拒绝` : `等待 ${acting?.name} 应答方案`
+      text = human ? `Boss 的方案要用你的代表，分给你 $${offerShareOf(neg?.offer, viewerId)}M：同意或拒绝` : `等待 ${acting?.name} 应答方案`
       break
     case 'REACTION': {
       const pr = state.pendingReaction!
-      const what = `${state.players[pr.actorId]?.name} 打出了${reactionKindName(pr.kind)}${pr.kind === 'SICK' && pr.targetPlayerId === 0 ? '，目标是你' : ''}`
+      const what = `${state.players[pr.actorId]?.name} 打出了${reactionKindName(pr.kind)}${pr.kind === 'SICK' && pr.targetPlayerId === viewerId ? '，目标是你' : ''}`
       text = human
         ? (hasStop(acting) ? `${what}：是否用阻止牌取消？` : `${what}，你没有阻止牌`)
         : '反应窗口：依次询问其他玩家是否阻止…'
@@ -54,8 +57,8 @@ export default function PhaseGuide({ state }: { state: GameState }) {
     }
     case 'CLOSING':
       text = human
-        ? (isSick(state, 0) ? 'Boss 已宣布成交；你病假中不能打干扰牌，只能放行' : 'Boss 已宣布成交，这是你最后的出牌机会：放行或打出干扰牌（没有干扰牌会自动放行）')
-        : `成交倒计时：等待 ${acting?.name} 放行或出牌`
+        ? (isSick(state, viewerId) ? 'Boss 已宣布成交；你病假中不能打干扰牌，只能放行' : 'Boss 已宣布成交，这是你最后的出牌机会：放行或打出干扰牌（没有干扰牌会自动放行）')
+        : '成交倒计时：依次询问其他玩家放行或出牌…' // 不点名当前被询问者，否则会暴露谁手里有干扰牌
       break
     case 'END_ROLL':
       text = human ? '终局判定：掷骰！' : `${acting?.name} 掷终局骰`

@@ -7,6 +7,7 @@ import type { InfluenceCard, GameState, PlayerAction, FamilyId } from '../engine
 import { FAMILIES, HAND_LIMIT, BOOM_BONUS, BUST_PENALTY } from '../engine/config'
 import { findRep, oneShareOf, canReclaim, recruitCost, standardRecruitCost, getGrossValue, swapTargetType, isSick } from '../engine/rules'
 import { grossAfterDelta } from '../text/labels'
+import { useViewerId } from './ViewerContext'
 
 /** 手牌多选模式：弃牌（超上限）/ 兑换（桌规：两张异类牌换招募） */
 export type HandSelectMode = 'discard' | 'trade' | null
@@ -20,7 +21,6 @@ interface CardHandProps {
   onToggleSelect: (cardId: number) => void
 }
 
-const HUMAN_ID = 0
 const TYPE_LABEL: Record<InfluenceCard['type'], string> = {
   CLAN: '家族成员', TRAVEL: '旅行', RECRUITMENT: '招募', BOSS: '老板', STOP: '阻止', BOOM: '利好·稀有', BUST: '利空·稀有', EXCLUSIVE: '独家协议·稀有', SICK: '病假·桌规',
 }
@@ -50,6 +50,7 @@ function actionsForCard(legal: PlayerAction[], card: InfluenceCard): PlayerActio
 }
 
 export default function CardHand({ state, legal, act, selectMode, selection, onToggleSelect }: CardHandProps) {
+  const viewerId = useViewerId()
   const [openCardId, setOpenCardId] = useState<number | null>(null)
   const [popoverLeft, setPopoverLeft] = useState(0)
   const [clanDemand, setClanDemand] = useState<string>('')
@@ -68,7 +69,7 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
   }, [openCardId])
-  const player = state.players[HUMAN_ID]
+  const player = state.players[viewerId]
   if (!player) return null
 
   /** 弹层挂在 .hand 下而不是横向滚动的 .hand-cards 内，避免被 overflow 裁切 */
@@ -121,7 +122,7 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
         const swap = renderSwap(card)
         if (!base || base.type !== 'PLAY_CLAN') return swap ? <div className="popover-body">{swap}</div> : null
         const suggest = oneShareOf(state)
-        const iAmBoss = state.negotiation?.bossId === HUMAN_ID
+        const iAmBoss = state.negotiation?.bossId === viewerId
         return (
           <div className="popover-body">
             <div className="popover-title">
@@ -164,7 +165,7 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
                     return (
                       <button key={i} className="btn target-btn" onClick={() => fire(a)}
                         style={{ borderColor: FAMILIES[rep.familyId].color }}>
-                        {owner?.name}{rep.ownerId === HUMAN_ID ? '（你）' : ''} 的 {FAMILIES[rep.familyId].name}
+                        {owner?.name}{rep.ownerId === viewerId ? '（你）' : ''} 的 {FAMILIES[rep.familyId].name}
                         <em>{rep.source === 'INVESTOR' ? '投资者' : '家族卡'}{inOffer ? ' ★方案中' : ''}</em>
                       </button>
                     )
@@ -209,8 +210,8 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
                 if (a.type !== 'PLAY_RECRUITMENT') return null
                 const f: FamilyId = a.targetFamilyId
                 const owner = state.investors.find(inv => inv.familyId === f)?.ownerId
-                const cost = recruitCost(state, HUMAN_ID, f)
-                const reclaim = canReclaim(state, HUMAN_ID, f)
+                const cost = recruitCost(state, viewerId, f)
+                const reclaim = canReclaim(state, viewerId, f)
                 return (
                   <button key={i} className="btn target-btn" style={{ borderColor: FAMILIES[f].color }} onClick={() => fire(a)}>
                     {FAMILIES[f].name}<em>{owner == null ? '公共区' : `来自 ${state.players[owner]?.name}`} · {reclaim ? '夺回 · 1 张' : `${cost} 张`}</em>
@@ -270,7 +271,7 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
   }
 
   const selecting = selectMode != null
-  const sick = isSick(state, HUMAN_ID)
+  const sick = isSick(state, viewerId)
   /** 兑换模式下：最多选两张，且第二张必须与第一张种类不同 */
   const selectedTypes = new Set(player.hand.filter(c => selection.has(c.id)).map(c => c.type))
   const canPick = (card: InfluenceCard) => {

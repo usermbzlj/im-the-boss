@@ -14,10 +14,11 @@ import {
 import { canClose } from '../engine/validator'
 import { spaceKindName, spaceKindEffect } from '../text/narrate'
 import FamilyChip from './FamilyChip'
+import { useViewerId } from './ViewerContext'
 
-const HUMAN_ID = 0
 
 export default function NegotiationPanel({ state }: { state: GameState }) {
+  const viewerId = useViewerId()
   const neg = state.negotiation
   const space = getCurrentSpace(state)
   const chatRef = useRef<HTMLDivElement>(null)
@@ -41,7 +42,7 @@ export default function NegotiationPanel({ state }: { state: GameState }) {
   if (isExclusiveLocked(state)) badges.push({ text: '🔒 独家协议：老板 / 旅行 / 利空牌已封锁', tone: 'green', title: '独家协议' })
   if (neg.priceDelta > 0) badges.push({ text: `📈 利好 +$${neg.priceDelta}M/份`, tone: 'green', title: '利好牌生效' })
   if (neg.priceDelta < 0) badges.push({ text: `📉 利空 −$${-neg.priceDelta}M/份`, tone: 'red', title: '利空牌生效' })
-  const name = (id: number) => `${state.players[id]?.name ?? '?'}${id === HUMAN_ID ? '（你）' : ''}`
+  const name = (id: number) => `${state.players[id]?.name ?? '?'}${id === viewerId ? '（你）' : ''}`
   if (state.turn.sick.length) badges.push({ text: `🤒 病假：${state.turn.sick.map(name).join('、')}（本回合不能主动出牌）`, tone: 'muted', title: '病假牌生效：只能被动打阻止牌' })
 
   const priceOf = (r: Representative) => {
@@ -166,7 +167,7 @@ export default function NegotiationPanel({ state }: { state: GameState }) {
         <div className="neg-chat" ref={chatRef}>
           {neg.speeches.length === 0 && <span className="muted">还没人说话</span>}
           {neg.speeches.map(s => (
-            <div key={s.id} className={`chat-line${s.playerId === HUMAN_ID ? ' mine' : ''}${s.playerId === neg.bossId ? ' boss' : ''}`}>
+            <div key={s.id} className={`chat-line${s.playerId === viewerId ? ' mine' : ''}${s.playerId === neg.bossId ? ' boss' : ''}`}>
               <b>{state.players[s.playerId]?.name}</b>：{s.text}
             </div>
           ))}

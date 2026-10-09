@@ -10,6 +10,7 @@ import { getActingPlayerId } from '../engine/validator'
 import { spaceKindName, spaceKindEffect } from '../text/narrate'
 import FamilyChip from './FamilyChip'
 import PlayerSeat from './PlayerSeat'
+import { useViewerId } from './ViewerContext'
 
 interface TableBoardProps {
   state: GameState
@@ -87,6 +88,7 @@ function spaceTooltip(state: GameState, space: BoardSpace): string {
 }
 
 export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBoardProps) {
+  const viewerId = useViewerId()
   const tile = getCurrentTile(state)
   const nextTile = state.dealTiles[state.dealTileIndex + 1]
   const gross = getGrossValue(state)
@@ -97,12 +99,12 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBo
   const shareNow = currentSpace ? effectiveShareValue(state, currentSpace) : (tile?.shareValue ?? 0)
   const variant = getVariant(state.variantId)
   const rawActing = getActingPlayerId(state)
-  // 反应窗口依次询问所有人，但仍不显示当前被询问者：
-  // 持阻止牌者需要真正决策（LLM 耗时更长），显示"谁在想"会暴露手牌
-  const hideActor = state.phase === 'REACTION' && rawActing !== 0
+  // 反应窗口与成交倒计时都依次询问所有人，但不向视角玩家显示"别人谁在行动 / 思考"：
+  // 持阻止牌 / 干扰牌者需要真正决策（LLM 耗时更长），显示"谁在想"会暴露手牌。视角玩家自己行动时照常显示。
+  const hideActor = (state.phase === 'REACTION' || state.phase === 'CLOSING') && rawActing !== viewerId
   const actingId = hideActor ? -1 : rawActing
   const shownThinking = hideActor ? null : thinkingId
-  const canPlace = state.phase === 'PLACE_MARKER' && state.markerChooserId === 0
+  const canPlace = state.phase === 'PLACE_MARKER' && state.markerChooserId === viewerId
   const neutral = state.investors.filter(inv => inv.ownerId === null)
   const closedCount = state.board.filter(b => b.closedByTileId != null).length
 
@@ -129,7 +131,7 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBo
             const isCurrent = space.id === state.markerPos
             const closed = space.closedByTileId != null
             const clickable = canPlace && !closed
-            const soloOk = !closed && canCompleteAlone(state, 0, space)
+            const soloOk = !closed && canCompleteAlone(state, viewerId, space)
             const special = space.kind !== 'STANDARD'
             return (
               <div

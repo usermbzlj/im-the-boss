@@ -15,6 +15,8 @@ import { FAMILIES, MAX_OFFERS_PER_BOSS } from '../engine/config'
 import { buildOfferCandidates } from '../engine/validator'
 import { candidateTitle, describeCandidate, describeOfferError } from '../text/labels'
 import FamilyChip from './FamilyChip'
+import { useViewerId } from './ViewerContext'
+import { useModalDismiss } from './useModalDismiss'
 
 interface OfferEditorProps {
   state: GameState
@@ -22,9 +24,18 @@ interface OfferEditorProps {
   onClose: () => void
 }
 
-const HUMAN_ID = 0
+
+/** 编辑状态的规范化签名：忽略键顺序与 0 元分成，用来判断是否有未提交的改动 */
+function editSignature(picks: Partial<Record<FamilyId, string>>, chosen: FamilyId[], pay: Record<number, number>): string {
+  return JSON.stringify([
+    Object.entries(picks).sort(([a], [b]) => a.localeCompare(b)),
+    [...chosen].sort(),
+    Object.entries(pay).filter(([, a]) => a > 0).sort(([a], [b]) => Number(a) - Number(b)),
+  ])
+}
 
 export default function OfferEditor({ state, onSubmit, onClose }: OfferEditorProps) {
+  const viewerId = useViewerId()
   const neg = state.negotiation!
   const space = getCurrentSpace(state)!
   const gross = getGrossValue(state)
@@ -48,6 +59,10 @@ export default function OfferEditor({ state, onSubmit, onClose }: OfferEditorPro
   const [picks, setPicks] = useState<Partial<Record<FamilyId, string>>>(initial.picks)
   const [chosen, setChosen] = useState<FamilyId[]>(initial.chosen)
   const [pay, setPay] = useState<Record<number, number>>(initial.pay)
+  // 有改动（相对打开时的状态）才算脏：关闭前要确认，点遮罩不关闭
+  const [initialSig] = useState(() => editSignature(initial.picks, initial.chosen, initial.pay))
+  const dirty = editSignature(picks, chosen, pay) !== initialSig
+  const requestClose = useModalDismiss(dirty, onClose)
 
   const activeOf = (f: FamilyId): Representative[] =>
     neg.reps.filter(r => r.familyId === f && !r.travelled).sort((a, b) => repCost(state, a) - repCost(state, b))
@@ -146,8 +161,8 @@ export default function OfferEditor({ state, onSubmit, onClose }: OfferEditorPro
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="offer-editor" onClick={e => e.stopPropagation()}>
+    <div className="modal-overlay">
+      <div className="offer-editor" role="dialog" aria-label="提出方案">
         <div className="offer-editor-head">
           <h2>提出方案 · #{space.id} 总额 ${gross}M</h2>
           <span className="muted">一份分红 ≈ ${share}M · 本任已提 {neg.offersMade}/{MAX_OFFERS_PER_BOSS}</span>
@@ -189,7 +204,7 @@ export default function OfferEditor({ state, onSubmit, onClose }: OfferEditorPro
                         <label key={r.key} className={`rep-option${picked?.key === r.key ? ' picked' : ''}`}>
                           <input type="radio" name={`rep-${f}`} disabled={!included} checked={picked?.key === r.key}
                             onChange={() => setPicks({ ...picks, [f]: r.key })} />
-                          <span>{state.players[r.ownerId]?.name}{r.ownerId === HUMAN_ID ? '（你）' : ''}</span>
+                          <span>{state.players[r.ownerId]?.name}{r.ownerId === viewerId ? '（你）' : ''}</span>
                           <em>{r.source === 'INVESTOR' ? '投资者' : '家族卡'}</em>
                           <i>{priceLabel(r)}</i>
                           {responseTag(r.ownerId)}
@@ -215,7 +230,7 @@ export default function OfferEditor({ state, onSubmit, onClose }: OfferEditorPro
             return (
               <div key={p.id} className={`payout-row${usesRep ? ' uses-rep' : ''}`}>
                 <span className="payout-name">
-                  {p.name}{p.id === HUMAN_ID ? '（你）' : ''}
+                  {p.name}{p.id === viewerId ? '（你）' : ''}
                   {usesRep ? <em>用其代表</em> : <em className="muted">未用其代表</em>}
                   {commit && <i>{commit}</i>}
                   {usesRep && (auto ? <b className="green"> ✓ 付到承诺价，自动同意</b> : <b className="muted"> 需其表态</b>)}
@@ -242,7 +257,7 @@ export default function OfferEditor({ state, onSubmit, onClose }: OfferEditorPro
           </p>}
         <div className="neg-actions">
           <button className="btn btn-success" disabled={!!error} onClick={() => onSubmit(repKeys, payouts)}>提出方案</button>
-          <button className="btn" onClick={onClose}>取消</button>
+          <button className="btn" onClick={requestClose}>取消</button>
         </div>
       </div>
     </div>

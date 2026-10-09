@@ -2,30 +2,44 @@
 // DealHistoryPanel — 交易历史：每笔分成明细 + 各家累计（AI"记仇"依据的可视化）
 // ============================================================
 
-import type { GameState } from '../engine/types'
+import type { GameState, DealRecord } from '../engine/types'
+
+/** 各玩家的累计收入：成交时 Boss 净得 + 他人分成 + 地标租金（流局不计） */
+export function dealTotals(history: DealRecord[]): Map<number, number> {
+  const totals = new Map<number, number>()
+  const add = (id: number, amount: number) => totals.set(id, (totals.get(id) ?? 0) + amount)
+  for (const rec of history) {
+    if (!rec.success) continue
+    add(rec.bossId, rec.grossValue - rec.payouts.reduce((s, p) => s + p.amount, 0))
+    for (const p of rec.payouts) add(p.playerId, p.amount)
+    for (const r of rec.rents ?? []) add(r.playerId, r.amount)
+  }
+  return totals
+}
 
 export default function DealHistoryPanel({ state }: { state: GameState }) {
   const { dealHistory, players } = state
   const name = (id: number) => players[id]?.name ?? `#${id}`
 
-  const totals = new Map<number, number>()
-  for (const rec of dealHistory) {
-    if (!rec.success) continue
-    const bossGain = rec.grossValue - rec.payouts.reduce((s, p) => s + p.amount, 0)
-    totals.set(rec.bossId, (totals.get(rec.bossId) ?? 0) + bossGain)
-    for (const p of rec.payouts) totals.set(p.playerId, (totals.get(p.playerId) ?? 0) + p.amount)
-  }
+  // 累计收入 = 成交分成（Boss 净得 + 他人分成）+ 地标租金。起始现金为 0，所以
+  // 现金 = 累计收入 − 买牌 / 兑换付给银行的支出（关桌规时两者完全相等）。口径写在面板上，并把当前现金并排列出便于核对。
+  const totals = dealTotals(dealHistory)
 
   return (
     <div className="log-panel">
       <div className="log-list">
         {dealHistory.length === 0 && <p className="muted pad">暂无交易记录</p>}
         {totals.size > 0 && (
-          <div className="deal-history-totals">
-            {[...totals.entries()].sort((a, b) => b[1] - a[1]).map(([pid, amt]) => (
-              <span key={pid} className="totals-chip">{name(pid)} <b>${amt}M</b></span>
-            ))}
-          </div>
+          <>
+            <div className="muted deal-history-caption" data-testid="totals-caption" title="起始现金为 0：现金 = 累计收入 − 买牌 / 兑换支出（关桌规时两者相等）">
+              累计收入 = 成交分成 + 地标租金（不含买牌 / 兑换支出），括号内为当前现金
+            </div>
+            <div className="deal-history-totals">
+              {[...totals.entries()].sort((a, b) => b[1] - a[1]).map(([pid, amt]) => (
+                <span key={pid} className="totals-chip">{name(pid)} <b>${amt}M</b> <span className="muted">（现金 ${players[pid]?.cash ?? 0}M）</span></span>
+              ))}
+            </div>
+          </>
         )}
         {[...dealHistory].reverse().map(rec => (
           <div key={rec.id} className={`deal-record${rec.success ? '' : ' deal-record-fail'}`}>

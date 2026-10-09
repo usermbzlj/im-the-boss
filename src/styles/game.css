@@ -332,6 +332,7 @@ input[type="number"] { width: 90px; }
 .deal-history-totals { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0 8px; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
 .totals-chip { font-size: 11px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 2px 8px; }
 .totals-chip b { color: var(--gold); }
+.deal-history-caption { font-size: 11px; padding: 2px 0 4px; }
 .deal-record { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; display: flex; flex-direction: column; gap: 3px; }
 .deal-record-fail { border-color: rgba(248, 81, 73, 0.4); }
 .deal-record-header { display: flex; justify-content: space-between; font-weight: bold; }
@@ -435,7 +436,8 @@ input[type="number"] { width: 90px; }
 .standing { display: flex; justify-content: space-between; padding: 6px 12px; background: var(--bg-card); border-radius: 6px; }
 .standing.winner { border: 1px solid var(--gold); color: var(--gold); font-weight: bold; }
 .game-over-card .neg-actions { justify-content: center; }
-.result-fab { position: fixed; right: 410px; bottom: 16px; z-index: 50; border-color: var(--gold); color: var(--gold); }
+/* 终局后重新打开结果卡的按钮：放在顶栏里，不再用固定定位压在手牌区上 */
+.result-fab { border-color: var(--gold); color: var(--gold); }
 
 /* ---- Settings ---- */
 .settings-panel { max-width: 560px; }
@@ -497,7 +499,6 @@ input[type="number"] { width: 90px; }
 /* 小屏：侧栏收窄 */
 @media (max-width: 1280px) {
   .sidebar { width: 330px; }
-  .result-fab { right: 350px; }
   .ring-grid { --cell-min: 96px; }
   .ring-grid.ring-lg { --cell-min: 84px; }
   .ring-grid.ring-xl { --cell-min: 72px; }
