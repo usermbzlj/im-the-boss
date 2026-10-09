@@ -14,17 +14,36 @@ import { getActingPlayerId, getLegalActions, isLegal } from '../engine/validator
 import { hasStop } from '../engine/rules'
 import type { Policy } from '../ai/policy'
 import { heuristicPolicy } from '../ai/heuristic'
+import type { ActionLogEntry, ActionSource, SavedGame, StartParams } from './replay'
+
+/**
+ * 电脑（或自动放行）行动前的停顿毫秒数。参数里带上合法动作，便于对"无信息量"的动作（只有一个合法选项等）跳过停顿。
+ * 注意信息隐藏：反应窗口的停顿不能取决于"谁持有阻止牌"。
+ */
+export type DelayFor = (state: GameState, actorId: number, legalActions: readonly PlayerAction[]) => number
 
 export interface SessionOptions {
   /** 电脑玩家的决策策略 */
   policy: Policy
   /** 兜底策略：policy 失败时使用（默认启发式） */
   fallback?: Policy
-  /** 电脑行动前的停顿毫秒数（营造节奏；仿真传 0） */
+  /** 电脑行动前的停顿（营造节奏；省略 = 不停顿）。优先于 delay */
+  delayFor?: DelayFor
+  /** @deprecated 旧写法，只看状态；新代码用 delayFor */
   delay?: (state: GameState) => number
+  /**
+   * 恢复 / 续局：提供开局参数与已有动作日志，会话继续在其后追加，保持"开局参数 + 日志 = 当前状态"可重放。
+   * 与初始状态不衔接（版本号对不上）则按不可回放处理，不抛错。
+   * 省略 = 不可回放的会话（日志仍从此刻起记录，供 UI 按动作分组事件）
+   */
+  replay?: { origin: StartParams; log: readonly ActionLogEntry[] }
   /** 人类只能放行的窗口（反应窗口无阻止牌 / 成交倒计时无干扰牌）：停顿同样时长后自动放行（默认开） */
   autoPassHuman?: boolean
   onChange?: (state: GameState) => void
+  /** 每个被引擎接受的动作（人类 / 电脑 / 自动放行）提交后调用，晚于 onChange 之前的状态更新 */
+  onAction?: (entry: ActionLogEntry, state: GameState) => void
+  /** destroy() 时调用（存档层在这里做最后一次落盘） */
+  onDestroy?: () => void
   onError?: (message: string) => void
 }
 
@@ -32,6 +51,10 @@ export interface SessionSnapshot {
   state: GameState
   /** 正在思考的电脑玩家 id（用于 UI 提示） */
   thinkingId: number | null
+  /** 最近一次被接受的动作（载入 / 替换状态后为 null）；订阅者据此拿到最新日志条目 */
+  lastEntry: ActionLogEntry | null
+  /** 日志条数：每条动作 +1，可用于判断日志是否增长 */
+  logLength: number
 }
 
 type Listener = () => void
@@ -48,9 +71,14 @@ export class GameSession {
   private controller: AbortController | null = null
   private destroyed = false
   private readonly fallback: Policy
+  /** 只增不改的动作日志（实例内唯一数组；对外只读） */
+  private entries: ActionLogEntry[] = []
+  private originParams: StartParams | null = null
 
   constructor(initial: GameState, private readonly opts: SessionOptions) {
-    this.snap = { state: initial, thinkingId: null }
+    this.adopt(opts.replay)
+    this.checkContinuity(initial)
+    this.snap = { state: initial, thinkingId: null, lastEntry: null, logLength: this.entries.length }
     this.fallback = opts.fallback ?? heuristicPolicy
     this.schedule()
   }
@@ -58,6 +86,16 @@ export class GameSession {
   get snapshot(): SessionSnapshot { return this.snap }
   get state(): GameState { return this.snap.state }
   get isDestroyed(): boolean { return this.destroyed }
+  /** 动作日志（只读；数组引用恒定，随动作增长） */
+  get log(): readonly ActionLogEntry[] { return this.entries }
+  /** 开局参数；null = 不可回放的会话（旧存档 / 自定义局面） */
+  get origin(): StartParams | null { return this.originParams }
+  /** 开局参数 + 日志能否完整重放到当前状态 */
+  get replayable(): boolean { return this.originParams !== null }
+  /** 导出可持久化的完整内容 */
+  toSaved(): SavedGame {
+    return { state: this.snap.state, origin: this.originParams, log: this.originParams ? [...this.entries] : [], replayable: this.replayable }
+  }
 
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener)
@@ -65,18 +103,20 @@ export class GameSession {
   }
 
   /** 人类或电脑的动作都从这里进入；返回是否被 reducer 接受 */
-  dispatch(action: PlayerAction): boolean {
+  dispatch(action: PlayerAction, source?: ActionSource): boolean {
     if (this.destroyed) return false
-    const next = gameReducer(this.snap.state, action)
-    if (!next || next === this.snap.state) return false
-    this.commit(next)
-    return true
+    const prev = this.snap.state
+    return this.accept(action, source ?? (prev.players[action.playerId]?.isAI ? 'ai' : 'human'))
   }
 
-  /** 载入另一份状态（存档） */
-  replace(state: GameState) {
+  /** 载入另一份状态（存档）。可附带该状态对应的开局参数与日志；省略则这份状态不可回放，日志从头重记 */
+  replace(state: GameState, replay?: { origin: StartParams; log: readonly ActionLogEntry[] }) {
     if (this.destroyed) return
-    this.commit(state)
+    this.entries = []
+    this.originParams = null
+    this.adopt(replay)
+    this.checkContinuity(state)
+    this.commit(state, null)
   }
 
   /** 等待直到谓词成立或游戏结束（仿真 / 测试用） */
@@ -92,17 +132,54 @@ export class GameSession {
   }
 
   destroy() {
+    if (this.destroyed) return
     this.destroyed = true
     this.controller?.abort()
     this.controller = null
     this.listeners.clear()
+    this.opts.onDestroy?.()
   }
 
   // ---------- 内部 ----------
 
-  private commit(state: GameState) {
-    this.snap = { state, thinkingId: null }
+  private adopt(replay: SessionOptions['replay']) {
+    if (!replay) return
+    this.originParams = replay.origin
+    this.entries = [...replay.log]
+  }
+
+  /** 日志必须正好接到初始状态上：空日志 ⇒ stateVersion 1；否则最后一条 versionBefore + 1。对不上就放弃回放资格 */
+  private checkContinuity(state: GameState) {
+    if (!this.originParams) return
+    const last = this.entries[this.entries.length - 1]
+    const expected = last ? last.versionBefore + 1 : 1
+    if (state.stateVersion !== expected) {
+      this.originParams = null
+      this.entries = []
+    }
+  }
+
+  private accept(action: PlayerAction, source: ActionSource): boolean {
+    const prev = this.snap.state
+    const next = gameReducer(prev, action)
+    if (!next || next === prev) return false
+    const entry: ActionLogEntry = {
+      index: this.entries.length,
+      action: structuredClone(action),
+      versionBefore: prev.stateVersion,
+      eventFrom: prev.nextId,
+      eventTo: next.nextId - 1,
+      source,
+    }
+    this.entries.push(entry)
+    this.commit(next, entry)
+    return true
+  }
+
+  private commit(state: GameState, entry: ActionLogEntry | null) {
+    this.snap = { state, thinkingId: null, lastEntry: entry, logLength: this.entries.length }
     this.opts.onChange?.(state)
+    if (entry) this.opts.onAction?.(entry, state)
     this.notify()
     this.schedule()
   }
@@ -141,13 +218,19 @@ export class GameSession {
   }
 
   private async autoPass(state: GameState, actorId: number, signal: AbortSignal, type: 'PASS_REACTION' | 'PASS_CLOSING') {
-    await sleep(this.opts.delay?.(state) ?? 0, signal)
+    await sleep(this.delayOf(state, actorId), signal)
     if (signal.aborted || this.snap.state !== state) return
-    this.dispatch({ type, playerId: actorId })
+    this.accept({ type, playerId: actorId }, 'auto')
+  }
+
+  private delayOf(state: GameState, actorId: number): number {
+    const { delayFor, delay } = this.opts
+    if (delayFor) return delayFor(state, actorId, getLegalActions(state, actorId))
+    return delay?.(state) ?? 0
   }
 
   private async runAI(state: GameState, actorId: number, signal: AbortSignal) {
-    await sleep(this.opts.delay?.(state) ?? 0, signal)
+    await sleep(this.delayOf(state, actorId), signal)
     if (signal.aborted || this.snap.state !== state) return
     this.setThinking(actorId)
 
@@ -169,11 +252,11 @@ export class GameSession {
       this.setThinking(null)
       return
     }
-    if (!this.dispatch(action)) {
+    if (!this.accept(action, 'ai')) {
       // 合法却被拒绝：违反引擎契约，用兜底再试一次并上报
       this.opts.onError?.(`动作 ${action.type} 通过校验却被引擎拒绝`)
       const backup = await this.fallback.decide(state, signal)
-      if (!signal.aborted && backup && !this.dispatch(backup)) this.setThinking(null)
+      if (!signal.aborted && backup && !this.accept(backup, 'ai')) this.setThinking(null)
     }
   }
 }

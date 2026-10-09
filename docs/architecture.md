@@ -11,9 +11,10 @@
 ┌────────────────────────────────────────────────────────────────────┐
 │ components/   React 界面：只读 SessionSnapshot，通过 act() 派发 PlayerAction │
 ├────────────────────────────────────────────────────────────────────┤
-│ hooks/useGameSession   useSyncExternalStore ⇄ GameSession；自动存档            │
+│ hooks/useGameSession   useSyncExternalStore ⇄ GameSession；browserEnv 装配浏览器环境 │
 ├────────────────────────────────────────────────────────────────────┤
-│ game/session.ts        GameSession：状态容器 + 电脑玩家驱动循环（浏览器 / Node 共用）│
+│ game/  session（状态容器 + 电脑驱动 + 动作日志）· replay（重放）· createSession（依赖注入）· autosave（节流存档）│
+│        浏览器 / Node 共用；存档读写在 utils/storage + saveMigrations                  │
 ├────────────────────────────────────────────────────────────────────┤
 │ ai/   Policy 接口 ← heuristic（启发式）/ llmPolicy（LLM）/ withFallback（回退链）   │
 ├────────────────────────────────────────────────────────────────────┤
@@ -33,7 +34,8 @@
 - `engine` 不知道 AI、运行时、文案与界面的存在。
 - `text` 只依赖 `engine`（把结构化数据变成中文）。
 - `ai` 依赖 `engine` 与 `text`（LLM 提示词复用与界面相同的文案）。
-- `game/session` 依赖 `engine` 与 `ai/policy`，不依赖 React。
+- `game/` 依赖 `engine` 与 `ai/policy`，不依赖 React，也不直接碰 localStorage（存档通过注入的 `SaveSink`）。
+- `utils/storage` 依赖 `engine` 的状态类型与 `game/replay` 的数据类型。
 - `components` 只依赖 `engine` 的类型 / 查询、`text` 与 `useGameSession`。
 - `sim/harness` 与 `scripts/simulate.ts` 直接驱动 `engine` + `ai` + `game/session`，不经过 React。
 
@@ -66,7 +68,8 @@ isLegal(state, action): boolean                  // 判定：reducer 入口
 
 所有随机性（洗牌、掷骰）来自 `state.rng`（mulberry32 状态），通过 `nextRandom / shuffleWith / rollDieWith` 推进。
 `createInitialState(playerCount, name, seed, variantId?)` 传入相同种子与版本即得到相同发牌与骰子；启发式策略的随机也由 `stateVersion + rng` 派生。
-因此一局游戏 = 初始种子 + 动作序列，可完整回放；`tests/simulation.test.ts` 验证同种子经由 GameSession 与直接驱动 reducer 结果一致。
+因此一局游戏 = 初始种子 + 动作序列，可完整重放（第 6 节的动作日志与 `game/replay.ts`）；`tests/simulation.test.ts` 验证同种子经由 GameSession 与直接驱动 reducer 结果一致，`tests/replay.test.ts` 验证"开局参数 + 日志"重放出的终态与真实终态深度相等。
+LLM 电脑玩家的不确定性只在"决策"这一步：它的台词（`action.say`）与私人笔记（`action.note`）都是动作负载、随动作进入日志，reducer 之后完全确定——重放不需要策略、网络或时钟。唯一的外部随机源是 `randomSeed()`（省略种子开局时），`createGame` 在开局那一刻把它抽成具体种子并记下。
 
 ### 2.5 状态里只放游戏事实，引擎不产生文字
 
@@ -203,25 +206,28 @@ END_ROLL ──ROLL_END──► 命中 ? GAME_OVER : 下一位 TURN
 
 ---
 
-## 6. GameSession 运行时（`game/session.ts`）
+## 6. GameSession 运行时（`game/`）
 
 框架无关的对局运行时，浏览器与 Node 仿真使用同一份代码：
 
 ```
-constructor(initial, { policy, fallback?, delay?, autoPassHuman?, onChange?, onError? })
-dispatch(action): boolean       // 人类或电脑的动作都从这里进入；返回是否被 reducer 接受
-replace(state)                  // 载入存档
-subscribe(listener) / snapshot  // { state, thinkingId }
-runUntil(predicate?)            // 等到谓词成立或 GAME_OVER（仿真 / 测试）
-destroy()                       // 中止进行中的决策，之后不再推进、不再接受动作
+constructor(initial, { policy, fallback?, delayFor?, autoPassHuman?, replay?, onChange?, onAction?, onDestroy?, onError? })
+dispatch(action, source?): boolean   // 人类或电脑的动作都从这里进入；返回是否被 reducer 接受
+replace(state, replay?)              // 载入另一份状态（日志按新来源重置）
+subscribe(listener) / snapshot       // { state, thinkingId, lastEntry, logLength }
+log / origin / replayable / toSaved()// 动作日志（只读）、开局参数、能否重放、可持久化的完整内容
+runUntil(predicate?)                 // 等到谓词成立或 GAME_OVER（仿真 / 测试）
+destroy()                            // 中止进行中的决策，之后不再推进、不再接受动作
 ```
 
 每次状态变化后 `schedule()`：
 
 1. 中止上一轮决策（`AbortController`）。
-2. 行动者是电脑 → `runAI`：停顿 `delay(state)`（营造节奏；仿真传 0）→ 置 `thinkingId` → `policy.decide(state, signal)`。
-3. 行动者是人类且处于 REACTION 且没有阻止牌 → 同样停顿后自动 `PASS_REACTION`（窗口时长不携带"谁有阻止牌"的信息）。
+2. 行动者是电脑 → `runAI`：停顿 `delayFor(state, actorId, legalActions)`（营造节奏；省略 = 0）→ 置 `thinkingId` → `policy.decide(state, signal)`。
+3. 行动者是人类且处于 REACTION 且没有阻止牌（或 CLOSING 里只能放行）→ 同样停顿后自动放行。
 4. 其他情况等待人类 `dispatch`。
+
+`delayFor` 拿到合法动作列表，是为了让后续阶段可以对"无信息量动作"（例如只有一个合法选项）跳过停顿；旧的 `delay(state)` 仍可用但 `delayFor` 优先。反应窗口的停顿必须与"谁持有阻止牌"无关（见 7.1）。
 
 进度保证不靠计时器看门狗，而靠结构：
 
@@ -229,15 +235,70 @@ destroy()                       // 中止进行中的决策，之后不再推进
 - reducer 只接受合法动作，接受即 `stateVersion + 1`，因此每个决策周期状态必然推进。
 - 决策期间状态一旦变化（人类操作 / 载入存档），旧决策通过 `signal` 作废，且落地前再检查 `this.snap.state !== state`。
 
-`tests/session.test.ts` 覆盖：全员电脑跑到终局、人类回合等待、非法 / 抛异常策略的回退、无阻止牌自动放行、销毁即停、订阅通知与 `thinkingId`。
+### 6.1 动作日志
+
+会话记录**每一个被引擎接受的动作**（人类、电脑、兜底、自动放行都算；被拒绝的不记）：
+
+```ts
+interface ActionLogEntry {
+  index: number          // 日志中的序号，从 0 连续
+  action: PlayerAction   // 动作本身（含 say / note；存的是副本）
+  versionBefore: number  // 提交前的 stateVersion（提交后恒为 +1）
+  eventFrom: number      // 该动作产生的 id 区间 [eventFrom, eventTo]（闭区间）
+  eventTo: number        // eventTo < eventFrom 表示没有产生任何 id
+  source: 'human' | 'ai' | 'auto'
+}
+```
+
+- 区间用 `state.nextId` 的前后值，而不是 `events` 数组下标：状态里只留最近 300 条事件，id 才稳定；台词气泡与事件共用 `nextId`，区间内可能夹着不是事件的 id，过滤时用 `events.filter(e => e.id >= from && e.id <= to)`。UI 按"由哪个动作产生"分组播放事件时用它；`replay.entryForEventId(log, eventId)` 做反查（二分）。
+- `log` 是同一个只增不改的数组（引用恒定）；订阅者每次变化通过 `snapshot.lastEntry` 拿到最新条目，`snapshot.logLength` 用于判断增长。
+- **开局参数**（`StartParams`）：`{ playerCount, humanName, seed, variantId, houseRules, allAI?, aiPlayers[] }`，全部是解析后的具体值（种子必有——省略时在开局那刻抽定；版本 / 桌规不依赖默认值）。`aiPlayers`（名字 + personaId）由种子决定，仅作重放校验：人物表变了，旧日志不再等价，`createStartState` 会拒绝。
+- `replayable` = 有开局参数且日志正好接在当前状态上（空日志 ⇒ `stateVersion = 1`，否则末条 `versionBefore + 1`）。没有开局参数的会话（旧存档、测试里手摆的局面）日志照记在内存里，但不可回放、也不持久化。
+
+### 6.2 重放（`game/replay.ts`，纯函数）
+
+```ts
+createGame(input: StartInput): { state, origin }          // 开一局并产出可重放的开局参数
+createStartState(origin): GameState                       // 按参数重建初始状态（stateVersion = 1）
+replaySteps(origin, log, upTo?): Generator<{ entry, before, after }, GameState>   // 逐步迭代器
+replayTo(origin, log, step?): GameState                   // 重放到第 step 步之后（0 = 开局）
+replayAll({ origin, log }): GameState
+checkReplay({ origin, log }, expected): string | null     // 与期望状态比较，返回第一处差异路径；一致为 null
+firstDifference(a, b): string | null                      // 通用深度比较（undefined 与缺字段等价）
+entryForEventId(log, eventId): ActionLogEntry | null
+```
+
+每步都校验：引擎接受动作、版本号衔接、事件 id 区间与日志一致，不符抛 `ReplayError`（带步号）。复盘浏览器遍历 `replaySteps` 缓存各步状态即可随意前后翻。
+
+### 6.3 依赖注入（`game/createSession.ts`）
+
+`GameSession` 不知道 LLM、localStorage 与真实时间。装配集中在 `SessionEnv`：
+
+```ts
+interface SessionEnv {
+  policy; fallback?; delayFor?; autoPassHuman?
+  store?: SaveSink | null      // 只要有 save(SavedGame)；null / 省略 = 不存档
+  loadSaved?: () => SavedGame | null
+  saveThrottleMs?: number      // 默认 400；<= 0 同步写
+  onChange?; onError?
+}
+startGameSession(input: StartInput, env): GameSession   // 开新局（立刻存档）
+resumeGameSession(saved: SavedGame | GameState, env): GameSession
+flushAutosave(session)                                  // 立即落盘（pagehide 时调用）
+```
+
+浏览器那份（真 LLM + 启发式回退、localStorage、按"电脑速度"设置的停顿）在 `hooks/browserEnv.ts`；测试传假策略 / 内存存储 / `delayFor: () => 0`，走同一条装配路径。
+
+`tests/session.test.ts` 覆盖：全员电脑跑到终局、人类回合等待、非法 / 抛异常策略的回退、无阻止牌自动放行、销毁即停、订阅通知与 `thinkingId`、动作日志（序号 / 版本 / 事件区间 / 来源 / 副本 / 被拒绝不记 / 不可回放降级 / replace 重置）、`delayFor` 优先于 `delay`。
 
 ---
 
 ## 7. 前端
 
-`useGameSession`（`hooks/`）用 `useSyncExternalStore` 订阅 `GameSession`，暴露 `{ snapshot, start, load, leave, act }`；
+`useGameSession(envFactory = createBrowserEnv)`（`hooks/`）用 `useSyncExternalStore` 订阅 `GameSession`，暴露 `{ snapshot, start, load, leave, act, continueSaved, getLog, getOrigin }`（前五个是原有字段，其余为新增）；
 换 session 时递增 `generation` 使订阅函数身份变化，从而重新订阅。`leave()` 销毁 session：电脑玩家不会在后台继续推进。
-`onChange` 里把非 GAME_OVER 的状态写入 `localStorage`。
+`load(state | SavedGame)`：传 `loadSavedGame()` 刚读出的那份 `GameState` 时自动带回开局参数与日志（`storage.savedGameFor`）；`continueSaved()` 直接读存档并续局。
+存档由 `createSession` 里的 `Autosaver` 负责（见第 8 节），终局也存；换局时先销毁旧 session 再建新的，避免旧局的收尾存档盖掉新局。StrictMode / HMR 重挂时用 `toSaved()` 重建，日志不丢。
 
 | 组件 | 职责 |
 | --- | --- |
@@ -262,10 +323,42 @@ destroy()                       // 中止进行中的决策，之后不再推进
 
 ---
 
-## 8. 存档
+## 8. 存档（`utils/storage.ts` + `utils/saveMigrations.ts`）
 
-`utils/storage.ts` 把整个 `GameState` 存进 `localStorage`。`GameState.saveVersion` 必须等于 `gameEngine.SAVE_VERSION`（当前 10），否则读取时丢弃。
-任何改变 `GameState` 结构的修改都要把 `SAVE_VERSION + 1`。
+### 8.1 存储布局
+
+localStorage，前缀 `im-the-boss:save`：
+
+| key | 内容 | 写入时机 |
+| --- | --- | --- |
+| `:head` | `{ storageFormat, state, origin, replayable, logLength, chunkSize }`：当前 `GameState` + 开局参数 + 日志元数据 | 节流后整体重写（一个 key 一次 `setItem`，原子） |
+| `:log:<n>` | 动作日志第 n 块（每块 100 条） | 日志只增不改，每次只重写**最后一块**；写满的块不再动 |
+
+写入频率与体积：状态约 20–100 KB（事件最多 300 条）；日志每条约 150–400 B，马拉松全程 ≲ 400 KB，localStorage 配额 5 MB 足够。若每步全量写，电脑 0.4–1.5 秒一步还可接受，但仿真 / 快速档会白白占用主线程，所以 `Autosaver`（`game/autosave.ts`）做节流：脏了之后最多每 400 ms 写一次最新状态；**终局、销毁会话、`pagehide`、开局 / 续局时立即写**。
+
+一致性：先写日志块、后写 head。读取时校验日志自洽且"末条 `versionBefore + 1` = 状态 `stateVersion`"；日志块缺失 / 损坏 / 落后于状态（写到一半被中断、配额不足）时只丢日志，存档降级为"不可回放"，状态仍可续玩。配额不足时 `save` 会降级成"只存状态"。
+
+### 8.2 两层版本号与迁移
+
+| 版本号 | 在哪 | 谁管 | 含义 |
+| --- | --- | --- | --- |
+| `storageFormat`（`STORAGE_FORMAT`，当前 2） | `saveMigrations.ts` | 存档层 | "盒子"的结构：状态 / 参数 / 日志怎么放。1 = 旧版（整个 `GameState` 直接放在 `im-the-boss-save`），2 = 现行布局 |
+| `saveVersion`（`SAVE_VERSION`，当前 10） | `engine/gameEngine.ts` | 引擎 | "盒子里的东西"：`GameState` 的字段。引擎改了状态结构就 +1 |
+
+读取流程：读 head（没有则读旧 key，视为 format 1）→ 按 `STORAGE_MIGRATIONS[n]` 逐级升 format → 取出 `state`，按其 `saveVersion` 沿 `STATE_MIGRATIONS[v]` 逐级升到当前 `SAVE_VERSION`（每级后统一设置 `saveVersion`）→ 校验日志 → 若发生过迁移就立刻以新格式回写（旧 key 随之删除）。
+处理规则：损坏 / 太旧（< `MIN_SAVE_VERSION`）/ 缺迁移步骤 → 清掉并返回 null；**来自更新版本**（`storageFormat` 或 `saveVersion` 更大）→ 返回 null 但不删，回退版本不会毁掉新存档。
+
+`STATE_MIGRATIONS[v]: { migrate, keepsReplay? }` 把 `saveVersion = v` 升到 `v + 1`。"只加字段补默认值"一行即可：`{ migrate: addFields({ nextTradeId: 1 }) }` / `addPlayerFields({ ... })`（默认值深拷贝、不覆盖已有字段）。
+`keepsReplay` 默认 false：引擎升级后旧日志在新引擎上不一定还能重放出同一状态（新字段若改变 `nextId` / `rng` 消耗 / 事件产生，事件区间与随机序列都会漂移），所以默认作废旧日志、存档标"不可回放"；只有纯加字段、不影响 `nextId` / `rng` / 事件的升级才能声明 `true`。
+`tests/storage.test.ts` 断言 `[MIN_SAVE_VERSION, SAVE_VERSION)` 内每个版本都有迁移，因此升了 `SAVE_VERSION` 忘写迁移会直接红；夹具 `tests/fixtures/save-v10.json` 是真实的 v10 存档，测试把它迁移到当前版本并打完整局、每步检查不变量。
+
+### 8.3 向后兼容接口
+
+`saveGame(state)` / `loadSavedGame()` / `clearSavedGame()` / `hasSavedGame()` 保留；`saveGame` 写的是"只有状态、不可回放"的存档。新代码用 `GameSaveStore`（`save / load / clear / has`，可注入 `StorageLike`）与 `loadSavedSession()`。
+
+### 8.4 终局存档
+
+终局状态也存档，"继续上一局"直接回到终局状态（`phase = GAME_OVER`、`winnerIds` 已定），不会再回到掷终局骰那一步；续局的 session 在 GAME_OVER 不调度任何决策。终局画面由界面负责；"再来一局"应调用 `clearSavedGame()`。
 
 ---
 
@@ -273,8 +366,8 @@ destroy()                       // 中止进行中的决策，之后不再推进
 
 | 函数 | 用途 |
 | --- | --- |
-| `runGame({ playerCount, seed, mode, variantId?, houseRules?, maxSteps?, trace?, onEvent? })` | 同步驱动 reducer 跑一局；`mode: 'heuristic'` 走真实策略，`'random'` 纯随机选合法动作压极端分支；每步断言不变量；`onEvent` 能拿到全部事件（状态里只留最近 300 条），供统计脚本用 |
-| `runGameViaSession({ playerCount, seed, policy?, variantId?, houseRules? })` | 通过 `GameSession` 跑一局，验证运行时本身（调度、回退、终止） |
+| `runGame({ playerCount, seed, mode, variantId?, houseRules?, maxSteps?, trace?, checkReplay?, onEvent? })` | 同步驱动 reducer 跑一局，结果带 `origin` + `log`（整局可重放）；`checkReplay` 为真时跑完用日志重放并要求与真实终态逐位一致；`mode: 'heuristic'` 走真实策略，`'random'` 纯随机选合法动作压极端分支；每步断言不变量；`onEvent` 能拿到全部事件（状态里只留最近 300 条），供统计脚本用 |
+| `runGameViaSession({ playerCount, seed, policy?, variantId?, houseRules?, checkReplay? })` | 通过 `GameSession` 跑一局，验证运行时本身（调度、回退、终止）；`checkReplay` 校验 session 自己记下的日志可重放 |
 | `checkInvariants(state)` | 第 5 节不变量，返回违反描述或 `null` |
 | `narrateGame(state)` | 把事件流讲成文字（追踪 / 调试） |
 

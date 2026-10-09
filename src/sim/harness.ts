@@ -4,12 +4,13 @@
 // ============================================================
 
 import type { GameState, PlayerAction, GameVariantId, LoggedEvent } from '../engine/types'
-import { createInitialState, gameReducer } from '../engine/gameEngine'
+import { gameReducer } from '../engine/gameEngine'
 import { getActingPlayerId, getLegalActions, isLegal } from '../engine/validator'
 import { HAND_LIMIT, getVariant, createDeckFor } from '../engine/config'
 import { heuristicAction, heuristicPolicy } from '../ai/heuristic'
 import type { Policy } from '../ai/policy'
 import { GameSession } from '../game/session'
+import { createGame, checkReplay, type ActionLogEntry, type StartParams } from '../game/replay'
 import { narrate } from '../text/narrate'
 
 export type SimMode = 'heuristic' | 'random'
@@ -24,6 +25,8 @@ export interface SimOptions {
   maxSteps?: number
   /** 记录每步摘要（失败时打印） */
   trace?: boolean
+  /** 跑完后用"开局参数 + 动作日志"重放，要求与真实终态逐位一致（不一致即判失败） */
+  checkReplay?: boolean
   /** 每个新事件回调（统计脚本用；状态里只保留最近 MAX_EVENTS 条，这里能拿到全部） */
   onEvent?: (event: LoggedEvent, state: GameState) => void
 }
@@ -41,6 +44,9 @@ export interface SimResult {
   cash: number[]
   trace: string[]
   final: GameState
+  /** 开局参数 + 动作日志：整局可重放（见 game/replay.ts） */
+  origin: StartParams
+  log: ActionLogEntry[]
 }
 
 /** 兼容旧引用：经典牌堆张数 */
@@ -117,19 +123,18 @@ export function checkInvariants(s: GameState): string | null {
   return null
 }
 
-function allAI(state: GameState): GameState {
-  for (const p of state.players) p.isAI = true
-  return state
-}
-
 function summarize(state: GameState, steps: number, legal: PlayerAction[]): string {
   const neg = state.negotiation
   return `#${steps} ${state.phase} acting=${getActingPlayerId(state)} boss=${neg?.bossId ?? '-'} offers=${neg?.offersMade ?? '-'} pass=${neg?.passStreak ?? '-'} legal=[${legal.map(a => a.type).join(',')}]`
 }
 
-function finish(opts: SimOptions, state: GameState, steps: number, trace: string[], reason?: string): SimResult {
+function finish(opts: SimOptions, state: GameState, steps: number, trace: string[], origin: StartParams, log: ActionLogEntry[], reason?: string): SimResult {
+  if (!reason && opts.checkReplay) {
+    const diff = checkReplay({ origin, log }, state)
+    if (diff) reason = `重放与真实终态不一致：${diff}`
+  }
   return {
-    ok: !reason, steps, reason, playerCount: opts.playerCount, mode: opts.mode, seed: opts.seed, variantId: state.variantId,
+    ok: !reason, steps, reason, origin, log, playerCount: opts.playerCount, mode: opts.mode, seed: opts.seed, variantId: state.variantId,
     deals: state.completedDeals, failedDeals: state.dealHistory.filter(d => !d.success).length,
     cash: state.players.map(p => p.cash), trace, final: state,
   }
@@ -139,7 +144,10 @@ function finish(opts: SimOptions, state: GameState, steps: number, trace: string
 export function runGame(opts: SimOptions): SimResult {
   const maxSteps = opts.maxSteps ?? 30000
   const rng = mulberry(opts.seed * 7919 + 17)
-  let state = allAI(createInitialState(opts.playerCount, '测试玩家', opts.seed, opts.variantId, { houseRules: opts.houseRules }))
+  const game = createGame({ playerCount: opts.playerCount, humanName: '测试玩家', seed: opts.seed, variantId: opts.variantId, houseRules: opts.houseRules, allAI: true })
+  let state = game.state
+  const { origin } = game
+  const log: ActionLogEntry[] = []
   const trace: string[] = []
   let steps = 0
 
@@ -148,36 +156,38 @@ export function runGame(opts: SimOptions): SimResult {
     const actingId = getActingPlayerId(state)
     const legal = getLegalActions(state, actingId)
     if (opts.trace) { trace.push(summarize(state, steps, legal)); if (trace.length > 80) trace.shift() }
-    if (legal.length === 0) return finish(opts, state, steps, trace, `第${steps}步 phase=${state.phase} acting=${actingId} 无合法动作`)
+    if (legal.length === 0) return finish(opts, state, steps, trace, origin, log, `第${steps}步 phase=${state.phase} acting=${actingId} 无合法动作`)
 
     let action: PlayerAction | null = opts.mode === 'heuristic' ? heuristicAction(state) : null
     if (!action) action = legal[Math.floor(rng() * legal.length)]
-    if (!isLegal(state, action)) return finish(opts, state, steps, trace, `第${steps}步 动作未通过 isLegal：${JSON.stringify(action)} phase=${state.phase}`)
+    if (!isLegal(state, action)) return finish(opts, state, steps, trace, origin, log, `第${steps}步 动作未通过 isLegal：${JSON.stringify(action)} phase=${state.phase}`)
 
     const next = gameReducer(state, action)
-    if (!next || next.stateVersion === state.stateVersion) return finish(opts, state, steps, trace, `第${steps}步 reducer 拒绝了合法动作：${JSON.stringify(action)} phase=${state.phase}`)
+    if (!next || next.stateVersion === state.stateVersion) return finish(opts, state, steps, trace, origin, log, `第${steps}步 reducer 拒绝了合法动作：${JSON.stringify(action)} phase=${state.phase}`)
     if (opts.onEvent) {
       const lastId = state.events.length ? state.events[state.events.length - 1].id : 0
       for (const e of next.events) if (e.id > lastId) opts.onEvent(e, next)
     }
+    log.push({ index: log.length, action, versionBefore: state.stateVersion, eventFrom: state.nextId, eventTo: next.nextId - 1, source: 'ai' })
     state = next
     const bad = checkInvariants(state)
-    if (bad) return finish(opts, state, steps, trace, `第${steps}步 ${bad}（action=${action.type}）`)
+    if (bad) return finish(opts, state, steps, trace, origin, log, `第${steps}步 ${bad}（action=${action.type}）`)
   }
-  if (state.phase !== 'GAME_OVER') return finish(opts, state, steps, trace, `超过 ${maxSteps} 步未结束 phase=${state.phase}`)
-  return finish(opts, state, steps, trace)
+  if (state.phase !== 'GAME_OVER') return finish(opts, state, steps, trace, origin, log, `超过 ${maxSteps} 步未结束 phase=${state.phase}`)
+  return finish(opts, state, steps, trace, origin, log)
 }
 
 /** 通过 GameSession 运行时跑一局（验证运行时本身：调度、兜底、终止） */
-export async function runGameViaSession(opts: { playerCount: number; seed: number; policy?: Policy; maxSteps?: number; variantId?: GameVariantId; houseRules?: boolean }): Promise<SimResult> {
+export async function runGameViaSession(opts: { playerCount: number; seed: number; policy?: Policy; maxSteps?: number; variantId?: GameVariantId; houseRules?: boolean; checkReplay?: boolean }): Promise<SimResult> {
   const maxSteps = opts.maxSteps ?? 30000
-  const initial = allAI(createInitialState(opts.playerCount, '测试玩家', opts.seed, opts.variantId, { houseRules: opts.houseRules }))
+  const { state: initial, origin } = createGame({ playerCount: opts.playerCount, humanName: '测试玩家', seed: opts.seed, variantId: opts.variantId, houseRules: opts.houseRules, allAI: true })
   const errors: string[] = []
   let steps = 0
   let violation: string | null = null
   const session = new GameSession(initial, {
     policy: opts.policy ?? heuristicPolicy,
-    delay: () => 0,
+    delayFor: () => 0,
+    replay: { origin, log: [] },
     onError: m => errors.push(m),
     onChange: s => { steps++; violation ??= checkInvariants(s) },
   })
@@ -186,9 +196,9 @@ export async function runGameViaSession(opts: { playerCount: number; seed: numbe
     session.runUntil(s => s.phase === 'GAME_OVER' || steps >= maxSteps || violation != null),
     new Promise<GameState>((_, reject) => { timer = setTimeout(() => reject(new Error('session 超时')), 60_000) }),
   ]).finally(() => { clearTimeout(timer); session.destroy() })
-  const simOpts: SimOptions = { playerCount: opts.playerCount, seed: opts.seed, mode: 'heuristic', variantId: opts.variantId }
+  const simOpts: SimOptions = { playerCount: opts.playerCount, seed: opts.seed, mode: 'heuristic', variantId: opts.variantId, checkReplay: opts.checkReplay }
   const reason = violation ?? (errors.length ? errors[0] : final.phase !== 'GAME_OVER' ? `超过 ${maxSteps} 步未结束` : undefined)
-  return finish(simOpts, final, steps, [], reason)
+  return finish(simOpts, final, steps, [], origin, [...session.log], reason)
 }
 
 /** 把一局的事件流讲成文字（追踪 / 调试用） */

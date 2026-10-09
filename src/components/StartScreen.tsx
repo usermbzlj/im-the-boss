@@ -5,6 +5,7 @@
 import { useState } from 'react'
 import type { GameVariantId } from '../engine/types'
 import { hasSavedGame } from '../utils/storage'
+import { parseSeed } from '../utils/seed'
 import { isLLMConfigured } from '../ai/llmClient'
 import { AI_ROSTER, VARIANT_LIST, HAND_LIMIT, BUY_CARDS_COST_SHARES } from '../engine/config'
 
@@ -30,7 +31,7 @@ export default function StartScreen({ onStart, onContinue, onSettings }: StartSc
   const deckSize = variant.deckSize + (houseRules ? variant.sickCards : 0)
 
   const start = () => {
-    const seed = seedText.trim() === '' ? undefined : (Math.abs(Math.floor(Number(seedText))) >>> 0) || undefined
+    const seed = parseSeed(seedText) // 注意：0 是合法种子，不能用 || 兜底成随机
     onStart(playerCount, playerName.trim() || '你', seed, variantId, houseRules)
   }
 
