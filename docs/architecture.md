@@ -313,19 +313,20 @@ flushAutosave(session)                                  // 立即落盘（pagehi
 
 | 组件 | 职责 |
 | --- | --- |
-| `App.tsx` | 布局与全局状态：开始页（"继续上一局"走 `continueSaved`）/ 牌桌、侧栏标签（`useSideTab`）、帮助与设置弹层、方案编辑器开关、终局结果卡（可关闭后复盘、可再打开）；用 `ViewerProvider` 声明视角玩家（单机版固定 0 号位，`App` 内唯一出现座位号的地方） |
+| `App.tsx` | 布局与全局状态：开始页（"继续上一局"走 `continueSaved`）/ 牌桌、侧栏标签（`useSideTab`）、帮助与设置弹层、方案编辑器开关、终局结果卡（可关闭后复盘、可再打开）；顶栏的节奏控制与 AI 状态徽标、"轮到你了"标题提醒（`useTurnAlert`）、桌面上方的提示层与结算卡（见 7.2）；用 `ViewerProvider` 声明视角玩家（单机版固定 0 号位，`App` 内唯一出现座位号的地方） |
 | `ViewerContext`（`ViewerProvider` / `useViewerId`） | "我是谁"的唯一来源，默认 0。组件里凡是"自己 / 你"（座位标"你"、谈判记录的 `mine`、行动区的 `playerId`、引导条的"轮到你"、病假 / 目标是你的提示）都取 `useViewerId()`，不写死座位号；换视角（联机、观战、回放）只需换 `Provider` 的值 |
 | `GameOverCard` | 终局结果：胜者 + 按现金排名，现金相同并列同名次（`rankStandings`：1、1、3），并列者标"（并列）" |
 | `useModalDismiss(dirty, onClose)` | 弹层关闭规则（方案编辑器、设置面板用）：点遮罩**不**关闭，`Esc` 关闭；有未保存改动（`dirty`）时先 `window.confirm`。返回的 `requestClose` 同时给"关闭"按钮用 |
 | `useSideTab(hasNeg, active)` | 侧栏标签：谈判开始自动切到"谈判桌"（用户手动选过标签就不抢），谈判结束时若停在谈判桌则退回日志；离开牌桌后重置"手动选择"记忆 |
 | `PhaseGuide` | 顶部引导条：阶段、行动者、该做什么（病假 / 缺代表速流局也在这里提醒） |
-| `TableBoard` + `PlayerSeat` | 环形版图（`config.ringLayout` 按格数排成外圈；行数由 `useRingFit` 按版图区域实际宽高从 `ringRowOptions` 里挑——默认 6×4 / 8×6 / 10×8，宽屏或矮窗口自动换成更扁的外圈如 32 格 → 13×5，仍放不下则整体等比缩小，保证一屏看全、区域内不滚动；特殊格带色条与徽标，地标格显示主人）、中央景气牌（有效股价 / 版本 / 进度）、座位（现金 / 投资者 / 夺回权 / 地标数 / 病假徽标 / 手牌数 / 台词气泡 / 思考中） |
-| `ActionDock` | 人类的行动区：状态摘要 + 按当前阶段与 `getLegalActions` 渲染的按钮；开桌规时多一条"桌规"操作条（买 1 / 2 / 3 张按价标注、兑换招募牌进入选牌模式并确认） |
+| `TableBoard` + `PlayerSeat` | 环形版图（`config.ringLayout` 按格数排成外圈；行数由 `useRingFit` 按版图区域实际宽高从 `ringRowOptions` 里挑——默认 6×4 / 8×6 / 10×8，宽屏或矮窗口自动换成更扁的外圈如 32 格 → 13×5，仍放不下则整体等比缩小，保证一屏看全、区域内不滚动；特殊格带色条与徽标，地标格显示主人）、中央景气牌（有效股价 / 版本 / 进度）、座位（现金 / 投资者 / 夺回权 / 地标数 / 病假徽标 / 手牌数 / 台词气泡 / 思考中；人物主题色、对视角玩家的态度图标 `relationsToward`；气泡完整显示最多 3 行，点击展开） |
+| `ActionDock` | 人类的行动区：状态摘要 + 按当前阶段与 `getLegalActions` 渲染的按钮；开桌规时多一条"桌规"操作条（买 1 / 2 / 3 张按价标注、花费过半现金时先确认、兑换招募牌进入选牌模式并确认）；轮到视角玩家时高亮脉冲（`needsAttention`）；"报价即承诺"提示框、同意出借按钮上写明同意后的收入与新承诺价（`acceptOutcome`）；方案全员同意后"宣布成交"置顶高亮；固定最小高度，切换阶段不让版图重新缩放 |
 | `CardHand` | 手牌；可打的牌由合法动作列表决定，点牌弹出目标 / 参数选择（招募弹层按 `recruitCost` 标注 3 / 2 / 夺回 1 张；稀有牌弹层给出股价变化；家族 / 定向旅行牌弹层附"换牌"按钮；病假牌弹层选目标玩家）；多选模式 `selectMode: 'discard' | 'trade'`——手牌上限时弃牌多选，兑换时限选两张不同种类 |
-| `OfferEditor` | Boss 的方案编辑器：每个需求组挑选代表、可选池勾选、逐人分成、预设方案（`buildOfferCandidates`）、实时校验（`validateOfferShape` + `describeOfferError`） |
-| `NegotiationPanel` | 谈判桌只读视图：本格特殊效果 / 独家协议 / 股价变动徽标、席位竞价（每个家族的多方代表与报价）、当前方案与应答、喊话记录 |
+| `OfferEditor` | Boss 的方案编辑器：每个需求组挑选代表、可选池勾选、逐人分成、预设方案（`buildOfferCandidates`）、实时校验（`validateOfferShape` + `describeOfferError`）；所有需应答者都会按承诺价自动同意时多一个"提案并宣布成交"（`onSubmit(repKeys, payouts, true)`，由 `ui/proposeAndClose` 先提案、再用 `getState()` 确认可宣布后立刻宣布） |
+| `NegotiationPanel` | 谈判桌只读视图：本格特殊效果 / 独家协议 / 股价变动徽标、席位竞价（每个家族的多方代表与报价）、当前方案与应答；底部固定"本笔交易动态"事件流（`EventFeed`，见 7.2） |
 | `GameLog` / `DealHistoryPanel` | `GameLog`：事件流渲染（`narrate`），默认折叠 `minor` 事件（跳过 / 放行），可勾选"显示跳过 / 放行"；`DealHistoryPanel`：每笔交易的结算明细与各玩家累计收入（`dealTotals` = Boss 净得 + 他人分成 + 地标租金，流局不计），面板上写明口径并并排列出当前现金（现金 = 累计收入 − 买牌 / 兑换支出），流局原因含"缺代表" |
-| `StartScreen` / `SettingsPanel` / `HelpPanel` | 开局（人数 / 版本 / 桌规开关 / 名字 / 种子 / 续档）、LLM 设置与调用日志、规则速查（按当前版本与桌规开关显示扩展规则） |
+| `EventFeed` / `RecentStrip` / `ToastLayer` / `DealResultCard` / `PaceControls` / `AiStatusBadge` / `InfoTip` | 即时反馈与节奏控件，见 7.2 |
+| `StartScreen` / `SettingsPanel` / `HelpPanel` | 开局（人数 / 桌风 / 版本 / 桌规开关 / 名字 / 种子 / 续档；矮屏可滚动）、LLM 设置与调用日志、规则速查（按当前版本与桌规开关显示扩展规则） |
 
 界面从不自行判断规则：按钮出现与否只看 `getLegalActions`，参数合法性由 `rules.ts` 的查询函数给出结构化结果、`text/labels.ts` 转成提示文本。
 
@@ -337,6 +338,32 @@ flushAutosave(session)                                  // 立即落盘（pagehi
 - 界面在 REACTION 与 CLOSING 阶段都不显示"当前在等谁 / 谁在思考"（`TableBoard` 把非视角玩家的行动者与 `thinkingId` 屏蔽，`PhaseGuide` 写"依次询问其他玩家…"，`ActionDock` 写"等待其他玩家放行…"）：持牌者需要真正决策（LLM 模式下耗时更长），显示会暴露手牌，倒计时里同理会暴露谁有干扰牌。轮到视角玩家自己时照常显示。
 - 人类没有阻止牌时，运行时在同样的停顿后自动放行；`PASS_REACTION` 附带的 `say` 被引擎丢弃（放行者说话也会暴露信息）。
 - 电脑玩家的手牌内容从不渲染，只显示张数；LLM 提示词只包含自己的手牌。
+- 提示（toast）、事件流、简报只取**已经落地的事件**；放行 / 跳过（`PASSED`）与喊话不弹提示，REACTION / CLOSING 窗口里不会出现"谁在考虑"；"轮到你了"提醒与"快进"按钮都用 `needsAttention` 判断，自动放行的窗口不会闪烁。
+
+### 7.2 即时反馈与节奏（`ui/` + 对应组件）
+
+目标：电脑玩家的每一步都能在不打断操作的前提下被看见，同时让玩家控制节奏。纯逻辑都在 `src/ui/`（无 React，直接单测），组件只负责渲染与计时。
+
+| 模块 | 内容 |
+| --- | --- |
+| `ui/eventFeed.ts` | `buildFeed(state, events)`：把某笔交易（`LoggedEvent.dealNo`）的事件变成气泡 / 事件行 / 折叠行；连续的 `PASSED` 折成一行"某某等 N 人跳过"；`dealFeed`、`currentDealNo`；`recentDigest`：最近 1–3 条重要事件（"刚刚发生"） |
+| `ui/toasts.ts` | `briefOf(state, event, viewerId)`：一条事件的视角化短句、语气（好 / 坏 / 中性）、是否与你有关（`mine`）、合并分组与是否回声（你自己的动作不弹）；`toastDraftsFor` / `mergeToasts`（同类合并计数、最多 3 条）/ `ttlFor`（2.5–4 秒，与你有关的更久） |
+| `ui/attention.ts` | `needsAttention(state, legal)`：轮到视角玩家**做决定**才为真（只能放行的窗口不算）；`canSkipWait`；`TURN_ALERT_TITLE` |
+| `ui/consequences.ts` | `acceptOutcome` 用引擎的 `acceptedCommitments` 算出"同意后到手多少钱、新承诺价"；`isCostly`（花费达到现金一半才需要确认） |
+| `ui/dealSummary.ts` | `summarizeDeal` / `latestDealSummary`：由 `dealHistory` 得出成交（Boss、每人所得、所用代表归属、你的收益）或流局（原因 / 缺哪些家族）的结算数据 |
+| `ui/personaColor.ts` | 人物 → 稳定主题色（按 `personaId`，没有则按座位）；人类固定绿色 |
+| `ui/proposeAndClose.ts` | "提案并宣布成交"：`PROPOSE_OFFER` 之后读 `getState()`，仅当 `CLOSE_DEAL` 合法才宣布，提案被引擎拒绝时什么都不发 |
+
+组件约定：
+- **`EventFeed`**：谈判桌底部，按 `dealNo` 取本笔交易的事件；喊话是带人物色的头像气泡，新条目一次性入场高亮（以挂载时最后的事件 id 为基线，不会因重渲染重复闪）。
+- **`RecentStrip`**：PhaseGuide 下方固定高度的一行"刚刚"，谈判之外也能看到最近发生了什么。
+- **`ToastLayer`**：桌面上方不挡操作的提示（`pointer-events` 只给提示本身），自动消失、点击关闭；挂载与换局时以当前最后事件为基线，**载入存档不会补弹**。尊重 `prefers-reduced-motion`。
+- **`DealResultCard`**：成交 / 流局后在桌面中央显示约 7 秒（可收起、可跳转到"交易记录"）；终局那一笔不弹。
+- **`PaceControls`**：电脑速度 快 / 中 / 慢读写 `LLMConfig.aiSpeed`（`session` 每次实时读取），"快进"调用 `GameSession.skipWait`；**`AiStatusBadge`** 读 `snapshot.ai`（未启用 LLM 显示"启发式"，降级黄、熔断红，回退原因进 title）。
+- **`useTurnAlert`**：轮到你且页面在后台时 `document.title` 交替闪烁，回到前台恢复。
+- **桌风**：`StartScreen` 写 `LLMConfig.tableStyle`（友好 / 商战 / 冷血），由 AI 线决定其对电脑玩家的影响。
+
+测试：`tests/ui/` 下 `toasts` / `eventFeed` / `uiLogic` 是纯函数单测，`feedback.ui` / `feedbackControls.ui` / `tableRelation.ui` 是组件测试。
 
 ---
 

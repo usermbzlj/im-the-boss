@@ -9,7 +9,7 @@ import { vi } from 'vitest'
 import type { GameState, PlayerAction } from '../../src/engine/types'
 import { getLegalActions, getActingPlayerId } from '../../src/engine/validator'
 import { ViewerProvider } from '../../src/components/ViewerContext'
-import { baseState, setInvestors, openDealAt, toBoss, step, giveCards, clearHand } from '../helpers'
+import { baseState, setInvestors, openDealAt, toBoss, step, giveCards, clearHand, closeSolo } from '../helpers'
 
 export { giveCards, clearHand, step }
 
@@ -73,7 +73,10 @@ export function gameOverState(cashes: number[]): GameState {
 
 /** 带视角的渲染：和 App 一样用 ViewerProvider 包起来 */
 export function renderAs(ui: ReactElement, viewerId = 0) {
-  return render(<ViewerProvider viewerId={viewerId}>{ui}</ViewerProvider>)
+  const wrap = (el: ReactElement) => <ViewerProvider viewerId={viewerId}>{el}</ViewerProvider>
+  const view = render(wrap(ui))
+  // rerender 也要带上视角包装，否则树结构变了会整个重新挂载
+  return { ...view, rerender: (el: ReactElement) => view.rerender(wrap(el)) }
 }
 
 /** act 桩 + 取最后一个动作 */
@@ -85,4 +88,30 @@ export function actSpy() {
 /** 视角玩家此刻的合法动作（和 App 里 getLegalActions(state, viewerId) 同口径） */
 export function legalFor(s: GameState, viewerId = 0): PlayerAction[] {
   return getLegalActions(s, viewerId)
+}
+
+/** 方案已定：Boss（0 号）已听完叫价轮；1 号对 B 报了 $2（承诺价），2、3 号跳过。付到 $2 即自动同意 */
+export function quotedBossState(): GameState {
+  let s = openDealAt(placeMarkerState(), 1, 0)
+  s = step(s, { type: 'SPEAK', playerId: 1, say: '黑松两百万出借', quotes: [{ familyId: 'B', amount: 2 }] })
+  return toBoss(s)
+}
+
+/** 方案里用 Boss 的 A + 1 号的 B；payout 给 1 号的钱 */
+export function offerKeysOf(s: GameState): string[] {
+  const reps = s.negotiation!.reps
+  return [reps.find(r => r.familyId === 'A')!.key, reps.find(r => r.familyId === 'B')!.key]
+}
+
+/** 刚成交一笔：0 号独自凑齐 A + B 成交（dealHistory 有 1 条成功记录） */
+export function closedDealState(): GameState {
+  const s = placeMarkerState()
+  setInvestors(s, { A: 0, B: 0, C: 2, D: 3 })
+  return closeSolo(s, 1, 0)
+}
+
+/** 刚流局一笔：0 号开单后放弃 */
+export function abandonedDealState(): GameState {
+  const s = toBoss(openDealAt(placeMarkerState(), 1, 0))
+  return step(s, { type: 'ABANDON_DEAL', playerId: 0 })
 }
