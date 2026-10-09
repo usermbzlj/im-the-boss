@@ -523,17 +523,18 @@ describe('各变体整局仿真', () => {
   })
 
   it('完整 16 笔：把 16 格全部关闭时直接结束', () => {
-    let found = false
-    for (let seed = 0; seed < 60 && !found; seed++) {
-      // 关掉桌规：随机 AI 会乱打病假牌 / 缺代表速流局，16 笔全成交的样本会变稀
-      const r = runGame({ playerCount: 3, seed, mode: 'random', variantId: 'full', houseRules: false, maxSteps: 60000 })
-      expect(r.ok, r.reason).toBe(true)
-      if (r.deals === 16) {
-        found = true
-        expect(r.final.board.every(b => b.closedByTileId != null)).toBe(true)
-        expect(r.final.phase).toBe('GAME_OVER')
-      }
-    }
-    expect(found).toBe(true)
+    // 确定性场景（不依赖随机局能否碰巧成交 16 笔）：前 15 笔已成交，第 16 笔关掉最后一格即终局，且不再掷终局骰
+    let s = baseState(4, 5, 'full', false)
+    expect(s.dealTiles).toHaveLength(16)
+    const last = s.board[0]
+    for (const b of s.board) if (b.id !== last.id) b.closedByTileId = 90 + b.id
+    s.dealTileIndex = 15
+    s.completedDeals = 15
+    ownSpaceFamilies(s, last, 0)
+    s = closeSolo(s, last.id, 0)
+    expect(s.completedDeals).toBe(16)
+    expect(s.board.every(b => b.closedByTileId != null)).toBe(true)
+    expect(s.phase).toBe('GAME_OVER')
+    expect(eventsOf(s, 'END_ROLL_DUE')).toHaveLength(0)
   })
 })

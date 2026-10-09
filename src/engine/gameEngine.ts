@@ -16,7 +16,7 @@
 //   · 夺回权：最后一位常驻投资者被招募夺走 → 1 张招募牌即可抢回该家族
 //   · 猎头格：交易进行中招募只需 2 张；地标格：成交归 Boss，此后每笔成交收 $1M 租金
 //   · 抢手格：股价 +$1M/份；利好 / 利空牌改变本笔股价；独家协议锁定本笔交易
-// 桌规（state.houseRules，开局可选；docs/rules.md §11）：
+// 桌规（state.houseRules，开局可选；docs/rules.md §10.5）：
 //   · 互换：持有某家族投资者时，手中该家族的成员牌可换成同家族旅行牌（反向亦可），每回合一次
 //   · 买牌：自己回合开单前付 1 / 3 / 6 份股价抽 1 / 2 / 3 张，每回合一次，不得超出手牌上限
 //   · 兑换：两张不同种类的牌 + 一份股价 → 2 张招募牌，每回合一次，不可逆（钱付给银行）
@@ -41,9 +41,10 @@ import {
 } from './config'
 import {
   getPlayer, nextPlayerId, prevPlayerId, othersFrom, getSpace, getCurrentTile,
-  getGrossValue, effectiveShareValue, offerOwners, findRep, selectReps, investorRepKey, clanRepKey, payoutTotal, offerShareOf, meetsCommitment, repsUsedOf,
-  commitmentPrice, playerRelevantFamilies, usedFamiliesOf, resolveQuotes, recruitCost, isBlackMarketDeal, landlords,
+  getGrossValue, effectiveShareValue, offerOwners, findRep, selectReps, investorRepKey, clanRepKey, payoutTotal, meetsCommitment,
+  playerRelevantFamilies, usedFamiliesOf, resolveQuotes, recruitCost, isBlackMarketDeal, landlords,
   tableCanComplete, swapTargetType, buyCardsCost, tradeCost, countCards, settlePayouts,
+  missingFamilies, acceptedCommitments, closeDealMode,
 } from './rules'
 import { isLegal } from './validator'
 
@@ -59,8 +60,12 @@ const emptyTurn = (): TurnFlags => ({ swapped: [], bought: [], traded: [], sick:
 
 // ---------- 工具 ----------
 
-function emit(s: GameState, event: GameEvent) {
-  s.events.push({ id: s.nextId++, ...event })
+/**
+ * 记录事件。交易进行中（s.negotiation 存在）的事件自动带 dealNo = 第几次开单（成交 / 流局都占号，
+ * 与 dealHistory 下标 + 1 一致）。成交 / 流局记入 dealHistory 之后再发的事件须显式传入 dealNo。
+ */
+function emit(s: GameState, event: GameEvent, dealNo: number | undefined = s.negotiation ? s.dealHistory.length + 1 : undefined) {
+  s.events.push({ id: s.nextId++, ...event, ...(dealNo != null ? { dealNo } : {}) })
   if (s.events.length > MAX_EVENTS) s.events = s.events.slice(-MAX_EVENTS)
 }
 
@@ -326,10 +331,21 @@ function voidOfferIfTouched(s: GameState, repKey: string, reason: 'TRAVELLED' | 
   }
 }
 
+/** 反应窗口里那张牌的目标快照（事件用；代表随后可能失效 / 易主，所以在生效前取） */
+function reactionTarget(s: GameState, pr: NonNullable<GameState['pendingReaction']>): { targetRep?: RepRef; targetFamilyId?: FamilyId; targetPlayerId?: number } {
+  const out: { targetRep?: RepRef; targetFamilyId?: FamilyId; targetPlayerId?: number } = {}
+  const rep = pr.targetRepKey && s.negotiation ? findRep(s.negotiation, pr.targetRepKey) : undefined
+  if (rep) out.targetRep = repRef(rep)
+  if (pr.targetFamilyId) out.targetFamilyId = pr.targetFamilyId
+  if (pr.targetPlayerId != null) out.targetPlayerId = pr.targetPlayerId
+  return out
+}
+
 function resolveReaction(s: GameState) {
   const pr = s.pendingReaction!
   const neg = s.negotiation
   const hadOffer = !!neg?.offer
+  const target = reactionTarget(s, pr)
 
   if (pr.kind === 'TRAVEL' && neg) {
     const rep = findRep(neg, pr.targetRepKey!)
@@ -348,6 +364,8 @@ function resolveReaction(s: GameState) {
     neg.offersMade = 0
     neg.stalemateRounds = 0
     neg.passStreak = 0
+    // 夺权成功：新 Boss 不再是本笔交易的"干扰者"（他现在是主人，不该被记仇 / 计入干扰名单）
+    neg.disruptors = neg.disruptors.filter(id => id !== pr.actorId)
     s.discardPile.push(...pr.cards)
     emit(s, { kind: 'BOSS_RESOLVED', playerId: pr.actorId, previousBossId: previous })
   } else if (pr.kind === 'RECRUITMENT') {
@@ -398,7 +416,7 @@ function resolveReaction(s: GameState) {
   } else {
     s.discardPile.push(...pr.cards)
   }
-  afterReaction(s, false, hadOffer && !s.negotiation?.offer)
+  afterReaction(s, false, hadOffer && !s.negotiation?.offer, target)
 }
 
 /** Boss 自己打的"拼方案"牌（利好 / 独家协议 / 病假）：窗口结束后回合仍在 Boss，他紧接着就该提案 / 成交 */
@@ -410,7 +428,7 @@ const BOSS_OWN_KINDS = new Set<ReactionKind>(['BOOM', 'EXCLUSIVE', 'SICK'])
  * 开单前（TURN / AFTER_MOVE）打出的病假牌：行动者继续自己的回合。
  * 倒计时里的病假牌不改变方案，倒计时不重来：同一位玩家继续（可放行）。
  */
-function afterReaction(s: GameState, cancelled: boolean, offerVoided = false) {
+function afterReaction(s: GameState, cancelled: boolean, offerVoided = false, target: { targetRep?: RepRef; targetFamilyId?: FamilyId } = {}) {
   const pr = s.pendingReaction!
   s.pendingReaction = null
   const neg = s.negotiation
@@ -440,7 +458,7 @@ function afterReaction(s: GameState, cancelled: boolean, offerVoided = false) {
     neg.passStreak = 0
     neg.turnId = neg.bossId
     s.phase = 'NEGOTIATION'
-    emit(s, { kind: 'CLOSING_INTERRUPTED' })
+    emit(s, { kind: 'CLOSING_INTERRUPTED', by: pr.kind, actorId: pr.actorId, ...target })
     return
   }
   s.phase = 'NEGOTIATION'
@@ -519,8 +537,10 @@ function finalizeDeal(s: GameState) {
     id: s.nextId++, dealNumber: s.completedDeals, spaceId: space.id, bossId: neg.bossId, openerId: neg.openerId,
     success: true, grossValue: gross, payouts: finalPayouts, rents, disruptors: [...neg.disruptors],
   })
-  emit(s, { kind: 'DEAL_CLOSED', dealNumber: s.completedDeals, spaceId: space.id, tileId: tile.id, bossId: boss.id, gross, payouts: finalPayouts, bossKeep: gross - paid })
-  if (rents.length) emit(s, { kind: 'RENT_PAID', payments: rents })
+  const dealNo = s.dealHistory.length // 刚记入历史：本笔就是第 dealNo 次开单
+  const usedReps = offer.repKeys.map(k => findRep(neg, k)).filter((r): r is Representative => !!r).map(repRef)
+  emit(s, { kind: 'DEAL_CLOSED', dealNumber: s.completedDeals, spaceId: space.id, tileId: tile.id, bossId: boss.id, gross, payouts: finalPayouts, bossKeep: gross - paid, reps: usedReps }, dealNo)
+  if (rents.length) emit(s, { kind: 'RENT_PAID', payments: rents }, dealNo)
 
   // 金钱标记移到顺时针下一个未关闭格
   advanceMarker(s)
@@ -550,7 +570,10 @@ function failDeal(s: GameState, reason: FailReason) {
     id: s.nextId++, dealNumber: s.completedDeals + 1, spaceId: neg.spaceId, bossId: neg.bossId, openerId: neg.openerId,
     success: false, grossValue: getGrossValue(s), payouts: [], rents: [], disruptors: [...neg.disruptors], failReason: reason,
   })
-  emit(s, { kind: 'DEAL_FAILED', spaceId: neg.spaceId, bossId: neg.bossId, reason })
+  emit(s, {
+    kind: 'DEAL_FAILED', spaceId: neg.spaceId, bossId: neg.bossId, reason,
+    ...(reason === 'INCOMPLETE' ? { missing: missingFamilies(s) } : {}),
+  }, s.dealHistory.length)
   const bossId = neg.bossId
   s.negotiation = null
   s.pendingReaction = null
@@ -587,6 +610,8 @@ function apply(s: GameState, action: PlayerAction) {
   // 反应窗口的放行保持沉默：只有持阻止牌者才真正在"决定"，说话会暴露手牌。
   if (action.type !== 'PASS_REACTION') say(s, player.id, action.say)
   remember(s, player.id, action.note)
+  // 僵局只数"连续"的全员跳过：除了跳过 / 放行，任何实质行动（喊话 / 出牌 / 提案 / 应答 / 宣布成交…）都把停滞轮数清零
+  if (neg && action.type !== 'PASS' && action.type !== 'PASS_CLOSING' && action.type !== 'PASS_REACTION') neg.stalemateRounds = 0
 
   switch (action.type) {
     case 'PLACE_MARKER':
@@ -725,13 +750,14 @@ function apply(s: GameState, action: PlayerAction) {
       const pr = s.pendingReaction!
       const stop = player.hand.splice(player.hand.findIndex(c => c.type === 'STOP'), 1)[0]
       s.discardPile.push(stop, ...pr.cards)
-      emit(s, { kind: 'STOP_PLAYED', playerId: player.id, actorId: pr.actorId, cancelled: pr.kind })
+      emit(s, { kind: 'STOP_PLAYED', playerId: player.id, actorId: pr.actorId, cancelled: pr.kind, ...reactionTarget(s, pr) })
       afterReaction(s, true)
       return
     }
 
     case 'PASS_REACTION': {
       const pr = s.pendingReaction!
+      emit(s, { kind: 'PASSED', playerId: player.id, phase: 'REACTION' })
       pr.askedIds.push(player.id)
       const next = nextReactor(s, player.id, new Set(pr.askedIds))
       if (next === null) resolveReaction(s)
@@ -748,6 +774,7 @@ function apply(s: GameState, action: PlayerAction) {
       return
 
     case 'PASS':
+      emit(s, { kind: 'PASSED', playerId: player.id, phase: 'NEGOTIATION' })
       neg!.passStreak++
       if (neg!.passStreak >= s.players.length) {
         // 桌上凑不齐代表、又没人愿意补（全员跳过一轮）：再转几圈也不会有结果，直接流局
@@ -801,13 +828,12 @@ function apply(s: GameState, action: PlayerAction) {
       const offer = neg!.offer!
       offer.responses[player.id] = 'ACCEPTED'
       emit(s, { kind: 'OFFER_ACCEPTED', playerId: player.id })
-      // 点头就是承诺：实付按代表数向上取整，成为所用家族的出借价。除不尽时不把价压低（5 块两个代表 → 各 3，不是各 2）
-      const got = offerShareOf(offer, player.id)
-      const used = Math.max(1, repsUsedOf(neg!, offer, player.id))
-      const per = Math.ceil(got / used)
-      const committed = commitmentPrice(neg!, offer, player.id)
-      if (committed == null || committed > per * used) {
-        applyQuotes(s, player.id, [{ amount: per }], usedFamiliesOf(neg!, offer, player.id), true)
+      // 点头就是承诺：所用家族的新价之和 = 实付（将来同一组代表付同样总额即自动同意），
+      // 不抬高任何家族的价、尽量保留原有价差、取整数（算法见 rules.acceptedCommitments）
+      const changes = acceptedCommitments(neg!, offer, player.id)
+      if (changes.length > 0) {
+        applyQuotes(s, player.id, changes.map(c => ({ familyId: c.familyId, amount: c.to })), usedFamiliesOf(neg!, offer, player.id), true)
+        emit(s, { kind: 'COMMITMENT_UPDATED', playerId: player.id, changes })
       }
       advanceResponse(s)
       return
@@ -823,8 +849,9 @@ function apply(s: GameState, action: PlayerAction) {
     }
 
     case 'CLOSE_DEAL': {
-      if (!neg!.offer) {
-        // 只用自己的代表直接成交：不算一次提案。倒计时被打断、方案作废也不扣次数
+      if (closeDealMode(s) === 'SOLO') {
+        // 只用自己的代表直接成交（没有方案，或旧方案已无效 / 被拒绝而被搁置）：不算一次提案，也不付任何人。
+        // 倒计时被打断、方案作废也不扣次数
         neg!.offer = { id: s.nextId++, bossId: player.id, repKeys: selectReps(s).repKeys, payouts: [], responses: {} }
       }
       neg!.closingOrder = othersFrom(s, player.id)
@@ -836,6 +863,7 @@ function apply(s: GameState, action: PlayerAction) {
     }
 
     case 'PASS_CLOSING':
+      emit(s, { kind: 'PASSED', playerId: player.id, phase: 'CLOSING' })
       neg!.closingIndex++
       if (neg!.closingIndex >= neg!.closingOrder.length) finalizeDeal(s)
       return

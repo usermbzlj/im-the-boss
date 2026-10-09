@@ -20,7 +20,7 @@ import {
   isSick, swapTargetType, recruitCountAfterTrade, recruitTargets, recruitCost, countCards, tableCanComplete, buyCardsCost,
 } from '../engine/rules'
 import { canClose } from '../engine/validator'
-import { narrate, famLabel, famName, playerName, reactionKindName, spaceKindName, spaceKindEffect } from '../text/narrate'
+import { narrate, isMinorEvent, famLabel, famName, playerName, reactionKindName, spaceKindName, spaceKindEffect } from '../text/narrate'
 import { describeAction, describeCard, describeGroups, describeReactionTarget, describeSpaceKind, describeSpaceKindFull, grossAfterDelta } from '../text/labels'
 import { getPersonaForPlayer } from './personas'
 import { estimateDeal } from './heuristic'
@@ -386,7 +386,7 @@ ${speeches || '无'}
 }
 
 function describeRecentEvents(state: GameState): string {
-  const recent = state.events.filter(e => e.kind !== 'SPEECH').slice(-8)
+  const recent = state.events.filter(e => e.kind !== 'SPEECH' && !isMinorEvent(e)).slice(-8)
   if (recent.length === 0) return ''
   return `\n【最近动态】\n${recent.map(e => `- ${narrate(state, e).text}`).join('\n')}\n`
 }

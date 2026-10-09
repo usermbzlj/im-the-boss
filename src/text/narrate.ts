@@ -11,7 +11,14 @@ export type EventTone = 'system' | 'action' | 'card' | 'deal' | 'fail' | 'end' |
 export interface Narration {
   text: string
   tone: EventTone
+  /** 次要事件（跳过 / 放行之类）：UI 可折叠、提示词的"最近动态"可略去，不影响叙事完整性 */
+  minor?: boolean
 }
+
+/** 该事件是否为次要（narrate 会标 minor）；不需要文案时的快速判定 */
+export const isMinorEvent = (e: GameEvent): boolean => e.kind === 'PASSED'
+
+const PASS_PHASE_NAME = { NEGOTIATION: '谈判中', CLOSING: '成交倒计时', REACTION: '反应窗口' } as const
 
 export const famName = (f: FamilyId) => FAMILIES[f].name
 export const famLabel = (f: FamilyId) => `${f}·${FAMILIES[f].name}`
@@ -124,8 +131,16 @@ export function narrate(state: GameState, e: GameEvent): Narration {
       return { tone: 'card', text: `${n(e.playerId)} 打出利空牌：本笔股价将 −$${BUST_PENALTY}M/份` }
     case 'EXCLUSIVE_PLAYED':
       return { tone: 'card', text: `${n(e.playerId)} 打出独家协议：要锁定本笔交易（老板 / 旅行 / 利空牌失效）` }
-    case 'STOP_PLAYED':
-      return { tone: 'card', text: `${n(e.playerId)} 打出阻止牌！${n(e.actorId)} 的${reactionKindName(e.cancelled)}被取消` }
+    case 'STOP_PLAYED': {
+      const at = e.targetRep ? `（目标：${describeRepRef(state, e.targetRep)}）`
+        : e.targetFamilyId ? `（目标：${famName(e.targetFamilyId)} 投资者）`
+          : e.targetPlayerId != null ? `（目标：${n(e.targetPlayerId)}）` : ''
+      return { tone: 'card', text: `${n(e.playerId)} 打出阻止牌！${n(e.actorId)} 的${reactionKindName(e.cancelled)}${at}被取消` }
+    }
+    case 'PASSED':
+      return { tone: 'system', minor: true, text: `${n(e.playerId)} ${e.phase === 'NEGOTIATION' ? '跳过' : '放行'}（${PASS_PHASE_NAME[e.phase]}）` }
+    case 'COMMITMENT_UPDATED':
+      return { tone: 'action', text: `${n(e.playerId)} 的承诺价改为：${e.changes.map(c => `${famName(c.familyId)} $${c.to}M${c.from == null ? '' : `（原 $${c.from}M）`}`).join('、')}，将来付到即成` }
     case 'BLACK_MARKET':
       return { tone: 'system', text: `黑市规矩：${n(e.actorId)} 的${reactionKindName(e.card)}不经反应窗口，直接生效` }
     case 'RECLAIM_GRANTED':
@@ -154,7 +169,7 @@ export function narrate(state: GameState, e: GameEvent): Narration {
     case 'DEMAND':
       return { tone: 'action', text: `${n(e.playerId)} 报价：${describeQuotes(e.quotes)}` }
     case 'STALEMATE_ROUND':
-      return { tone: 'system', text: `全员跳过一轮，谈判停滞（${e.rounds}/${e.max}，再一轮无人行动将流局）` }
+      return { tone: 'system', text: `全员跳过一轮，谈判停滞（${e.rounds}/${e.max}；若接下来${e.max - e.rounds > 1 ? ` ${e.max - e.rounds} 轮` : '再一轮'}仍无人喊话 / 出牌 / 提案，将流局）` }
     case 'OFFER_PROPOSED': {
       const reps = e.reps.map(r => `${famName(r.familyId)}←${n(r.ownerId)}${r.source === 'CLAN' ? '(卡)' : ''}`).join('、')
       const auto = e.autoAccepted ?? []
@@ -175,17 +190,22 @@ export function narrate(state: GameState, e: GameEvent): Narration {
         : { tone: 'fail', text: `${e.declinerIds.map(n).join('、')} 拒绝了方案，Boss 可加价、换人或放弃` }
     case 'CLOSING_STARTED':
       return { tone: 'deal', text: `${n(e.bossId)}："Going once, going twice…" 宣布成交，其他玩家最后一次出牌机会` }
-    case 'CLOSING_INTERRUPTED':
-      return { tone: 'system', text: '成交倒计时被打断，回到谈判' }
+    case 'CLOSING_INTERRUPTED': {
+      const at = e.targetRep ? `（目标：${describeRepRef(state, e.targetRep)}）`
+        : e.targetFamilyId ? `（目标：${famName(e.targetFamilyId)} 投资者）` : ''
+      return { tone: 'system', text: `${n(e.actorId)} 的${reactionKindName(e.by)}${at}生效，成交倒计时被打断，回到谈判` }
+    }
     case 'DEAL_CLOSED': {
       const pays = e.payouts.length ? `，其中 ${e.payouts.map(p => `${n(p.playerId)} 分得 $${p.amount}M`).join('、')}` : ''
-      return { tone: 'deal', text: `成交！第 ${e.dealNumber} 笔：银行付给 ${n(e.bossId)} $${e.gross}M${pays}，${n(e.bossId)} 净得 $${e.bossKeep}M；景气牌 #${e.tileId} 盖在 #${e.spaceId} 上` }
+      const used = e.reps?.length ? `；所用代表：${e.reps.map(r => `${famName(r.familyId)}←${n(r.ownerId)}${r.source === 'CLAN' ? '(卡)' : ''}`).join('、')}` : ''
+      return { tone: 'deal', text: `成交！第 ${e.dealNumber} 笔：银行付给 ${n(e.bossId)} $${e.gross}M${pays}，${n(e.bossId)} 净得 $${e.bossKeep}M${used}；景气牌 #${e.tileId} 盖在 #${e.spaceId} 上` }
     }
     case 'DEAL_FAILED': {
       const why = e.reason === 'ABANDONED' ? `${n(e.bossId)} 主动放弃`
         : e.reason === 'INCOMPLETE' ? '桌上凑不齐代表，全员跳过一轮，不必再等'
           : '谈判陷入僵局，连续多轮无人行动'
-      return { tone: 'fail', text: `#${e.spaceId} 的交易流局（${why}）。家族卡收回，金钱标记留在原地` }
+      const lack = e.missing?.length ? `，缺 ${e.missing.map(famName).join('、')} 的代表` : ''
+      return { tone: 'fail', text: `#${e.spaceId} 的交易流局（${why}${lack}）。未被打飞的家族卡收回，金钱标记留在原地` }
     }
     case 'END_ROLL_DUE':
       return { tone: 'end', text: `已进入终局阶段：${n(e.playerId)} 掷骰，掷出 ${e.faces.join('/')} 则游戏结束` }
