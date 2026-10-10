@@ -1116,29 +1116,28 @@ button, [role="button"], [role="tab"], [role="menuitem"], a, input, select, labe
   /* ---- 阶段引导 / 刚刚发生：两行内说完 ---- */
   .phase-guide { padding: 6px 10px; font-size: 14px; flex-wrap: wrap; gap: 2px 8px; }
   .guide-text { min-width: 0; line-height: 1.4; }
-  .guide-right { font-size: 12px; white-space: normal; }
-  .recent-strip { height: 32px; padding: 0 10px; font-size: 13px; }
-  .recent-item:not(:last-of-type) { display: none; } /* 手机上只留最新一条 */
+  .guide-right { display: none; } /* 交易号 / 股价 / 方案进度：顶栏与侧栏里都有 */
+  .recent-strip { display: none; } /* "刚刚发生"在手机上由 toast（读屏也会播报）+ 抽屉里的事件流承担，省出一行高度给版图 */
 
   /* ---- 牌桌区：座位横滚条 + 版图；放不下时整块可纵向滚动（不再 overflow:hidden 吞内容） ---- */
-  .table-board { padding: 6px 8px 4px; gap: 6px; overflow-x: hidden; overflow-y: auto; }
-  .player-seat { flex-basis: 158px; min-width: 158px; padding: 6px 8px; gap: 3px; border-radius: 9px; }
+  .phase-guide { padding: 5px 10px; }
+  .table-board { padding: 4px 8px 2px; gap: 4px; overflow-x: hidden; overflow-y: auto; }
   .seat-avatar { width: 28px; height: 28px; font-size: 14px; }
   .seat-name { font-size: 14px; }
   .seat-cash { font-size: 15px; }
   .seat-row { font-size: 12px; }
-  .seat-bubble { font-size: 13px; padding: 4px 8px; }
-  .ring-wrap { flex: 1 0 auto; min-height: 250px; }
-  .ring-wrap-compact { overflow: auto; align-items: flex-start; justify-content: flex-start; -webkit-overflow-scrolling: touch; }
+  .seat-bubble { font-size: 13px; padding: 3px 8px; -webkit-line-clamp: 1; } /* 手机：气泡只占一行，点按展开全文 */
+  .ring-wrap { min-height: 200px; }
 
   /* ---- 底部：行动区 + 手牌固定在屏幕底部，内容多时在里面滚动 ---- */
+  /* 抽屉手柄 + 行动区 + 手牌：总高不超过屏高的 52%，手牌始终可见；行动区内容多时在行动区里自己滚动，主按钮行吸底 */
   .table-bottom {
-    max-height: 54vh; max-height: 54dvh; overflow-y: auto; overscroll-behavior: contain;
+    max-height: 52vh; max-height: 52dvh; overflow: hidden;
     background: var(--bg-panel); border-top: 2px solid var(--border); box-shadow: 0 -8px 20px rgba(0, 0, 0, 0.35);
     padding-bottom: var(--safe-b);
   }
-  .table-bottom > .drawer-handle { position: sticky; top: 0; z-index: 4; }
-  .dock { min-height: 0; padding: 8px 10px; gap: 8px; box-shadow: none; border-top: 0; }
+  .table-bottom > .drawer-handle, .table-bottom > .hand { flex: none; }
+  .dock { flex: 0 1 auto; min-height: 96px; overflow-y: auto; overscroll-behavior: contain; padding: 8px 10px; gap: 8px; box-shadow: none; border-top: 0; }
   .dock-status { gap: 8px 12px; font-size: 13px; }
   .status-cash { font-size: 16px; }
   .dock-hint, .dock-wait { font-size: 14px; line-height: 1.5; }
@@ -1154,9 +1153,9 @@ button, [role="button"], [role="tab"], [role="menuitem"], a, input, select, labe
   .quote-row .demand-input, .demand-input { width: 84px; }
   .dock-house { padding: 6px 8px; }
   .commit-callout { font-size: 13.5px; }
-  .hand { --card-w: 108px; padding: 4px 10px 10px; box-shadow: none; border-top: 1px solid var(--border); }
+  .hand { --card-w: 92px; padding: 2px 10px 4px; box-shadow: none; border-top: 1px solid var(--border); }
   .hand-title { font-size: 13px; }
-  .hand-cards { gap: 8px; padding: 12px 6px 8px; scroll-snap-type: x proximity; scroll-padding: 0 8px; }
+  .hand-cards { gap: 8px; padding: 10px 6px 6px; scroll-snap-type: x proximity; scroll-padding: 0 8px; scrollbar-width: thin; }
   .card-slot { scroll-snap-align: start; }
   .card.playable:hover, .card.open { transform: translateY(-4px); }
 
@@ -1239,20 +1238,23 @@ button, [role="button"], [role="tab"], [role="menuitem"], a, input, select, labe
    紧凑版图（手机竖屏 / 矮屏）：格子 ≈ 60×56，缩放不低于 0.8，放不下时 .ring-wrap 滚动
    与 ui/ringFit.ts 的 RING_METRICS[' ring-compact'] 对应
    ============================================================ */
+/* 紧凑版图区：高度由 flex 分配（不随内容撑开），所以测得的"可用高度"才是真实剩余空间；放不下（缩放已到下限）就在区内滚动，座位条保持可见 */
+.ring-wrap-compact::-webkit-scrollbar { display: none; }
+.ring-wrap-compact { scrollbar-width: none; flex: 1 1 0; min-height: 0; overflow: auto; align-items: flex-start; justify-content: flex-start; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 .ring-scaler { flex: none; margin: auto; position: relative; }
 .ring-grid.ring-compact { --cell-min: 60px; --cell-min-h: 56px; gap: 3px; }
 .ring-compact .ring-cell { padding: 3px 4px; gap: 1px; min-width: 0; border-width: 1.5px; border-radius: 6px; font-size: 12px; }
 .ring-compact .cell-top { gap: 1px 4px; flex-wrap: wrap; align-items: baseline; }
 .ring-compact .cell-id { font-size: 12px; }
 .ring-compact .cell-div { font-size: 13px; }
-.ring-compact .cell-total { font-size: 12px; }
+.ring-compact .cell-total { display: none; } /* 本格总价值在中央牌堆 / 点按提示里；省出一行 */
 .ring-compact .cell-kind { padding: 0 2px; }
 .ring-compact .cell-kind-name, .ring-compact .cell-solo-text { display: none; } /* 特殊格只留图标 + 左侧色条；"自足"只留 ✓ */
 .ring-compact .cell-solo { padding: 0 2px; }
 .ring-compact .cell-group { gap: 2px; flex-wrap: wrap; }
 .ring-compact .cell-group-label.req { display: none; } /* 必需组是默认：实线框芯片；可选组保留"选N"+ 虚线框 */
 .ring-compact .cell-group-label { padding: 0 3px; }
-.ring-compact .family-chip.size-sm { padding: 0 3px; line-height: 16px; }
+.ring-compact .family-chip.size-sm { padding: 0 2px; line-height: 15px; }
 .ring-compact .cell-closed { font-size: 12px; gap: 0; }
 .ring-compact .cell-tile { display: none; }
 .ring-compact .marker-icon { top: -9px; right: -4px; font-size: 16px; }
@@ -1271,6 +1273,16 @@ button, [role="button"], [role="tab"], [role="menuitem"], a, input, select, labe
    - 出牌选项 = 底部 sheet；放大预览 = 屏幕中央（手指不遮挡）；InfoTip 说明 = 底部横幅
    ============================================================ */
 @media (max-width: 767px), (max-height: 500px) {
+  .seats-row { scrollbar-width: none; padding-bottom: 2px; }
+  .seats-row::-webkit-scrollbar { display: none; }
+  /* 座位卡：头像 / 名字 / 现金一行，投资者与手牌数并成第二行（84px → 约 66px） */
+  .player-seat { flex: 0 0 158px; min-width: 158px; padding: 4px 8px 5px; display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 1px 8px; border-radius: 9px; }
+  .player-seat > .seat-head, .player-seat > .seat-bubble { flex: 1 0 100%; }
+  .player-seat .seat-row { flex: 0 1 auto; }
+  .player-seat .seat-label { display: none; }
+  .seat-bubble { -webkit-line-clamp: 1; }
+  /* 行动区在自己的容器里滚动；主按钮行吸在底部，永远点得到 */
+  .dock .dock-actions { position: sticky; bottom: 0; z-index: 2; padding: 6px 0 2px; background: var(--bg-panel); box-shadow: 0 -8px 8px -2px var(--bg-panel); }
   .card-popover {
     position: fixed; left: 0 !important; right: 0; bottom: 0; top: auto !important; z-index: 130; width: auto; max-height: 62vh; max-height: 62dvh; overflow-y: auto;
     border: 0; border-top: 2px solid var(--gold); border-radius: 18px 18px 0 0; padding: 16px 16px calc(16px + var(--safe-b));
@@ -1314,14 +1326,13 @@ button, [role="button"], [role="tab"], [role="menuitem"], a, input, select, labe
   .table-area { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 44%); grid-template-rows: minmax(0, 1fr); }
   .table-board { grid-column: 1; grid-row: 1; padding: 4px 8px 4px; gap: 4px; overflow-x: hidden; overflow-y: auto; }
   .table-bottom {
-    grid-column: 2; grid-row: 1; min-height: 0; max-height: none; overflow-y: auto; overscroll-behavior: contain;
+    grid-column: 2; grid-row: 1; min-height: 0; max-height: none; overflow: hidden;
     border-left: 1px solid var(--border); background: var(--bg-panel); padding-right: var(--safe-r);
   }
-  .table-bottom > .drawer-handle { position: sticky; top: 0; z-index: 4; min-height: 40px; }
-  .dock { min-height: 0; padding: 6px 10px; gap: 6px; box-shadow: none; }
-  .hand { --card-w: 84px; padding: 2px 10px 8px; }
-  .player-seat { flex-basis: 168px; min-width: 168px; padding: 4px 8px; }
-  .seat-bubble { -webkit-line-clamp: 1; }
+  .table-bottom > .drawer-handle, .table-bottom > .hand { flex: none; }
+  .table-bottom > .drawer-handle { min-height: 40px; }
+  .dock { flex: 1 1 auto; min-height: 72px; overflow-y: auto; overscroll-behavior: contain; padding: 6px 10px; gap: 6px; box-shadow: none; }
+  .hand { --card-w: 80px; padding: 2px 10px 6px; }
   .ring-wrap { min-height: 180px; }
   .ring-compact .pile-value { font-size: 18px; }
   .deal-result { top: 6px; }

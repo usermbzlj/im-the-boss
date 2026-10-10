@@ -235,6 +235,8 @@
   .rv-main { flex: none; min-width: 0; }
   .rv-board { flex: none; }
   .rv-board .table-board { flex: none; overflow: visible; }
+  /* 复盘里版图区的外层高度是内容撑开的，紧凑版图（flex 分配高度）需要一个明确的高度；放不下时区内滚动 */
+  .rv-board .ring-wrap-compact { flex: none; height: min(56vh, 380px); }
   .rv-hand { flex-basis: 190px; min-width: 190px; }
   .rv-side { width: 100%; flex: none; border-left: 0; border-top: 1px solid var(--border); min-height: 0; }
   .rv-step { max-height: none; overflow: visible; }
