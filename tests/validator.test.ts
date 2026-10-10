@@ -3,7 +3,7 @@
 import { describe, it, expect } from 'vitest'
 import { createInitialState, gameReducer } from '../src/engine/gameEngine'
 import { getActingPlayerId, getLegalActions, isLegal, buildOfferCandidates, defaultDiscardIds } from '../src/engine/validator'
-import { validateOfferShape } from '../src/engine/rules'
+import { validateOfferShape, hasMeaningfulClosingPlay } from '../src/engine/rules'
 import { heuristicAction } from '../src/ai/heuristic'
 import { describeAction } from '../src/text/labels'
 import type { GameState } from '../src/engine/types'
@@ -47,6 +47,28 @@ describe('合法动作与引擎口径一致', () => {
       })
     }
     expect(checked).toBeGreaterThan(2000)
+  })
+
+  it('成交倒计时：hasMeaningfulClosingPlay 与"除放行外还有合法动作"同口径；旅行 / 招募只指向方案所用代表', () => {
+    let closing = 0, meaningful = 0
+    for (let seed = 1; seed <= 24; seed++) {
+      randomWalk(seed, 500, s => {
+        if (s.phase !== 'CLOSING') return
+        const id = getActingPlayerId(s)
+        const legal = getLegalActions(s, id)
+        const extra = legal.filter(a => a.type !== 'PASS_CLOSING')
+        expect(hasMeaningfulClosingPlay(s, id), `玩家 ${id}`).toBe(extra.length > 0)
+        const used = s.negotiation!.offer!.repKeys
+        for (const a of extra) {
+          if (a.type === 'PLAY_TRAVEL') expect(used).toContain(a.targetRepKey)
+          if (a.type === 'PLAY_RECRUITMENT') expect(used).toContain(`INV:${a.targetFamilyId}`)
+        }
+        closing++
+        if (extra.length) meaningful++
+      })
+    }
+    expect(closing).toBeGreaterThan(20)
+    expect(meaningful).toBeGreaterThan(0)
   })
 
   it('reducer 对非法动作返回原引用（不产生副本）', () => {

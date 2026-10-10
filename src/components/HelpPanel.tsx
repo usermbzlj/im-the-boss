@@ -8,6 +8,7 @@ import {
   RECRUIT_COST, HEADHUNT_RECRUIT_COST, RECLAIM_RECRUIT_COST, LANDMARK_RENT, PREMIUM_BONUS, BOOM_BONUS, BUST_PENALTY, MIN_SHARE_VALUE,
   BUY_CARDS_COST_SHARES, TRADE_GIVE_COUNT, TRADE_COST_SHARES, TRADE_RECRUIT_COUNT,
 } from '../engine/config'
+import { useModalDismiss } from './useModalDismiss'
 
 interface HelpPanelProps {
   open: boolean
@@ -17,17 +18,23 @@ interface HelpPanelProps {
   houseRules?: boolean
 }
 
-export default function HelpPanel({ open, onClose, variantId, houseRules }: HelpPanelProps) {
-  if (!open) return null
+/** 每次打开都挂载一份新的弹层（焦点管理随挂载 / 卸载走） */
+export default function HelpPanel(props: HelpPanelProps) {
+  return props.open ? <HelpPanelBody {...props} /> : null
+}
+
+function HelpPanelBody({ onClose, variantId, houseRules }: HelpPanelProps) {
+  const requestClose = useModalDismiss(false, onClose)
   const variant = getVariant(variantId)
   const summary = VARIANT_LIST.find(v => v.id === variant.id) ?? VARIANT_LIST[0]
   const specials = summary.specialSpaces
   const rares = variant.rareCards
   const house = houseRules ?? variant.houseRules
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="help-panel" onClick={e => e.stopPropagation()}>
-        <h2>📖 规则速查 <span className="muted help-variant">当前：{variant.name}{house ? ' · 桌规开' : ''}</span></h2>
+    <div className="modal-overlay" onClick={requestClose}>
+      <div className="help-panel" role="dialog" aria-modal="true" aria-labelledby="help-title" onClick={e => e.stopPropagation()}>
+        <button type="button" className="sheet-close" aria-label="关闭规则速查" onClick={requestClose}>✕</button>
+        <h2 id="help-title">📖 规则速查 <span className="muted help-variant">当前：{variant.name}{house ? ' · 桌规开' : ''}</span></h2>
         <section>
           <h3>回合</h3>
           <ol>
@@ -112,7 +119,7 @@ export default function HelpPanel({ open, onClose, variantId, houseRules }: Help
           </ul>
           <p>现金最多者胜。</p>
         </section>
-        <button className="btn-primary" onClick={onClose}>关闭</button>
+        <div className="sheet-footer"><button className="btn-primary" onClick={requestClose}>关闭</button></div>
       </div>
     </div>
   )

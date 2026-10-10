@@ -11,7 +11,7 @@ import { HAND_LIMIT, MAX_OFFERS_PER_BOSS, MAX_SPEECHES_PER_PLAYER } from './conf
 import {
   getPlayer, getCurrentSpace, getGrossValue, spaceInvestorCount,
   playableClanCards, travelTargets, recruitTargets, findRep,
-  selectReps, tableCanComplete, offerOwners, isOfferAgreed, offerStillValid, offerDecliners,
+  selectReps, tableCanComplete, offerOwners, offerDecliners, closeDealMode,
   validateOfferShape, repPriceOf, hasStop, payoutTotal, endChance, leaderIds,
   playerRelevantFamilies, usedFamiliesOf, validQuotes, recruitCost, isExclusiveLocked,
   cardKeepValue, isSick, ACTIVE_CARD_ACTIONS, isExchangePhase, isSickPlayPhase, sickTargets,
@@ -290,13 +290,12 @@ export function getLegalActions(state: GameState, playerId: number): PlayerActio
   return out
 }
 
-/** Boss 可否宣布成交：已有全员同意的有效方案，或无方案但仅凭自己的代表就能凑齐 */
+/**
+ * Boss 可否宣布成交：已有全员同意的有效方案；或当前方案不存在 / 无效 / 已被拒绝，
+ * 但仅凭自己的代表就能凑齐（见 rules.closeDealMode）
+ */
 export function canClose(state: GameState): boolean {
-  const neg = state.negotiation
-  if (!neg) return false
-  if (neg.offer) return offerStillValid(state, neg.offer) && isOfferAgreed(neg, neg.offer)
-  const sel = selectReps(state)
-  return sel.complete && offerOwners(neg, { repKeys: sel.repKeys }).length === 0
+  return closeDealMode(state) !== null
 }
 
 function isValidDemand(state: GameState, amount: number | undefined): boolean {
@@ -354,8 +353,7 @@ export function isLegal(state: GameState, action: PlayerAction): boolean {
       if (!neg || (state.phase !== 'NEGOTIATION' && state.phase !== 'CLOSING') || isExclusiveLocked(state)) return false
       const card = player.hand.find(c => c.id === action.cardId)
       if (!card || card.type !== 'TRAVEL') return false
-      const rep = findRep(neg, action.targetRepKey)
-      return !!rep && !rep.travelled && (!card.familyId || card.familyId === rep.familyId)
+      return travelTargets(state, card).some(r => r.key === action.targetRepKey) // 倒计时里只能打方案所用的代表
     }
     case 'PLAY_RECRUITMENT':
       return (state.phase === 'NEGOTIATION' || state.phase === 'CLOSING' || state.phase === 'HAND_LIMIT') &&

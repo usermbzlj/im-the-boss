@@ -199,7 +199,7 @@ export interface Negotiation {
   turnId: number
   /** 连续跳过计数（任何实质行动清零） */
   passStreak: number
-  /** 全员连续跳过的完整轮数，达到上限判僵局流局 */
+  /** 全员连续跳过的完整轮数，达到上限判僵局流局；任何非跳过的实质行动（喊话 / 出牌 / 提案 / 应答 / 宣布成交）都清零，所以是真正"连续" */
   stalemateRounds: number
   speeches: Speech[]
   demands: Demand[]
@@ -270,6 +270,16 @@ export interface DealRecord {
 
 // ---------- 事件 ----------
 
+/** PASSED 事件发生的阶段：谈判叫价轮 / 成交倒计时 / 反应窗口（放行，不打阻止牌） */
+export type PassPhase = 'NEGOTIATION' | 'CLOSING' | 'REACTION'
+
+/** 一个家族的承诺价变动：from 为 null = 此前没报过价 */
+export interface CommitmentChange {
+  familyId: FamilyId
+  from: number | null
+  to: number
+}
+
 export type GameEvent =
   | { kind: 'GAME_STARTED'; playerCount: number; startPlayerId: number; markerChooserId: number; variantId: GameVariantId; deals: number }
   | { kind: 'MARKER_PLACED'; playerId: number; spaceId: number; nextPlayerId: number }
@@ -296,7 +306,12 @@ export type GameEvent =
   | { kind: 'BOOM_PLAYED'; playerId: number }
   | { kind: 'BUST_PLAYED'; playerId: number }
   | { kind: 'EXCLUSIVE_PLAYED'; playerId: number }
-  | { kind: 'STOP_PLAYED'; playerId: number; actorId: number; cancelled: ReactionKind }
+  /** cancelled：被取消的牌的种类；target*：那张牌当时的目标（旅行 = 代表快照 / 招募 = 家族 / 病假 = 玩家） */
+  | { kind: 'STOP_PLAYED'; playerId: number; actorId: number; cancelled: ReactionKind; targetRep?: RepRef; targetFamilyId?: FamilyId; targetPlayerId?: number }
+  /** 次要事件：某人在谈判 / 成交倒计时 / 反应窗口里选择跳过或放行（narrate 标 minor，UI 可折叠） */
+  | { kind: 'PASSED'; playerId: number; phase: PassPhase }
+  /** 同意方案后承诺价被改写：changes 是各家族的新价（from = null 表示此前没报过价） */
+  | { kind: 'COMMITMENT_UPDATED'; playerId: number; changes: CommitmentChange[] }
   /** 黑市格：打出的牌不经反应窗口直接生效 */
   | { kind: 'BLACK_MARKET'; actorId: number; card: ReactionKind }
   | { kind: 'TRAVEL_RESOLVED'; target: RepRef }
@@ -319,19 +334,26 @@ export type GameEvent =
   | { kind: 'OFFER_DECLINED'; playerId: number; counters: ResolvedQuote[] }
   | { kind: 'OFFER_RESOLVED'; agreed: boolean; declinerIds: number[] }
   | { kind: 'CLOSING_STARTED'; bossId: number }
-  | { kind: 'CLOSING_INTERRUPTED' }
-  | { kind: 'DEAL_CLOSED'; dealNumber: number; spaceId: number; tileId: number; bossId: number; gross: number; payouts: Payout[]; bossKeep: number }
+  /** by / actorId：打断倒计时的牌与出牌者；target*：那张牌的目标（旅行 = 代表快照 / 招募 = 家族） */
+  | { kind: 'CLOSING_INTERRUPTED'; by: ReactionKind; actorId: number; targetRep?: RepRef; targetFamilyId?: FamilyId }
+  /** reps：本笔所用的代表（快照）；dealNumber 是第几笔成交（流局不占号） */
+  | { kind: 'DEAL_CLOSED'; dealNumber: number; spaceId: number; tileId: number; bossId: number; gross: number; payouts: Payout[]; bossKeep: number; reps: RepRef[] }
   /** 地标：成交后归 Boss 所有 */
   | { kind: 'LANDMARK_CLAIMED'; playerId: number; spaceId: number }
   /** 银行付给地标主人的租金 */
   | { kind: 'RENT_PAID'; payments: Payout[] }
-  | { kind: 'DEAL_FAILED'; spaceId: number; bossId: number; reason: FailReason }
+  /** missing：reason 为 INCOMPLETE 时，桌上还缺哪些家族的代表 */
+  | { kind: 'DEAL_FAILED'; spaceId: number; bossId: number; reason: FailReason; missing?: FamilyId[] }
   | { kind: 'END_ROLL_DUE'; playerId: number; faces: number[] }
   | { kind: 'END_ROLL'; playerId: number; die: number; hit: boolean }
   | { kind: 'GAME_OVER'; winnerIds: number[]; cash: number }
 
 export type GameEventKind = GameEvent['kind']
-export type LoggedEvent = GameEvent & { id: number }
+/**
+ * dealNo：事件所属的交易编号 = 第几次开单（成交与流局都占号，从 1 起；与 DealRecord 在 dealHistory 里的下标 + 1 一致）。
+ * 开单（DEAL_OPENED）到成交 / 流局（DEAL_CLOSED / DEAL_FAILED）之间的事件都带；谈判之外的事件（掷骰、抽牌、手牌上限…）没有。
+ */
+export type LoggedEvent = GameEvent & { id: number; dealNo?: number }
 
 // ---------- 状态 ----------
 
@@ -385,6 +407,8 @@ interface ActionBase {
   say?: string
   /** 电脑玩家随动作写下的私人笔记（不公开），见 Player.notes */
   note?: string
+  /** LLM 电脑玩家的内心盘算（不公开、不影响规则；随动作写进动作日志，供复盘） */
+  thought?: string
 }
 
 export type PlayerAction =

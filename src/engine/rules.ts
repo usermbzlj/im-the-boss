@@ -5,7 +5,7 @@
 
 import type {
   GameState, BoardSpace, DealGroup, DealTile, FamilyId, Negotiation, GamePhase, PlayerActionType,
-  Representative, Offer, Payout, Player, InfluenceCard, Demand, Quote, ResolvedQuote,
+  Representative, Offer, Payout, Player, InfluenceCard, Demand, Quote, ResolvedQuote, CommitmentChange,
 } from './types'
 import {
   FAMILY_IDS, RECRUIT_COST, HEADHUNT_RECRUIT_COST, RECLAIM_RECRUIT_COST, PREMIUM_BONUS, MIN_SHARE_VALUE, LANDMARK_RENT,
@@ -409,6 +409,61 @@ export function meetsCommitment(neg: Negotiation, offer: Pick<Offer, 'repKeys' |
   return price != null && (offer.payouts.find(p => p.playerId === playerId)?.amount ?? 0) >= price
 }
 
+/** 按权重把 total 拆成整数：和恰为 total，每份不超过其权重（total ≤ 权重和时），余数按小数部分大者优先分配 */
+function scaleToTotal(weights: number[], total: number): number[] {
+  const sum = weights.reduce((a, b) => a + b, 0)
+  if (sum <= 0) return weights.map(() => 0)
+  const exact = weights.map(w => (w * total) / sum)
+  const out = exact.map(Math.floor)
+  let left = total - out.reduce((a, b) => a + b, 0)
+  const order = exact.map((x, i) => ({ i, frac: x - Math.floor(x) }))
+    .sort((a, b) => b.frac - a.frac || weights[b.i] - weights[a.i] || a.i - b.i)
+  for (const { i } of order) {
+    if (left <= 0) break
+    out[i]++
+    left--
+  }
+  return out
+}
+
+/**
+ * 同意方案后，该玩家所用各家族的新承诺价（docs/rules.md §9 报价即承诺）。
+ * 原则：同意 = 将来 Boss 对同一组代表付同样总额时自动同意（新价之和 = 实付）；不抬高任何家族的价；
+ * 尽量保留家族间原有的相对价差；金额取整数。
+ *   · 已有价之和 ≤ 实付、且有没报过价的家族：已有价不动，余额在没报价的家族间平分（余数给靠前者）
+ *   · 已有价之和 > 实付：全部（含没报价的，记 0）按原价比例压到实付，余数按小数部分大者优先
+ *   · 已有价之和 ≤ 实付、且每家都报过价：不改（本来就会自动同意）
+ * 只返回真正变了的家族。
+ */
+export function acceptedCommitments(neg: Negotiation, offer: Offer, playerId: number): CommitmentChange[] {
+  const reps: Representative[] = []
+  for (const k of offer.repKeys) {
+    const r = findRep(neg, k)
+    if (r && r.ownerId === playerId && !reps.some(x => x.familyId === r.familyId)) reps.push(r)
+  }
+  if (reps.length === 0) return []
+  const got = offerShareOf(offer, playerId)
+  const cur = reps.map(r => repPriceOf(neg, r) ?? null)
+  const pricedSum = cur.reduce<number>((a, p) => a + (p ?? 0), 0)
+  const unpriced = cur.flatMap((p, i) => (p == null ? [i] : []))
+
+  let next: number[]
+  if (pricedSum > got) {
+    next = scaleToTotal(cur.map(p => p ?? 0), got)
+  } else if (unpriced.length > 0) {
+    next = cur.map(p => p ?? 0)
+    const rest = got - pricedSum
+    const base = Math.floor(rest / unpriced.length)
+    const extra = rest - base * unpriced.length
+    unpriced.forEach((idx, n) => { next[idx] = base + (n < extra ? 1 : 0) })
+  } else {
+    return []
+  }
+  const out: CommitmentChange[] = []
+  reps.forEach((r, i) => { if (next[i] !== cur[i]) out.push({ familyId: r.familyId, from: cur[i], to: next[i] }) })
+  return out
+}
+
 /** 方案若提出，哪些代表持有者会自动同意、哪些还需表态 */
 export function offerConsent(neg: Negotiation, offer: Pick<Offer, 'repKeys' | 'payouts'>): { auto: number[]; asked: number[] } {
   const owners = offerOwners(neg, offer)
@@ -546,6 +601,21 @@ export function offerStillValid(state: GameState, offer: Offer): boolean {
 }
 
 /**
+ * Boss 宣布成交的依据：
+ *   · 'OFFER'：当前方案仍有效且全员同意；
+ *   · 'SOLO'：方案不存在 / 已无效 / 被人拒绝，但"无方案时"仅凭 Boss 自己的代表就能凑齐——
+ *     被拒的旧方案不挡路，按只用自己代表、不付任何人成交（docs/rules.md §9 成交倒计时）；
+ *   · null：不能成交。
+ */
+export function closeDealMode(state: GameState): 'OFFER' | 'SOLO' | null {
+  const neg = state.negotiation
+  if (!neg) return null
+  if (neg.offer && offerStillValid(state, neg.offer) && isOfferAgreed(neg, neg.offer)) return 'OFFER'
+  const sel = selectReps(state)
+  return sel.complete && offerOwners(neg, { repKeys: sel.repKeys }).length === 0 ? 'SOLO' : null
+}
+
+/**
  * 结算时的实际付款（docs/rules.md §10.4）：先把 Boss 的净得减到 0，前面的收款人按方案顺序拿满；
  * 总额仍不够时，差额从排在后面的收款人扣。不付给 Boss 自己、不付 0。
  */
@@ -604,7 +674,42 @@ export function recruitTargets(state: GameState, playerId: number): FamilyId[] {
   const set = new Set(pool.map(inv => inv.familyId))
   const reclaim = getPlayer(state, playerId)?.reclaim
   if (reclaim && canReclaim(state, playerId, reclaim)) set.add(reclaim)
-  return FAMILY_IDS.filter(f => set.has(f))
+  // 成交倒计时里只有打到"将要成交的方案所用的投资者"才真正影响本笔交易（docs/rules.md §9 成交倒计时）
+  const closing = closingRepKeys(state)
+  return FAMILY_IDS.filter(f => set.has(f) && (!closing || closing.includes(investorRepKey(f))))
+}
+
+/** 成交倒计时里能影响本笔交易的代表 key（= 将要成交的方案所用代表）；不在倒计时则为 null */
+export function closingRepKeys(state: GameState): string[] | null {
+  if (state.phase !== 'CLOSING' || !state.negotiation?.offer) return null
+  return state.negotiation.offer.repKeys
+}
+
+/** 手里的招募牌够招、且规则允许招的家族（每家一个选项） */
+export function affordableRecruitTargets(state: GameState, playerId: number): FamilyId[] {
+  const player = getPlayer(state, playerId)
+  if (!player) return []
+  const have = countCards(player.hand, 'RECRUITMENT')
+  return recruitTargets(state, playerId).filter(f => have >= recruitCost(state, playerId, f))
+}
+
+/**
+ * 成交倒计时里，该玩家是否有除 PASS_CLOSING 外的合法动作（= 有真正能影响本笔交易的牌可打）。
+ * 运行时据此对"手里没有可用干扰牌"的人类自动放行，不必每笔交易都点名。
+ * 口径与 validator.getLegalActions 的 CLOSING 分支一致（tests/validator.test.ts 校验）。
+ */
+export function hasMeaningfulClosingPlay(state: GameState, playerId: number): boolean {
+  const neg = state.negotiation
+  const player = getPlayer(state, playerId)
+  if (state.phase !== 'CLOSING' || !neg || !player || isSick(state, playerId)) return false
+  if (!isExclusiveLocked(state)) {
+    for (const card of player.hand) {
+      if (card.type === 'TRAVEL' && travelTargets(state, card).length > 0) return true
+      if ((card.type === 'BOSS' || card.type === 'BUST') && neg.bossId !== playerId) return true
+    }
+  }
+  if (affordableRecruitTargets(state, playerId).length > 0) return true
+  return player.hand.some(c => c.type === 'SICK') && sickTargets(state, playerId).length > 0
 }
 
 /** 玩家手里的招募牌够不够招某家族 */
@@ -650,11 +755,15 @@ export function playableClanCards(state: GameState, playerId: number): Influence
   return out
 }
 
-/** 旅行牌可打的目标代表 */
+/**
+ * 旅行牌可打的目标代表。成交倒计时里只能打将要成交的方案所用的代表——
+ * 打别的代表对本笔交易毫无作用（docs/rules.md §9 成交倒计时）。
+ */
 export function travelTargets(state: GameState, card: InfluenceCard): Representative[] {
   const neg = state.negotiation
   if (!neg || card.type !== 'TRAVEL') return []
-  return neg.reps.filter(r => !r.travelled && (!card.familyId || r.familyId === card.familyId))
+  const closing = closingRepKeys(state)
+  return neg.reps.filter(r => !r.travelled && (!card.familyId || r.familyId === card.familyId) && (!closing || closing.includes(r.key)))
 }
 
 /**

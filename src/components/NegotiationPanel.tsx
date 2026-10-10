@@ -3,7 +3,6 @@
 // 只负责展示；所有操作在底部操作区（ActionDock）与手牌完成
 // ============================================================
 
-import { useEffect, useRef } from 'react'
 import type { GameState, FamilyId, Representative } from '../engine/types'
 import { MAX_OFFERS_PER_BOSS, LANDMARK_RENT } from '../engine/config'
 import {
@@ -14,17 +13,14 @@ import {
 import { canClose } from '../engine/validator'
 import { spaceKindName, spaceKindEffect } from '../text/narrate'
 import FamilyChip from './FamilyChip'
+import EventFeed from './EventFeed'
+import { useViewerId } from './ViewerContext'
 
-const HUMAN_ID = 0
 
 export default function NegotiationPanel({ state }: { state: GameState }) {
+  const viewerId = useViewerId()
   const neg = state.negotiation
   const space = getCurrentSpace(state)
-  const chatRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    const el = chatRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [neg?.speeches.length])
 
   if (!neg || !space) return <div className="log-panel"><p className="muted pad">当前没有进行中的交易</p></div>
 
@@ -41,7 +37,7 @@ export default function NegotiationPanel({ state }: { state: GameState }) {
   if (isExclusiveLocked(state)) badges.push({ text: '🔒 独家协议：老板 / 旅行 / 利空牌已封锁', tone: 'green', title: '独家协议' })
   if (neg.priceDelta > 0) badges.push({ text: `📈 利好 +$${neg.priceDelta}M/份`, tone: 'green', title: '利好牌生效' })
   if (neg.priceDelta < 0) badges.push({ text: `📉 利空 −$${-neg.priceDelta}M/份`, tone: 'red', title: '利空牌生效' })
-  const name = (id: number) => `${state.players[id]?.name ?? '?'}${id === HUMAN_ID ? '（你）' : ''}`
+  const name = (id: number) => `${state.players[id]?.name ?? '?'}${id === viewerId ? '（你）' : ''}`
   if (state.turn.sick.length) badges.push({ text: `🤒 病假：${state.turn.sick.map(name).join('、')}（本回合不能主动出牌）`, tone: 'muted', title: '病假牌生效：只能被动打阻止牌' })
 
   const priceOf = (r: Representative) => {
@@ -86,6 +82,7 @@ export default function NegotiationPanel({ state }: { state: GameState }) {
 
   return (
     <div className="neg-panel">
+      <div className="neg-scroll">
       <div className="neg-header">
         <div>
           <div className="boss-tag">👑 {name(neg.bossId)} 是 Boss{neg.openerId !== neg.bossId && <span className="muted">（发起者 {state.players[neg.openerId]?.name}）</span>}</div>
@@ -161,16 +158,11 @@ export default function NegotiationPanel({ state }: { state: GameState }) {
         <div className="neg-block muted">本笔已出过干扰牌：{neg.disruptors.map(id => state.players[id]?.name).join('、')}</div>
       )}
 
-      <div className="neg-block neg-chat-block">
-        <div className="neg-block-title">谈判桌喊话</div>
-        <div className="neg-chat" ref={chatRef}>
-          {neg.speeches.length === 0 && <span className="muted">还没人说话</span>}
-          {neg.speeches.map(s => (
-            <div key={s.id} className={`chat-line${s.playerId === HUMAN_ID ? ' mine' : ''}${s.playerId === neg.bossId ? ' boss' : ''}`}>
-              <b>{state.players[s.playerId]?.name}</b>：{s.text}
-            </div>
-          ))}
-        </div>
+      </div>
+
+      <div className="neg-feed-block">
+        <div className="neg-block-title">本笔交易动态 <span className="muted">喊话 · 出牌 · 提案 · 结果，按发生顺序</span></div>
+        <EventFeed state={state} dealNo={state.dealHistory.length + 1} />
       </div>
     </div>
   )

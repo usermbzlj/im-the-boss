@@ -1,12 +1,15 @@
 // ============================================================
-// SettingsPanel — LLM 配置 + AI 速度 + 调用日志
+// SettingsPanel — LLM 配置 + 决策范围 + 桌风 + AI 速度 + 调用日志
 // ============================================================
 
 import { useState } from 'react'
 import {
   loadLLMConfig, saveLLMConfig, testLLMConnection, getLLMCallLog, clearLLMCallLog,
-  validateExtraBodyJson, type LLMConfig, type AISpeed, DEFAULT_LLM_CONFIG,
+  validateExtraBodyJson, DEFAULT_LLM_CONFIG, TABLE_STYLES,
+  type LLMConfig, type AISpeed, type TableStyle, type DecisionScope, type LLMCallLogEntry,
 } from '../ai/llmClient'
+import { STYLE_LABELS } from '../ai/tableStyle'
+import { useModalDismiss } from './useModalDismiss'
 
 interface SettingsPanelProps {
   open: boolean
@@ -19,14 +22,32 @@ const SPEED_OPTIONS: Array<{ value: AISpeed; label: string; hint: string }> = [
   { value: 'slow', label: '慢', hint: '模拟真人思考停顿，更有临场感' },
 ]
 
+const SCOPE_OPTIONS: Array<{ value: DecisionScope; label: string; hint: string }> = [
+  { value: 'critical', label: '关键决策（默认）', hint: '只有报价/喊话、Boss 提案、应答方案、出影响牌、封口费才请求 LLM；其余用内置策略（同样带人物台词），省调用、更流畅' },
+  { value: 'all', label: '全部', hint: '凡有选择的决策都请求 LLM：最慢、最费调用，反应窗口里的停顿也会随之变长' },
+]
+
+const LOG_TAGS: Record<NonNullable<LLMCallLogEntry['tag']>, string> = {
+  fallback: '回退内置策略',
+  breaker: '熔断',
+  recover: '已恢复',
+}
+
+/** 每次打开都挂载一份新的编辑态：从已保存配置重新载入，上次没保存的修改不会残留 */
 export default function SettingsPanel({ open, onClose }: SettingsPanelProps) {
-  const [config, setConfig] = useState<LLMConfig>(loadLLMConfig)
+  return open ? <SettingsPanelBody onClose={onClose} /> : null
+}
+
+function SettingsPanelBody({ onClose }: { onClose: () => void }) {
+  const [saved] = useState<LLMConfig>(loadLLMConfig)
+  const [config, setConfig] = useState<LLMConfig>(saved)
   const [testResult, setTestResult] = useState<string | null>(null)
   const [testing, setTesting] = useState(false)
   const [showLog, setShowLog] = useState(false)
   const [logTick, setLogTick] = useState(0)
 
-  if (!open) return null
+  const dirty = JSON.stringify(config) !== JSON.stringify(saved)
+  const requestClose = useModalDismiss(dirty, onClose)
 
   const bodyError = validateExtraBodyJson(config.extraBodyJson)
 
@@ -47,8 +68,8 @@ export default function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   const log = getLLMCallLog()
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="settings-panel" onClick={e => e.stopPropagation()}>
+    <div className="modal-overlay">
+      <div className="settings-panel" role="dialog" aria-label="LLM 设置">
         <h2>⚙️ LLM 设置</h2>
         <p className="settings-hint">
           配置 OpenAI 兼容接口。未启用时使用基础 AI。<br />
@@ -100,7 +121,7 @@ export default function SettingsPanel({ open, onClose }: SettingsPanelProps) {
           value={config.timeoutSecs}
           onChange={e => setConfig({ ...config, timeoutSecs: Math.max(5, Math.min(600, Math.floor(Number(e.target.value) || 0))) })}
         />
-        <p className="settings-hint">thinking/reasoning 模型响应慢，建议 60 秒以上；超时后该 AI 本次决策自动改用基础 AI，不会卡住游戏。</p>
+        <p className="settings-hint">默认 30 秒。thinking/reasoning 模型响应慢，建议调到 60 秒以上，或在下面的自定义请求体里关闭思考。<br />超时或出错时，这一次决策自动改用内置策略，不会卡住游戏；连续超时/失败会触发熔断：一段时间内不再请求，只用内置策略，之后自动试探恢复。调用日志里能看到每次回退与熔断。</p>
 
         <label>自定义请求体（JSON，可选）</label>
         <textarea
@@ -122,6 +143,36 @@ export default function SettingsPanel({ open, onClose }: SettingsPanelProps) {
             </p>
           )}
 
+        <label>LLM 决策范围</label>
+        <div className="speed-selector">
+          {SCOPE_OPTIONS.map(opt => (
+            <button
+              key={opt.value}
+              className={`speed-btn${config.decisionScope === opt.value ? ' active' : ''}`}
+              title={opt.hint}
+              onClick={() => setConfig({ ...config, decisionScope: opt.value })}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <p className="settings-hint">{SCOPE_OPTIONS.find(o => o.value === config.decisionScope)?.hint}</p>
+
+        <label>桌风（下一局开始时生效）</label>
+        <div className="speed-selector">
+          {TABLE_STYLES.map((style: TableStyle) => (
+            <button
+              key={style}
+              className={`speed-btn${config.tableStyle === style ? ' active' : ''}`}
+              title={STYLE_LABELS[style].hint}
+              onClick={() => setConfig({ ...config, tableStyle: style })}
+            >
+              {STYLE_LABELS[style].label}
+            </button>
+          ))}
+        </div>
+        <p className="settings-hint">{STYLE_LABELS[config.tableStyle].hint}。同时影响内置策略的出价/让步/搅局力度和 LLM 的语气；与开局页的桌风是同一项配置。</p>
+
         <label>AI 行动节奏</label>
         <div className="speed-selector">
           {SPEED_OPTIONS.map(opt => (
@@ -141,6 +192,7 @@ export default function SettingsPanel({ open, onClose }: SettingsPanelProps) {
             {testing ? '测试中…' : '测试连接'}
           </button>
           <button className="btn" onClick={() => setConfig({ ...DEFAULT_LLM_CONFIG })}>重置</button>
+          <button className="btn" onClick={requestClose} title="不保存，直接关闭（Esc 同效）">关闭</button>
           <button className="btn-primary" onClick={handleSave} disabled={!!bodyError}
             title={bodyError ? '自定义请求体 JSON 有误，请先修正' : undefined}>保存</button>
         </div>
@@ -162,7 +214,7 @@ export default function SettingsPanel({ open, onClose }: SettingsPanelProps) {
                 {log.map(entry => (
                   <div key={`${entry.id}-${logTick}`} className={`llm-log-entry${entry.ok ? '' : ' log-error'}`}>
                     <div className="llm-log-meta">
-                      <span>{entry.ok ? '✓' : '✗'} {entry.purpose}</span>
+                      <span>{entry.tag ? `[${LOG_TAGS[entry.tag]}]` : entry.ok ? '✓' : '✗'} {entry.purpose}</span>
                       <span>{entry.latencyMs}ms</span>
                     </div>
                     <div className="llm-log-response">{entry.responsePreview || '(空)'}</div>

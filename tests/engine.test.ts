@@ -4,9 +4,10 @@
 import { describe, it, expect } from 'vitest'
 import { HAND_LIMIT, MAX_STALEMATE_ROUNDS, MAX_OFFERS_PER_BOSS, MAX_SPEECHES_PER_PLAYER } from '../src/engine/config'
 import { getActingPlayerId, getLegalActions, canClose, isLegal } from '../src/engine/validator'
-import { findRep, investorRepKey, clanRepKey, getGrossValue, recruitTargets, demandOf, commitmentPrice } from '../src/engine/rules'
+import { findRep, investorRepKey, clanRepKey, getGrossValue, recruitTargets, demandOf, commitmentPrice, hasMeaningfulClosingPlay } from '../src/engine/rules'
+import { narrate, isMinorEvent } from '../src/text/narrate'
 import { heuristicAction } from '../src/ai/heuristic'
-import { baseState, setInvestors, giveCards, clearHand, step, rejects, openDealAt, toBoss, eventsOf, totalCash } from './helpers'
+import { baseState, setInvestors, giveCards, clearHand, step, rejects, openDealAt, toBoss, eventsOf, totalCash, closeSolo } from './helpers'
 
 describe('叫价轮', () => {
   it('开单后从 Boss 左手边起依次行动，Boss 在第一轮末位；Boss 未轮到时不能提案 / 成交', () => {
@@ -183,24 +184,90 @@ describe('方案 / 应答 / 分成', () => {
     expect(canClose(s)).toBe(false)
   })
 
-  it('同意方案时实付除不尽代表数：承诺价向上取整，不会把出借价压低', () => {
-    let s = baseState(4, 2)
-    setInvestors(s, { A: 0, B: 1, C: 1, D: 3 })
-    s.board[0].groups = [{ families: ['A', 'B', 'C'], need: 3 }]; s.board[0].dividends = 4
-    s = toBoss(openDealAt(s, 1, 0)) // 总额 4 份 × $2M = 8
+  describe('同意方案改写承诺价：新价之和 = 实付，不抬价、保价差、取整数', () => {
     const keys = [investorRepKey('A'), investorRepKey('B'), investorRepKey('C')]
-    s = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: keys, payouts: [{ playerId: 1, amount: 5 }] })
-    expect(s.phase).toBe('OFFER_RESPONSE')
-    s = step(s, { type: 'ACCEPT_OFFER', playerId: 1 })
-    expect(demandOf(s.negotiation!, 1, 'B')).toBe(3) // ceil(5/2)，不是 2
-    expect(demandOf(s.negotiation!, 1, 'C')).toBe(3)
-    expect(commitmentPrice(s.negotiation!, { repKeys: keys }, 1)).toBe(6)
-    // 只付 5 不够新的承诺价，还要问；付到 6 才自动同意
-    const short = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: keys, payouts: [{ playerId: 1, amount: 5 }] })
-    expect(short.phase).toBe('OFFER_RESPONSE')
-    const met = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: keys, payouts: [{ playerId: 1, amount: 6 }] })
-    expect(met.phase).toBe('NEGOTIATION')
-    expect(canClose(met)).toBe(true)
+    /** 玩家 1 同时持有 B、C，必需 A+B+C（总额 4 份 × $2M = 8）；先让玩家 1 按 quotes 报价，再轮到 Boss */
+    function bScene(quotes: Array<{ familyId: 'B' | 'C'; amount: number }>) {
+      let s = baseState(4, 2)
+      setInvestors(s, { A: 0, B: 1, C: 1, D: 3 })
+      s.board[0].groups = [{ families: ['A', 'B', 'C'], need: 3 }]; s.board[0].dividends = 4
+      s = openDealAt(s, 1, 0)
+      if (quotes.length) s = step(s, { type: 'SPEAK', playerId: 1, say: '报价', quotes })
+      return toBoss(s)
+    }
+    const accept = (s: ReturnType<typeof baseState>, pay: number) => {
+      s = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: keys, payouts: [{ playerId: 1, amount: pay }] })
+      expect(s.phase).toBe('OFFER_RESPONSE')
+      return step(s, { type: 'ACCEPT_OFFER', playerId: 1 })
+    }
+
+    it('两个代表都没报过价：实付拆成整数（5 → 3 + 2），和恰为实付；再付同样总额自动同意，少 1 块仍要问', () => {
+      let s = accept(bScene([]), 5)
+      expect(demandOf(s.negotiation!, 1, 'B')).toBe(3)
+      expect(demandOf(s.negotiation!, 1, 'C')).toBe(2)
+      expect(commitmentPrice(s.negotiation!, { repKeys: keys }, 1)).toBe(5)
+      expect(eventsOf(s, 'COMMITMENT_UPDATED').at(-1)).toMatchObject({
+        playerId: 1, changes: [{ familyId: 'B', from: null, to: 3 }, { familyId: 'C', from: null, to: 2 }],
+      })
+      expect(eventsOf(s, 'DEMAND')).toHaveLength(0) // 仍是静默改写，只多一条可见的承诺价事件
+      const same = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: keys, payouts: [{ playerId: 1, amount: 5 }] })
+      expect(same.phase).toBe('NEGOTIATION')
+      expect(canClose(same)).toBe(true)
+      const less = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: keys, payouts: [{ playerId: 1, amount: 4 }] })
+      expect(less.phase).toBe('OFFER_RESPONSE')
+    })
+
+    it('两家都报过价、实付更低：按原价比例压低，保留价差（B4 + C2，付 3 → B2 + C1）', () => {
+      const s = accept(bScene([{ familyId: 'B', amount: 4 }, { familyId: 'C', amount: 2 }]), 3)
+      expect(demandOf(s.negotiation!, 1, 'B')).toBe(2)
+      expect(demandOf(s.negotiation!, 1, 'C')).toBe(1)
+      expect(eventsOf(s, 'COMMITMENT_UPDATED').at(-1)).toMatchObject({ changes: [{ familyId: 'B', from: 4, to: 2 }, { familyId: 'C', from: 2, to: 1 }] })
+    })
+
+    it('取整余数给小数部分最大者，且任何家族都不高于原价（B3 + C2，付 4 → 2 + 2）', () => {
+      const s = accept(bScene([{ familyId: 'B', amount: 3 }, { familyId: 'C', amount: 2 }]), 4)
+      const b = demandOf(s.negotiation!, 1, 'B')!, c = demandOf(s.negotiation!, 1, 'C')!
+      expect(b + c).toBe(4)
+      expect(b).toBeLessThanOrEqual(3)
+      expect(c).toBeLessThanOrEqual(2)
+      expect([b, c]).toEqual([2, 2])
+    })
+
+    it('一家报过价、一家没报：报过价的不动（哪怕比平均高），余额给没报价的', () => {
+      const s = accept(bScene([{ familyId: 'B', amount: 4 }]), 5)
+      expect(demandOf(s.negotiation!, 1, 'B')).toBe(4)
+      expect(demandOf(s.negotiation!, 1, 'C')).toBe(1)
+      expect(eventsOf(s, 'COMMITMENT_UPDATED').at(-1)).toMatchObject({ changes: [{ familyId: 'C', from: null, to: 1 }] }) // B 没变，不出现在变更里
+    })
+
+    it('原有高价被实付压低时只降不升；原价已在实付之内则不发承诺价事件', () => {
+      // B 报 2、C 报 3（合计 5），付 4：C 的高价不会被拉到平均，也没有谁超过原价
+      const s = accept(bScene([{ familyId: 'B', amount: 2 }, { familyId: 'C', amount: 3 }]), 4)
+      expect(demandOf(s.negotiation!, 1, 'B')! + demandOf(s.negotiation!, 1, 'C')!).toBe(4)
+      expect(demandOf(s.negotiation!, 1, 'B')!).toBeLessThanOrEqual(2)
+      expect(demandOf(s.negotiation!, 1, 'C')!).toBeLessThanOrEqual(3)
+      // 付到承诺价则自动同意：没有应答，也就没有改写
+      const full = step(bScene([{ familyId: 'B', amount: 2 }, { familyId: 'C', amount: 3 }]), { type: 'PROPOSE_OFFER', playerId: 0, repKeys: keys, payouts: [{ playerId: 1, amount: 6 }] })
+      expect(eventsOf(full, 'COMMITMENT_UPDATED')).toHaveLength(0)
+      expect(demandOf(full.negotiation!, 1, 'B')).toBe(2)
+      expect(demandOf(full.negotiation!, 1, 'C')).toBe(3)
+    })
+
+    it('不用的家族与通用价（封口费）不受影响', () => {
+      let s = baseState(4, 2)
+      setInvestors(s, { A: 0, B: 1, C: 1, D: 0, E: 1 })
+      // 必需 A+B+C，再从 D/E 里选 1：Boss 用自己的 D，玩家 1 的 E 不在方案里
+      s.board[0].groups = [{ families: ['A', 'B', 'C'], need: 3 }, { families: ['D', 'E'], need: 1 }]; s.board[0].dividends = 5
+      s = openDealAt(s, 1, 0)
+      s = step(s, { type: 'SPEAK', playerId: 1, say: 'B 3、C 1、E 4', quotes: [{ familyId: 'B', amount: 3 }, { familyId: 'C', amount: 1 }, { familyId: 'E', amount: 4 }] })
+      s = toBoss(s)
+      const used = (['A', 'B', 'C', 'D'] as const).map(f => investorRepKey(f))
+      s = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: used, payouts: [{ playerId: 1, amount: 2 }] })
+      expect(s.phase).toBe('OFFER_RESPONSE') // 2 < 3 + 1
+      s = step(s, { type: 'ACCEPT_OFFER', playerId: 1 })
+      expect(demandOf(s.negotiation!, 1, 'B')! + demandOf(s.negotiation!, 1, 'C')!).toBe(2)
+      expect(demandOf(s.negotiation!, 1, 'E')).toBe(4) // 没用到 E，价不动
+    })
   })
 
   it('只用自己的代表宣布成交不计入提案次数；倒计时被打断后次数仍在', () => {
@@ -639,6 +706,47 @@ describe('流局', () => {
     expect(s.negotiation!.passStreak).toBe(0)
     expect(s.negotiation!.stalemateRounds).toBe(0)
   })
+
+  it('僵局必须"连续"：中间有人喊话就把已停滞的轮数清零，之后得重新连续两轮才流局', () => {
+    let s = baseState(3, 7)
+    s = openDealAt(s, 14, 0)
+    const passRound = () => { for (let i = 0; i < 3; i++) s = step(s, { type: 'PASS', playerId: getActingPlayerId(s) }) }
+    passRound()
+    expect(s.negotiation!.stalemateRounds).toBe(1)
+    s = step(s, { type: 'SPEAK', playerId: getActingPlayerId(s), say: '再想想' })
+    expect(s.negotiation!.stalemateRounds).toBe(0) // 以前这里仍是 1，再停滞一轮就会误判流局
+    passRound()
+    expect(s.phase).toBe('NEGOTIATION')
+    expect(s.negotiation!.stalemateRounds).toBe(1)
+    passRound()
+    expect(s.phase).toBe('TURN')
+    expect(s.dealHistory[0]).toMatchObject({ success: false, failReason: 'STALEMATE' })
+  })
+
+  it('出牌清零停滞轮数', () => {
+    let s = baseState(4, 2)
+    setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
+    clearHand(s, 2)
+    const [clan] = giveCards(s, 2, [{ type: 'CLAN', familyId: 'B' }])
+    s = openDealAt(s, 1, 0) // A + B
+    const passRound = () => { for (let i = 0; i < 4; i++) s = step(s, { type: 'PASS', playerId: getActingPlayerId(s) }) }
+    passRound()
+    expect(s.negotiation!.stalemateRounds).toBe(1)
+    s = step(s, { type: 'PASS', playerId: 1 })
+    s = step(s, { type: 'PLAY_CLAN', playerId: 2, cardId: clan.id })
+    expect(s.negotiation!.stalemateRounds).toBe(0)
+  })
+
+  it('提案与应答清零停滞轮数', () => {
+    let s = baseState(4, 2)
+    setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
+    s = openDealAt(s, 1, 0) // A + B
+    for (let i = 0; i < 4; i++) s = step(s, { type: 'PASS', playerId: getActingPlayerId(s) })
+    expect(s.negotiation!.stalemateRounds).toBe(1)
+    while (getActingPlayerId(s) !== 0) s = step(s, { type: 'PASS', playerId: getActingPlayerId(s) })
+    s = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: [investorRepKey('A'), investorRepKey('B')], payouts: [{ playerId: 1, amount: 1 }] })
+    expect(s.negotiation!.stalemateRounds).toBe(0)
+  })
 })
 
 describe('回合与手牌', () => {
@@ -803,5 +911,303 @@ describe('终局', () => {
     expect(s.winnerIds).toEqual([0, 1])
     expect(eventsOf(s, 'GAME_OVER').at(-1)).toMatchObject({ winnerIds: [0, 1], cash: 15 })
     expect(getLegalActions(s, 0)).toEqual([])
+  })
+})
+
+describe('成交判定：被拒 / 失效的旧方案不挡"只用自己的代表"', () => {
+  it('方案被拒后，Boss 打出自己的家族卡凑齐需求即可成交（不付任何人），不必让被拒的人改主意', () => {
+    let s = baseState(4, 3)
+    setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
+    clearHand(s, 0)
+    const [mine] = giveCards(s, 0, [{ type: 'CLAN', familyId: 'B' }])
+    s = toBoss(openDealAt(s, 1, 0)) // A(Boss) + B(玩家 1)
+    s = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: [investorRepKey('A'), investorRepKey('B')], payouts: [{ playerId: 1, amount: 1 }] })
+    s = step(s, { type: 'DECLINE_OFFER', playerId: 1 })
+    expect(s.negotiation!.offer!.responses[1]).toBe('DECLINED')
+    expect(canClose(s)).toBe(false) // 只有被拒的旧方案，自己还凑不齐
+
+    s = step(s, { type: 'PLAY_CLAN', playerId: 0, cardId: mine.id })
+    expect(s.negotiation!.offer!.responses[1]).toBe('DECLINED') // 旧方案仍在，但不再挡路
+    expect(canClose(s)).toBe(true)
+    expect(getLegalActions(s, 0).map(a => a.type)).toContain('CLOSE_DEAL')
+
+    s = step(s, { type: 'CLOSE_DEAL', playerId: 0 })
+    expect(s.negotiation!.offer).toMatchObject({ repKeys: [investorRepKey('A'), clanRepKey(mine.id)], payouts: [] })
+    expect(s.negotiation!.offersMade).toBe(1) // 回退成交不算提案
+    for (const id of [1, 2, 3]) s = step(s, { type: 'PASS_CLOSING', playerId: id })
+    expect(s.players[0].cash).toBe(6)
+    expect(s.players[1].cash).toBe(0)
+    expect(s.dealHistory[0]).toMatchObject({ success: true, payouts: [] })
+  })
+
+  it('已全员同意的有效方案仍优先：按方案付款，不被回退成交吞掉分成', () => {
+    let s = baseState(4, 3)
+    setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
+    s = toBoss(openDealAt(s, 1, 0))
+    s = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: [investorRepKey('A'), investorRepKey('B')], payouts: [{ playerId: 1, amount: 2 }] })
+    s = step(s, { type: 'ACCEPT_OFFER', playerId: 1 })
+    s = step(s, { type: 'CLOSE_DEAL', playerId: 0 })
+    for (const id of [1, 2, 3]) s = step(s, { type: 'PASS_CLOSING', playerId: id })
+    expect(s.dealHistory[0].payouts).toEqual([{ playerId: 1, amount: 2 }])
+  })
+})
+
+describe('老板牌夺权与干扰者名单', () => {
+  it('夺权成功后，新 Boss 从本笔交易的干扰者中移除（此前打过旅行牌也一样）', () => {
+    let s = baseState(4, 4)
+    setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
+    for (let i = 0; i < 4; i++) clearHand(s, i)
+    const [travel] = giveCards(s, 2, [{ type: 'TRAVEL' }])
+    const [boss] = giveCards(s, 2, [{ type: 'BOSS' }])
+    s = openDealAt(s, 1, 0)
+    s = step(s, { type: 'PASS', playerId: 1 })
+    s = step(s, { type: 'PLAY_TRAVEL', playerId: 2, cardId: travel.id, targetRepKey: investorRepKey('D') })
+    for (const id of [3, 0, 1]) s = step(s, { type: 'PASS_REACTION', playerId: id })
+    expect(s.negotiation!.disruptors).toEqual([2])
+    for (const id of [3, 0, 1]) s = step(s, { type: 'PASS', playerId: id })
+    s = step(s, { type: 'PLAY_BOSS', playerId: 2, cardId: boss.id })
+    for (const id of [3, 0, 1]) s = step(s, { type: 'PASS_REACTION', playerId: id })
+    expect(s.negotiation!.bossId).toBe(2)
+    expect(s.negotiation!.disruptors).toEqual([])
+    s = step(s, { type: 'ABANDON_DEAL', playerId: 2 })
+    expect(s.dealHistory[0]).toMatchObject({ bossId: 2, openerId: 0, disruptors: [] })
+  })
+
+  it('老板牌被阻止则出牌者仍是干扰者', () => {
+    let s = baseState(4, 4)
+    setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
+    for (let i = 0; i < 4; i++) clearHand(s, i)
+    const [boss] = giveCards(s, 2, [{ type: 'BOSS' }])
+    giveCards(s, 3, [{ type: 'STOP' }])
+    s = openDealAt(s, 1, 0)
+    s = step(s, { type: 'PASS', playerId: 1 })
+    s = step(s, { type: 'PLAY_BOSS', playerId: 2, cardId: boss.id })
+    s = step(s, { type: 'PLAY_STOP', playerId: 3 })
+    expect(s.negotiation!.bossId).toBe(0)
+    expect(s.negotiation!.disruptors).toEqual([2])
+  })
+})
+
+describe('成交倒计时里的干扰牌只指向将要成交的方案', () => {
+  /** 6 人局：0 持 A、B 独立成交 #1（A+B）；1 持 C，2 持 D，3 持 E，4 持 F；5 无投资者 */
+  function closingScene() {
+    let s = baseState(6, 4)
+    setInvestors(s, { A: 0, B: 0, C: 1, D: 2, E: 3, F: 4 })
+    for (let i = 0; i < 6; i++) clearHand(s, i)
+    const [travel] = giveCards(s, 1, [{ type: 'TRAVEL' }]) // 万能旅行
+    giveCards(s, 2, [{ type: 'STOP' }])                    // 只有阻止牌：倒计时里无牌可打
+    const recruits = giveCards(s, 5, [{ type: 'RECRUITMENT' }, { type: 'RECRUITMENT' }, { type: 'RECRUITMENT' }])
+    s = toBoss(openDealAt(s, 1, 0))
+    s = step(s, { type: 'CLOSE_DEAL', playerId: 0 })
+    return { s, travel, recruits: recruits.map(c => c.id) }
+  }
+
+  it('旅行牌只能指向方案所用的代表；打向别的代表不合法', () => {
+    const { s, travel } = closingScene()
+    expect(getActingPlayerId(s)).toBe(1)
+    const targets = getLegalActions(s, 1).filter(a => a.type === 'PLAY_TRAVEL').map(a => a.type === 'PLAY_TRAVEL' && a.targetRepKey).sort()
+    expect(targets).toEqual([investorRepKey('A'), investorRepKey('B')])
+    rejects(s, { type: 'PLAY_TRAVEL', playerId: 1, cardId: travel.id, targetRepKey: investorRepKey('C') })
+    rejects(s, { type: 'PLAY_TRAVEL', playerId: 1, cardId: travel.id, targetRepKey: investorRepKey('D') })
+    expect(isLegal(s, { type: 'PLAY_TRAVEL', playerId: 1, cardId: travel.id, targetRepKey: investorRepKey('B') })).toBe(true)
+  })
+
+  it('同一张万能旅行牌在谈判阶段仍可指向任何未失效的代表（含方案之外的）', () => {
+    let s = baseState(6, 4)
+    setInvestors(s, { A: 0, B: 0, C: 1, D: 2, E: 3, F: 4 })
+    for (let i = 0; i < 6; i++) clearHand(s, i)
+    const [travel] = giveCards(s, 1, [{ type: 'TRAVEL' }])
+    s = openDealAt(s, 1, 0)
+    expect(isLegal(s, { type: 'PLAY_TRAVEL', playerId: 1, cardId: travel.id, targetRepKey: investorRepKey('D') })).toBe(true)
+  })
+
+  it('招募只能夺方案所用的投资者；夺别人的投资者在倒计时里无意义，不再列出', () => {
+    let { s, recruits } = closingScene()
+    for (const id of [1, 2, 3, 4]) s = step(s, { type: 'PASS_CLOSING', playerId: id })
+    expect(getActingPlayerId(s)).toBe(5)
+    const targets = getLegalActions(s, 5).filter(a => a.type === 'PLAY_RECRUITMENT').map(a => a.type === 'PLAY_RECRUITMENT' && a.targetFamilyId).sort()
+    expect(targets).toEqual(['A', 'B'])
+    rejects(s, { type: 'PLAY_RECRUITMENT', playerId: 5, cardIds: recruits, targetFamilyId: 'C' })
+    s = step(s, { type: 'PLAY_RECRUITMENT', playerId: 5, cardIds: recruits, targetFamilyId: 'A' })
+    expect(s.phase).toBe('REACTION')
+  })
+
+  it('hasMeaningfulClosingPlay：只有阻止牌 / 没牌的人为否；有能打在方案上的牌为是；谈判阶段恒为否', () => {
+    let { s } = closingScene()
+    expect(hasMeaningfulClosingPlay(s, 1)).toBe(true)  // 旅行牌
+    expect(hasMeaningfulClosingPlay(s, 2)).toBe(false) // 只有阻止牌（阻止牌在反应窗口才有用）
+    expect(hasMeaningfulClosingPlay(s, 3)).toBe(false) // 空手
+    expect(hasMeaningfulClosingPlay(s, 5)).toBe(true)  // 招募三连，可夺 A / B
+    // 与合法动作同口径
+    for (const id of [1, 2, 3, 4, 5]) {
+      expect(getActingPlayerId(s)).toBe(id)
+      const meaningful = getLegalActions(s, id).some(a => a.type !== 'PASS_CLOSING')
+      expect(hasMeaningfulClosingPlay(s, id)).toBe(meaningful)
+      s = step(s, { type: 'PASS_CLOSING', playerId: id })
+    }
+    let n = baseState(4, 1)
+    setInvestors(n, { A: 0, B: 0 })
+    n = toBoss(openDealAt(n, 1, 0))
+    expect(hasMeaningfulClosingPlay(n, 1)).toBe(false)
+  })
+})
+
+describe('放弃的时机（docs/rules.md §5.5）', () => {
+  it('Boss 只有在自己的谈判回合才能放弃：叫价轮没轮到他、应答、倒计时、反应窗口里都不行', () => {
+    let s = baseState(4, 3)
+    setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
+    clearHand(s, 2)
+    const [travel] = giveCards(s, 2, [{ type: 'TRAVEL' }])
+    s = openDealAt(s, 1, 0)
+    rejects(s, { type: 'ABANDON_DEAL', playerId: 0 })        // 叫价轮，还没轮到 Boss
+    s = toBoss(s)
+    expect(getLegalActions(s, 0).map(a => a.type)).toContain('ABANDON_DEAL')
+    s = step(s, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: [investorRepKey('A'), investorRepKey('B')], payouts: [{ playerId: 1, amount: 2 }] })
+    expect(s.phase).toBe('OFFER_RESPONSE')
+    rejects(s, { type: 'ABANDON_DEAL', playerId: 0 })        // 等应答
+    s = step(s, { type: 'ACCEPT_OFFER', playerId: 1 })
+    s = step(s, { type: 'CLOSE_DEAL', playerId: 0 })
+    rejects(s, { type: 'ABANDON_DEAL', playerId: 0 })        // 成交倒计时
+    s = step(s, { type: 'PASS_CLOSING', playerId: 1 })
+    s = step(s, { type: 'PLAY_TRAVEL', playerId: 2, cardId: travel.id, targetRepKey: investorRepKey('B') })
+    rejects(s, { type: 'ABANDON_DEAL', playerId: 0 })        // 反应窗口
+    for (const id of [3, 0, 1]) s = step(s, { type: 'PASS_REACTION', playerId: id })
+    expect(s.phase).toBe('NEGOTIATION')                       // 倒计时被打断，回到 Boss 的谈判回合
+    s = step(s, { type: 'ABANDON_DEAL', playerId: 0 })
+    expect(s.dealHistory[0]).toMatchObject({ success: false, failReason: 'ABANDONED' })
+  })
+})
+
+describe('事件补全', () => {
+  it('PASSED：谈判跳过、倒计时放行、反应窗口放行都发事件，带行动者与阶段；narrate 标 minor', () => {
+    let s = baseState(4, 4)
+    setInvestors(s, { A: 0, B: 0, C: 1, D: 2, E: 3 })
+    for (let i = 0; i < 4; i++) clearHand(s, i)
+    const [travel] = giveCards(s, 2, [{ type: 'TRAVEL' }])
+    s = openDealAt(s, 1, 0)
+    s = step(s, { type: 'PASS', playerId: 1 })
+    expect(eventsOf(s, 'PASSED').at(-1)).toMatchObject({ playerId: 1, phase: 'NEGOTIATION' })
+    s = toBoss(s)
+    s = step(s, { type: 'CLOSE_DEAL', playerId: 0 })
+    s = step(s, { type: 'PASS_CLOSING', playerId: 1 })
+    expect(eventsOf(s, 'PASSED').at(-1)).toMatchObject({ playerId: 1, phase: 'CLOSING' })
+    s = step(s, { type: 'PLAY_TRAVEL', playerId: 2, cardId: travel.id, targetRepKey: investorRepKey('B') })
+    const before = eventsOf(s, 'PASSED').length
+    for (const id of [3, 0, 1]) s = step(s, { type: 'PASS_REACTION', playerId: id })
+    expect(eventsOf(s, 'PASSED').slice(before).map(e => e.kind === 'PASSED' && [e.playerId, e.phase])).toEqual([[3, 'REACTION'], [0, 'REACTION'], [1, 'REACTION']])
+
+    const passed = eventsOf(s, 'PASSED').at(-1)!
+    expect(narrate(s, passed).minor).toBe(true)
+    expect(isMinorEvent(passed)).toBe(true)
+    for (const e of s.events) expect(narrate(s, e).minor === true).toBe(e.kind === 'PASSED')
+  })
+
+  it('CLOSING_INTERRUPTED 带原因：哪张牌、谁打的、目标（旅行 = 代表快照，招募 = 家族）', () => {
+    let s = baseState(4, 4)
+    setInvestors(s, { A: 0, B: 0, C: 1, D: 2, E: 3 })
+    for (let i = 0; i < 4; i++) clearHand(s, i)
+    const [travel] = giveCards(s, 2, [{ type: 'TRAVEL' }])
+    s = toBoss(openDealAt(s, 1, 0))
+    s = step(s, { type: 'CLOSE_DEAL', playerId: 0 })
+    s = step(s, { type: 'PASS_CLOSING', playerId: 1 })
+    s = step(s, { type: 'PLAY_TRAVEL', playerId: 2, cardId: travel.id, targetRepKey: investorRepKey('B') })
+    for (const id of [3, 0, 1]) s = step(s, { type: 'PASS_REACTION', playerId: id })
+    expect(eventsOf(s, 'CLOSING_INTERRUPTED').at(-1)).toMatchObject({
+      by: 'TRAVEL', actorId: 2, targetRep: { familyId: 'B', ownerId: 0, source: 'INVESTOR' },
+    })
+
+    // 招募夺方案里的投资者
+    let r = baseState(4, 4)
+    setInvestors(r, { A: 0, B: 0, C: 1, D: 2, E: 3, F: 2 }) // 公共区为空，才能直接夺别人的投资者
+    for (let i = 0; i < 4; i++) clearHand(r, i)
+    const recruits = giveCards(r, 3, [{ type: 'RECRUITMENT' }, { type: 'RECRUITMENT' }, { type: 'RECRUITMENT' }]).map(c => c.id)
+    r = toBoss(openDealAt(r, 1, 0))
+    r = step(r, { type: 'CLOSE_DEAL', playerId: 0 })
+    r = step(r, { type: 'PASS_CLOSING', playerId: 1 })
+    r = step(r, { type: 'PASS_CLOSING', playerId: 2 })
+    r = step(r, { type: 'PLAY_RECRUITMENT', playerId: 3, cardIds: recruits, targetFamilyId: 'A' })
+    for (const id of [0, 1, 2]) r = step(r, { type: 'PASS_REACTION', playerId: id })
+    expect(eventsOf(r, 'CLOSING_INTERRUPTED').at(-1)).toMatchObject({ by: 'RECRUITMENT', actorId: 3, targetFamilyId: 'A' })
+  })
+
+  it('STOP_PLAYED 带被取消的牌的目标（旅行 = 代表快照，招募 = 家族）', () => {
+    let s = baseState(4, 4)
+    setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
+    for (let i = 0; i < 4; i++) clearHand(s, i)
+    const [travel] = giveCards(s, 2, [{ type: 'TRAVEL' }])
+    giveCards(s, 1, [{ type: 'STOP' }])
+    s = openDealAt(s, 1, 0)
+    s = step(s, { type: 'PASS', playerId: 1 })
+    s = step(s, { type: 'PLAY_TRAVEL', playerId: 2, cardId: travel.id, targetRepKey: investorRepKey('B') })
+    s = step(s, { type: 'PASS_REACTION', playerId: 3 })
+    s = step(s, { type: 'PASS_REACTION', playerId: 0 })
+    s = step(s, { type: 'PLAY_STOP', playerId: 1 })
+    expect(eventsOf(s, 'STOP_PLAYED').at(-1)).toMatchObject({
+      playerId: 1, actorId: 2, cancelled: 'TRAVEL', targetRep: { familyId: 'B', ownerId: 1, source: 'INVESTOR' },
+    })
+
+    let r = baseState(4, 4)
+    setInvestors(r, { A: 0, B: 1, C: 2, D: 3 })
+    for (let i = 0; i < 4; i++) clearHand(r, i)
+    const recruits = giveCards(r, 2, [{ type: 'RECRUITMENT' }, { type: 'RECRUITMENT' }, { type: 'RECRUITMENT' }]).map(c => c.id)
+    giveCards(r, 3, [{ type: 'STOP' }])
+    r = openDealAt(r, 1, 0)
+    r = step(r, { type: 'PASS', playerId: 1 })
+    r = step(r, { type: 'PLAY_RECRUITMENT', playerId: 2, cardIds: recruits, targetFamilyId: 'E' }) // 公共区优先：E 在公共区
+    r = step(r, { type: 'PLAY_STOP', playerId: 3 })
+    expect(eventsOf(r, 'STOP_PLAYED').at(-1)).toMatchObject({ cancelled: 'RECRUITMENT', targetFamilyId: 'E' })
+  })
+
+  it('DEAL_CLOSED 带本笔所用代表；DEAL_FAILED 在缺代表流局时带缺哪些家族', () => {
+    let s = baseState(4, 1)
+    setInvestors(s, { A: 0, B: 0, C: 1, D: 2, E: 3 })
+    s = closeSolo(s, 1, 0)
+    expect(eventsOf(s, 'DEAL_CLOSED').at(-1)).toMatchObject({
+      dealNumber: 1, reps: [{ familyId: 'A', ownerId: 0, source: 'INVESTOR' }, { familyId: 'B', ownerId: 0, source: 'INVESTOR' }],
+    })
+
+    let f = baseState(4, 1)
+    setInvestors(f, { A: 0, C: 1, D: 2, E: 3 }) // B 在公共区，没人能代表
+    f = openDealAt(f, 1, 0)
+    for (let i = 0; i < 4; i++) f = step(f, { type: 'PASS', playerId: getActingPlayerId(f) })
+    expect(f.dealHistory[0]).toMatchObject({ success: false, failReason: 'INCOMPLETE' })
+    expect(eventsOf(f, 'DEAL_FAILED').at(-1)).toMatchObject({ reason: 'INCOMPLETE', missing: ['B'] })
+
+    // 其他原因的流局不带 missing
+    let g = toBoss(openDealAt(baseState(4, 1), 1, 0))
+    g = step(g, { type: 'ABANDON_DEAL', playerId: 0 })
+    expect(eventsOf(g, 'DEAL_FAILED').at(-1)).toMatchObject({ reason: 'ABANDONED' })
+    expect((eventsOf(g, 'DEAL_FAILED').at(-1) as { missing?: unknown }).missing).toBeUndefined()
+  })
+
+  it('dealNo：开单到成交 / 流局之间的事件都带交易编号（成交与流局都占号），谈判之外的事件没有', () => {
+    let s = baseState(4, 1)
+    setInvestors(s, { A: 0, B: 0, C: 1, D: 2, E: 3 })
+    s.phase = 'TURN'; s.markerPos = 1; s.currentId = 0; s.markerChooserId = null
+    s = step(s, { type: 'ROLL_MOVE', playerId: 0 }) // 谈判之外的事件
+    s = openDealAt(s, 1, 0)
+    s = step(s, { type: 'SPEAK', playerId: 1, say: '我先说一句' })
+    s = toBoss(s)
+    s = step(s, { type: 'ABANDON_DEAL', playerId: 0 }) // 第 1 次开单：流局
+    s = closeSolo(s, 1, 0)                              // 第 2 次开单：成交（第 1 笔成交）
+    s = step(s, { type: 'ROLL_MOVE', playerId: s.currentId }) // 谈判之外的事件
+
+    const evs = s.events
+    const opened = evs.filter(e => e.kind === 'DEAL_OPENED')
+    expect(opened.map(e => e.dealNo)).toEqual([1, 2])
+    const failed = evs.find(e => e.kind === 'DEAL_FAILED')!
+    const closed = evs.find(e => e.kind === 'DEAL_CLOSED')!
+    expect(failed.dealNo).toBe(1)
+    expect(closed.dealNo).toBe(2)
+    expect(closed.kind === 'DEAL_CLOSED' && closed.dealNumber).toBe(1) // 成交序号与开单序号分开计
+    expect(s.dealHistory.map(d => d.success)).toEqual([false, true])
+
+    const span = (from: number, to: number, no: number) => {
+      for (const e of evs.filter(x => x.id >= from && x.id <= to)) expect(e.dealNo, `${e.kind}#${e.id}`).toBe(no)
+    }
+    span(opened[0].id, failed.id, 1)
+    span(opened[1].id, closed.id, 2)
+    expect(evs.filter(e => e.kind === 'MARKER_MOVED').every(e => e.dealNo === undefined)).toBe(true)
+    expect(eventsOf(s, 'PASSED').length).toBeGreaterThan(0)
   })
 })

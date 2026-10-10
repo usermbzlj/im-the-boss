@@ -2,21 +2,46 @@
 // StartScreen — 开局设置：人数 / 版本（15·16·22·30 笔）/ 种子
 // ============================================================
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { GameVariantId } from '../engine/types'
 import { hasSavedGame } from '../utils/storage'
-import { isLLMConfigured } from '../ai/llmClient'
+import { parseSeed } from '../utils/seed'
+import { isLLMConfigured, loadLLMConfig, saveLLMConfig, TABLE_STYLES, type TableStyle } from '../ai/llmClient'
 import { AI_ROSTER, VARIANT_LIST, HAND_LIMIT, BUY_CARDS_COST_SHARES } from '../engine/config'
 
 interface StartScreenProps {
   onStart: (count: number, name: string, seed?: number, variantId?: GameVariantId, houseRules?: boolean) => void
   onContinue: () => void
   onSettings: () => void
+  /** 变化时重新读取桌风等配置（例如设置面板关闭后） */
+  syncKey?: unknown
 }
 
 const COUNTS = [3, 4, 5, 6]
 
-export default function StartScreen({ onStart, onContinue, onSettings }: StartScreenProps) {
+/** 桌风：电脑玩家整体的强硬程度 */
+export const TABLE_STYLE_INFO: Record<TableStyle, { name: string; blurb: string }> = {
+  friendly: { name: '友好', blurb: '电脑玩家讲人情、好说话，更愿意让利成交——适合熟悉规则。' },
+  business: { name: '商战', blurb: '各凭本事、讲价码，不白送也不赶尽杀绝——默认体验。' },
+  ruthless: { name: '冷血', blurb: '寸利不让，爱搅局也记仇，谈判更激烈、更考验你。' },
+}
+
+function readTableStyle(): TableStyle {
+  try {
+    const s = loadLLMConfig().tableStyle
+    return TABLE_STYLES.includes(s) ? s : 'business'
+  } catch {
+    return 'business'
+  }
+}
+
+export default function StartScreen({ onStart, onContinue, onSettings, syncKey }: StartScreenProps) {
+  const [tableStyle, setTableStyle] = useState<TableStyle>(readTableStyle)
+  useEffect(() => { setTableStyle(readTableStyle()) }, [syncKey])
+  const pickStyle = (next: TableStyle) => {
+    setTableStyle(next)
+    try { saveLLMConfig({ ...loadLLMConfig(), tableStyle: next }) } catch { /* 存储不可用：只对本次显示生效 */ }
+  }
   const [playerName, setPlayerName] = useState('')
   const [playerCount, setPlayerCount] = useState(4)
   const [variantId, setVariantId] = useState<GameVariantId>('classic')
@@ -30,7 +55,8 @@ export default function StartScreen({ onStart, onContinue, onSettings }: StartSc
   const deckSize = variant.deckSize + (houseRules ? variant.sickCards : 0)
 
   const start = () => {
-    const seed = seedText.trim() === '' ? undefined : (Math.abs(Math.floor(Number(seedText))) >>> 0) || undefined
+    pickStyle(tableStyle) // 确保开局读到的就是界面上选中的桌风
+    const seed = parseSeed(seedText) // 注意：0 是合法种子，不能用 || 兜底成随机
     onStart(playerCount, playerName.trim() || '你', seed, variantId, houseRules)
   }
 
@@ -43,16 +69,16 @@ export default function StartScreen({ onStart, onContinue, onSettings }: StartSc
         <div className="llm-badge">{llmOn ? '🤖 LLM 电脑玩家已启用' : '🎲 使用内置启发式 AI（可在设置中启用 LLM）'}</div>
 
         <div className="form-group">
-          <label>你的名字</label>
-          <input value={playerName} onChange={e => setPlayerName(e.target.value)} placeholder="输入名字" maxLength={12}
+          <label htmlFor="start-name">你的名字</label>
+          <input id="start-name" autoComplete="nickname" enterKeyHint="go" value={playerName} onChange={e => setPlayerName(e.target.value)} placeholder="输入名字" maxLength={12}
             onKeyDown={e => e.key === 'Enter' && start()} />
         </div>
 
         <div className="form-group">
-          <label>玩家人数（含你）</label>
-          <div className="player-count-selector">
+          <label id="start-count-label">玩家人数（含你）</label>
+          <div className="player-count-selector" role="group" aria-labelledby="start-count-label">
             {COUNTS.map(c => (
-              <button key={c} type="button" className={`player-count-btn${c === playerCount ? ' active' : ''}`} onClick={() => setPlayerCount(c)}>{c} 人</button>
+              <button key={c} type="button" aria-pressed={c === playerCount} className={`player-count-btn${c === playerCount ? ' active' : ''}`} onClick={() => setPlayerCount(c)}>{c} 人</button>
             ))}
           </div>
           <p className="form-hint">{playerCount === 3 ? '每人 2 张投资者牌' : playerCount === 6 ? '每人 1 张投资者牌' : `每人 1 张投资者牌，${6 - playerCount} 张放公共区（需招募取得）`}</p>
@@ -60,12 +86,26 @@ export default function StartScreen({ onStart, onContinue, onSettings }: StartSc
         </div>
 
         <div className="form-group">
-          <label>对局版本</label>
-          <div className="variant-selector">
+          <label>桌风（电脑玩家的作风）</label>
+          <div className="table-style-selector" role="radiogroup" aria-label="桌风">
+            {TABLE_STYLES.map(s => (
+              <button key={s} type="button" role="radio" aria-checked={s === tableStyle}
+                className={`style-btn${s === tableStyle ? ' active' : ''}`} onClick={() => pickStyle(s)}>
+                {TABLE_STYLE_INFO[s].name}
+              </button>
+            ))}
+          </div>
+          <p className="form-hint">{TABLE_STYLE_INFO[tableStyle].blurb}</p>
+        </div>
+
+        <div className="form-group">
+          <label id="start-variant-label">对局版本</label>
+          <div className="variant-selector" role="group" aria-labelledby="start-variant-label">
             {VARIANT_LIST.map(v => (
               <button
                 key={v.id}
                 type="button"
+                aria-pressed={v.id === variantId}
                 className={`variant-btn${v.id === variantId ? ' active' : ''}`}
                 onClick={() => { setVariantId(v.id); setHouseRulesChoice(null) }}
                 title={v.blurb}
@@ -97,8 +137,8 @@ export default function StartScreen({ onStart, onContinue, onSettings }: StartSc
         </div>
 
         <div className="form-group">
-          <label>对局种子（可选，同一种子可复现发牌与骰子）</label>
-          <input value={seedText} onChange={e => setSeedText(e.target.value)} placeholder="留空随机" inputMode="numeric" />
+          <label htmlFor="start-seed">对局种子（可选，同一种子可复现发牌与骰子）</label>
+          <input id="start-seed" value={seedText} onChange={e => setSeedText(e.target.value)} placeholder="留空随机" inputMode="numeric" />
         </div>
 
         <button className="btn-primary" onClick={start}>开始新游戏</button>

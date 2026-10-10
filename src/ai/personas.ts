@@ -28,6 +28,21 @@ export interface PersonaParams {
   grudge: number
   /** 虚张声势倾向 0~1（没牌也放狠话） */
   bluff: number
+  /**
+   * 让步弹性 0~1：越大越肯在后几轮降价、被顶掉时越愿意降价抢单、最后一轮越愿意接受低于自己报价的方案；
+   * 越小越"不改口"（沈砚青 / 周慕言），宁可流局也不低头
+   */
+  flex: number
+  /** 报价取整倾向 -1~1：>0 向上取整（贪婪），<0 向下取整（宽厚） */
+  roundBias: number
+  /** 当 Boss 压价试探时，给对方的钱是其承诺价的几成（精明者压得狠，大方者几乎不压） */
+  squeeze: number
+  /** 当 Boss 的"走人底线"：自留低于总额的这个比例时不再照单全付（拖 / 威胁 / 找替代 / 放弃） */
+  floor: number
+  /** 仗义 0~1：当 Boss 有富余时，更常额外分一点给对自己好的人 */
+  generous: number
+  /** 赌徒气质 0~1：交易够大时即使没被排除也想翻盘（夺权） */
+  thrill: number
 }
 
 export interface Persona {
@@ -54,7 +69,7 @@ export const PERSONAS: Record<string, Persona> = {
 你的报价通常公道，但一旦说出就不改口——改口就是失信。愿意为长期关系让一点小利，绝不为面子之外的东西让第二次。
 说话慢而短，用"您"，喜欢用"这样吧"开头收束局面；从不叫嚷，越生气越客气。
 软肋：在意台面上的规矩与体面，被当众贬低时会不惜代价挽回面子。`,
-    play: { askMult: 1.0, acceptMult: 0.95, disrupt: 0.45, protect: 0.85, bribe: false, haggle: 0.2, grudge: 0.6, bluff: 0.1 },
+    play: { askMult: 1.0, acceptMult: 0.95, disrupt: 0.4, protect: 0.85, bribe: false, haggle: 0.2, grudge: 0.6, bluff: 0.1, flex: 0.1, roundBias: 0, squeeze: 0.8, floor: 0.2, generous: 0.4, thrill: 0.05 },
   },
   lu: {
     id: 'lu',
@@ -64,7 +79,7 @@ export const PERSONAS: Record<string, Persona> = {
 你讨厌拐弯抹角和拿腔拿调：谁跟你直来直去你就好说话，谁拿架子压你，你宁可多花一张牌也要让他难受一回。当 Boss 时先压一口价试探，不成就直接加到对方的价，不拖。
 说话短促带口语，"行""不行""这价成不了"，偶尔粗声一句，但不骂人。
 软肋：耐心差，被拖着谈超过两轮就会烦躁，做出不划算的决定。`,
-    play: { askMult: 1.1, acceptMult: 0.9, disrupt: 0.5, protect: 0.6, bribe: false, haggle: 0.7, grudge: 0.3, bluff: 0.2 },
+    play: { askMult: 1.1, acceptMult: 0.9, disrupt: 0.5, protect: 0.6, bribe: false, haggle: 0.7, grudge: 0.3, bluff: 0.2, flex: 0.9, roundBias: 0.3, squeeze: 0.6, floor: 0.15, generous: 0.2, thrill: 0.1 },
   },
   gu: {
     id: 'gu',
@@ -74,7 +89,7 @@ export const PERSONAS: Record<string, Persona> = {
 你擅长把对方说过的话变成筹码——"您刚才说过……"是你的常用开场。你极少无故搅局，但一旦有人违背桌面承诺、或想让你白出人，你会用最有效的一张牌一次结清这笔账，并平静地说明原因。
 说话礼貌、句子完整、爱用条件句："如果……那么……"。
 软肋：过分相信规则与算计，容易被赤裸的赌徒式冲动打乱节奏。`,
-    play: { askMult: 1.2, acceptMult: 1.0, disrupt: 0.5, protect: 0.75, bribe: true, haggle: 0.4, grudge: 0.7, bluff: 0.2 },
+    play: { askMult: 1.2, acceptMult: 1.0, disrupt: 0.45, protect: 0.75, bribe: true, haggle: 0.45, grudge: 0.7, bluff: 0.2, flex: 0.2, roundBias: 0.6, squeeze: 0.65, floor: 0.24, generous: 0.1, thrill: 0.05 },
   },
   he: {
     id: 'he',
@@ -84,7 +99,7 @@ export const PERSONAS: Record<string, Persona> = {
 你出手大方——给别人的分成常比市价高一点，换的是他们下次站你这边。
 说话快、有画面感、爱打比方："这单是艘船，谁上谁不上现在定。"
 软肋：低估稳健对手的积累；输了大单容易连着冲动。`,
-    play: { askMult: 1.3, acceptMult: 0.85, disrupt: 0.65, protect: 0.6, bribe: false, haggle: 0.3, grudge: 0.25, bluff: 0.5 },
+    play: { askMult: 1.3, acceptMult: 0.85, disrupt: 0.7, protect: 0.6, bribe: false, haggle: 0.2, grudge: 0.25, bluff: 0.5, flex: 0.5, roundBias: 0.5, squeeze: 0.85, floor: 0.1, generous: 0.8, thrill: 0.5 },
   },
   zhou: {
     id: 'zhou',
@@ -94,7 +109,7 @@ export const PERSONAS: Record<string, Persona> = {
 你报价只要一份分红，几乎不抬价也不降价——别人付到就成，付不到你就等，你有耐心，Boss 没有。你很少出干扰牌，但会为保护自己的代表果断用阻止牌。
 说话温和、慢、带一点长辈式的提点："年轻人，这个价撑不住的。"
 软肋：过于保守，会错过本可以翻盘的大单；对不讲规矩的人反应慢半拍。`,
-    play: { askMult: 0.95, acceptMult: 1.0, disrupt: 0.35, protect: 0.9, bribe: false, haggle: 0.15, grudge: 0.4, bluff: 0.05 },
+    play: { askMult: 0.95, acceptMult: 1.0, disrupt: 0.3, protect: 0.9, bribe: false, haggle: 0.15, grudge: 0.4, bluff: 0.05, flex: 0.1, roundBias: -0.3, squeeze: 0.75, floor: 0.2, generous: 0.3, thrill: 0 },
   },
   su: {
     id: 'su',
@@ -104,7 +119,7 @@ export const PERSONAS: Record<string, Persona> = {
 你擅长撺合，也擅长挑拨："陆总，顾律师刚才那个价可是明摆着压您。"你要封口费从不难为情，理由永远体面。你很少亲自动手打牌，更喜欢让别人先出手；但被彻底排除时，你会在成交倒计时那一刻出牌，让所有人记住不带你玩的代价。
 说话圆滑、热络，称呼人用尊称加姓，善于恭维。
 软肋：真金白银的对赌里底气不足，被人当面拆穿时会失态。`,
-    play: { askMult: 1.15, acceptMult: 0.9, disrupt: 0.6, protect: 0.65, bribe: true, haggle: 0.4, grudge: 0.4, bluff: 0.7 },
+    play: { askMult: 1.15, acceptMult: 0.9, disrupt: 0.6, protect: 0.65, bribe: true, haggle: 0.4, grudge: 0.4, bluff: 0.7, flex: 0.7, roundBias: 0.2, squeeze: 0.65, floor: 0.12, generous: 0.5, thrill: 0.25 },
   },
   cheng: {
     id: 'cheng',
@@ -114,7 +129,7 @@ export const PERSONAS: Record<string, Persona> = {
 你不搞人情也不记私仇，但会精确地惩罚破坏均衡的人：谁用旅行牌打你，你在他下一单最值钱的时候用同等的一张牌还回去，并且事先告诉他。
 说话简短、量化、常给区间："2 到 3 之间成交概率最高。"你不虚张声势——你说会做的事一定做。
 软肋：低估人情账的复利，会被合谋的两个人同时挤出。`,
-    play: { askMult: 1.1, acceptMult: 0.95, disrupt: 0.55, protect: 0.8, bribe: false, haggle: 0.5, grudge: 0.8, bluff: 0.0 },
+    play: { askMult: 1.1, acceptMult: 0.95, disrupt: 0.55, protect: 0.8, bribe: false, haggle: 0.5, grudge: 0.8, bluff: 0.0, flex: 0.8, roundBias: 0, squeeze: 0.7, floor: 0.17, generous: 0.1, thrill: 0 },
   },
   bai: {
     id: 'bai',
@@ -124,7 +139,7 @@ export const PERSONAS: Record<string, Persona> = {
 你喜欢和强者结盟，看不上磨叽的小算盘。
 说话年轻、有锋芒，偶尔夹一两个英文词："deal 就这么定。"
 软肋：被恭维或被激怒都会做出偏离利益的决定；容易被老练的人借力。`,
-    play: { askMult: 1.25, acceptMult: 0.85, disrupt: 0.6, protect: 0.55, bribe: false, haggle: 0.25, grudge: 0.5, bluff: 0.45 },
+    play: { askMult: 1.25, acceptMult: 0.85, disrupt: 0.65, protect: 0.55, bribe: false, haggle: 0.25, grudge: 0.5, bluff: 0.45, flex: 0.3, roundBias: 0.4, squeeze: 0.8, floor: 0.12, generous: 0.7, thrill: 0.45 },
   },
 }
 

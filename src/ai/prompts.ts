@@ -20,11 +20,14 @@ import {
   isSick, swapTargetType, recruitCountAfterTrade, recruitTargets, recruitCost, countCards, tableCanComplete, buyCardsCost,
 } from '../engine/rules'
 import { canClose } from '../engine/validator'
-import { narrate, famLabel, famName, playerName, reactionKindName, spaceKindName, spaceKindEffect } from '../text/narrate'
+import { narrate, isMinorEvent, famLabel, famName, playerName, reactionKindName, spaceKindName, spaceKindEffect } from '../text/narrate'
 import { describeAction, describeCard, describeGroups, describeReactionTarget, describeSpaceKind, describeSpaceKindFull, grossAfterDelta } from '../text/labels'
 import { getPersonaForPlayer } from './personas'
-import { estimateDeal } from './heuristic'
+import { estimateDeal, decisionHints, type DecisionHints } from './heuristic'
 import { buildRulesSummary, DECISION_PROMPTS } from './promptTexts'
+import { promptView } from './sanitize'
+import { relationsOf } from './relations'
+import { toneOf, type TableStyle } from './tableStyle'
 
 /** 本局的规则摘要：按变体拼装（成交笔数、股价上限、稀有牌、版图上实际出现的特殊格） */
 export function rulesSummaryFor(state: GameState): string {
@@ -67,8 +70,11 @@ export function pruneForLLM(state: GameState, actorId: number, legal: PlayerActi
   return out.length > 0 ? out : legal
 }
 
-/** 选项标签 + "→ 后果"注释（视角为行动者本人） */
-export function annotateOption(state: GameState, actorId: number, a: PlayerAction): string {
+/**
+ * 选项标签 + "→ 后果"注释（视角为行动者本人）。
+ * hints 是由人物参数推导的"性格参考价位"（见 heuristic.decisionHints）：给数字，但不是命令——模型可以偏离。
+ */
+export function annotateOption(state: GameState, actorId: number, a: PlayerAction, hints: DecisionHints = {}): string {
   const neg = state.negotiation
   const label = describeAction(state, a)
   const notes: string[] = []
@@ -190,10 +196,22 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
         const example = mine.length > 1 ? `，如 {${mine.map((f, i) => `"${f}":${Math.max(1, share + (i === 0 ? 1 : 0) - i)}`).join(',')}}` : ''
         notes.push(`用 demand 报出每个代表的承诺价（一份分红≈$${share}M；你的代表：${current}）；${mine.length > 1 ? `不同家族可报不同价，用对象按家族字母分别写${example}，填一个数字则全部同价；` : ''}Boss 付到即自动同意`)
       } else notes.push('你没有相关代表：可施压 / 索要封口费（demand 填数字）')
+      if (hints.asks?.length) {
+        const ref = hints.asks.map(x => `${famName(x.familyId)} $${x.amount}M`).join('、')
+        notes.push(`以你的性格，参考报价：${ref}（已算入你的杠杆与竞争）${hints.askFloor ? `；低于 $${hints.askFloor}M 基本等于送钱` : ''}`)
+      }
       break
     }
     case 'PROPOSE_OFFER': {
       if (!neg) break
+      if (hints.keepFloor != null) {
+        const keep = Math.max(0, gross - payoutTotal(a.payouts))
+        notes.push(keep >= (hints.keepGood ?? hints.keepFloor)
+          ? `你净得 $${keep}M，在你舒服的线（≥ $${hints.keepGood ?? hints.keepFloor}M）之上`
+          : keep >= hints.keepFloor
+            ? `你净得 $${keep}M，低于舒服线 $${hints.keepGood}M，但还在底线 $${hints.keepFloor}M 之上`
+            : `⚠ 你净得 $${keep}M，跌破你的底线 $${hints.keepFloor}M：以你的性格，这是被人按着头要价，更像该压价 / 换代表 / 放话 / 放弃`)
+      }
       const { auto, asked } = offerConsent(neg, a)
       if (auto.length + asked.length === 0) notes.push('全用自己的代表，无需任何人同意，提出后可直接成交')
       else {
@@ -205,12 +223,16 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
     }
     case 'ACCEPT_OFFER':
       notes.push(`你拿 $${myShare}M，并以此为承诺价`)
+      if (hints.accept) notes.push(myShare >= hints.accept.threshold
+        ? `达到你的心理线（合计 $${hints.accept.threshold}M）`
+        : `低于你的心理线（合计 $${hints.accept.threshold}M，每个代表约 $${hints.accept.perRep}M）：以你的性格，更像该拒绝并反报价`)
       break
     case 'DECLINE_OFFER': {
       const left = neg ? MAX_OFFERS_PER_BOSS - neg.offersMade : 0
       const usedFams = neg?.offer ? usedFamiliesOf(neg, neg.offer, actorId) : []
       const perFam = usedFams.length > 1 ? `；方案用了你 ${usedFams.map(f => `${f}·${famName(f)}`).join('、')} 的代表，可按家族分别反报价（对象写法）` : ''
       notes.push(`方案作废；Boss 还剩 ${left} 次提案${left <= 1 ? '（很可能直接放弃，你一分不得）' : ''}；可用 demand 反报价（每个代表，成为新承诺价）${perFam}`)
+      if (hints.accept) notes.push(`以你的性格，心理价每个代表约 $${hints.accept.perRep}M`)
       break
     }
     case 'CLOSE_DEAL':
@@ -249,9 +271,9 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
 }
 
 /** 给 LLM 看的编号列表（带后果注释） */
-export function formatLegalActions(state: GameState, legal: PlayerAction[], actorId?: number): string {
+export function formatLegalActions(state: GameState, legal: PlayerAction[], actorId?: number, hints: DecisionHints = {}): string {
   const id = actorId ?? legal[0]?.playerId ?? -1
-  return legal.map((a, i) => `${i + 1}. ${annotateOption(state, id, a)}`).join('\n')
+  return legal.map((a, i) => `${i + 1}. ${annotateOption(state, id, a, hints)}`).join('\n')
 }
 
 /** 这位玩家此前写给自己的私人笔记（只有它自己看得到） */
@@ -259,6 +281,17 @@ export function describeNotes(state: GameState, playerId: number): string {
   const notes = state.players[playerId]?.notes ?? []
   if (notes.length === 0) return ''
   return `\n【你的私人笔记（只有你看得到，按时间先后）】\n${notes.map(n => `- ${n}`).join('\n')}\n`
+}
+
+const RELATION_WORD: Record<number, string> = { [-2]: '很记仇', [-1]: '有芥蒂', 1: '有好感', 2: '很信任' }
+
+/** 你对每位对手的印象（由对局状态推导的关系记忆，见 relations.ts）；没有恩怨的不写 */
+export function describeRelations(state: GameState, playerId: number): string {
+  const rels = relationsOf(state, playerId)
+  const lines = state.players
+    .filter(p => p.id !== playerId && (rels[p.id]?.score ?? 0) !== 0)
+    .map(p => `- ${p.name}：${RELATION_WORD[rels[p.id].score]}（${rels[p.id].reasons.join('；') || '由来已久'}）`)
+  return lines.length ? `\n【你对大家的印象（桌面上发生过的事）】\n${lines.join('\n')}\n` : ''
 }
 
 // ---------- 局面描述 ----------
@@ -386,7 +419,7 @@ ${speeches || '无'}
 }
 
 function describeRecentEvents(state: GameState): string {
-  const recent = state.events.filter(e => e.kind !== 'SPEECH').slice(-8)
+  const recent = state.events.filter(e => e.kind !== 'SPEECH' && !isMinorEvent(e)).slice(-8)
   if (recent.length === 0) return ''
   return `\n【最近动态】\n${recent.map(e => `- ${narrate(state, e).text}`).join('\n')}\n`
 }
@@ -498,18 +531,25 @@ export interface DecisionPrompt {
  * system = 角色卡 + 怎么演 + 桌面的现实；user = 局面 + 私人笔记 + 编号选项 + 回复格式。
  * 没有默认答案：判断交给模型，引擎只保证它选的是合法动作。
  */
-export function buildDecisionPrompt(state: GameState, playerId: number, legal: PlayerAction[]): DecisionPrompt {
-  const player = state.players[playerId]
+export function buildDecisionPrompt(state: GameState, playerId: number, legal: PlayerAction[], opts: { style?: TableStyle } = {}): DecisionPrompt {
+  const style = opts.style ?? 'business'
+  // 提示词只读"净化视图"：玩家名 / 台词 / 笔记里的换行、引号、围栏、【】都已压平，伪造不了段落或闭合引述
+  const view = promptView(state)
+  const player = view.players[playerId]
   const persona = getPersonaForPlayer(player?.personaId)
   const name = player?.name ?? persona.name
-  const withName = (text: string) => text.replace(/\{\{name\}\}/g, name)
-  const options = pruneForLLM(state, playerId, legal)
+  // 用函数做替换：名字 / 笔记里即使有 "$&" "$1" "{{…}}" 也只是普通文字，不会被当成替换语法或再次展开
+  const withName = (text: string) => text.replace(/\{\{name\}\}/g, () => name)
+  const options = pruneForLLM(view, playerId, legal)
+  const hints = decisionHints(state, playerId, style)
+  const notes = describeNotes(view, playerId)
+  const actions = formatLegalActions(view, options, playerId, hints)
   const footer = withName(DECISION_PROMPTS.userFooterTemplate)
-    .replace('{{notes}}', describeNotes(state, playerId))
-    .replace('{{legalActions}}', formatLegalActions(state, options, playerId))
+    .replace('{{notes}}', () => `${describeRelations(view, playerId)}${notes}`)
+    .replace('{{legalActions}}', () => actions)
   return {
-    system: `${withName(persona.brief)}\n${withName(DECISION_PROMPTS.roleFrame)}\n${DECISION_PROMPTS.tableTruths}`,
-    user: `${buildGameContext(state, playerId)}\n${footer}`,
+    system: `${withName(persona.brief)}\n${toneOf(style)}\n${withName(DECISION_PROMPTS.roleFrame)}\n${DECISION_PROMPTS.tableTruths}`,
+    user: `${buildGameContext(view, playerId)}\n${footer}`,
     options,
   }
 }

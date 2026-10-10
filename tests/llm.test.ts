@@ -11,6 +11,7 @@ import { DEFAULT_LLM_CONFIG } from '../src/ai/llmClient'
 import { heuristicPolicy } from '../src/ai/heuristic'
 import { PERSONAS, PERSONA_IDS, getPersonaForPlayer } from '../src/ai/personas'
 import { AI_ROSTER } from '../src/engine/config'
+import { SPEECH_MAX_LEN, NOTE_MAX_LEN } from '../src/ai/promptTexts'
 import { baseState, setInvestors, openDealAt, step, clearHand, giveCards, toBoss } from './helpers'
 
 describe('回复解析', () => {
@@ -65,7 +66,17 @@ describe('落成动作', () => {
     expect(a.say!.length).toBeGreaterThan(0)
     const b = resolveChoice(`{"choice": ${idx + 1}, "demand": -5, "speech": "${'长'.repeat(200)}"}`, legal, s)!
     expect(b.type === 'SPEAK' && b.quotes).toEqual([{ amount: 0 }])
-    expect(b.say!.length).toBe(120)
+    expect(b.say!.length).toBe(SPEECH_MAX_LEN) // 提示词承诺 ≤60，代码按同一个常量截断
+  })
+
+  it('没给台词时不显示占位符"…"：用该人物的台词库，且与最终报价一致', () => {
+    const s = bossTurn()
+    const legal = getLegalActions(s, 0)
+    const idx = legal.findIndex(a => a.type === 'SPEAK')
+    const a = resolveChoice(`{"choice": ${idx + 1}, "demand": 3}`, legal, s)!
+    expect(a.say).toBeTruthy()
+    expect(a.say).not.toBe('…')
+    expect(a.say!.trim().length).toBeGreaterThan(1)
   })
 
   it('demand 的各种写法都能解析成按家族的报价', () => {
@@ -295,13 +306,15 @@ describe('提示词与策略', () => {
     const a = resolveChoice(`{"choice": ${idx + 1}, "thought": "先看看 Boss 出多少", "speech": "各位先请。", "note": "  Boss 是 0 号，上局压过我的价，这局不主动让  "}`, legal, s)!
     expect(a.note).toBe('Boss 是 0 号，上局压过我的价，这局不主动让')
     expect(a.say).toBe('各位先请。')
-    expect((a as { thought?: string }).thought).toBeUndefined() // 内心盘算不落地
+    expect(a.thought).toBe('先看看 Boss 出多少') // 内心盘算保留在动作负载里供复盘（不进事件、不影响规则）
+    expect(resolveChoice(`{"choice": ${idx + 1}, "note": "${'记'.repeat(100)}"}`, legal, s)!.note).toHaveLength(NOTE_MAX_LEN)
     s.players[1].notes = Array.from({ length: 8 }, (_, i) => `旧${i}`) // 已满 8 条
     s = step(s, a)
     expect(s.players[1].notes).toHaveLength(8) // 上限 8 条：挤掉最旧的
     expect(s.players[1].notes[0]).toBe('旧1')
     expect(s.players[1].notes.at(-1)).toBe('Boss 是 0 号，上局压过我的价，这局不主动让')
     expect(s.events.some(e => JSON.stringify(e).includes('上局压过我的价'))).toBe(false)
+    expect(s.events.some(e => JSON.stringify(e).includes('先看看 Boss 出多少'))).toBe(false)
     expect(s.negotiation!.speeches.some(sp => sp.text.includes('上局压过我的价'))).toBe(false)
 
     // 回到 1 号时能看到；其他人看不到
@@ -311,7 +324,7 @@ describe('提示词与策略', () => {
     expect(buildDecisionPrompt(s, 1, getLegalActions(s, 1)).user).toContain('- Boss 是 0 号，上局压过我的价，这局不主动让')
     expect(buildDecisionPrompt(s, 2, getLegalActions(s, 2)).user).not.toContain('上局压过我的价')
 
-    // 每条最长 80 字；空白笔记不记
+    // 引擎对笔记的硬上限 80 字；空白笔记不记（LLM 路径按提示词承诺的 NOTE_MAX_LEN 先截断，见 resolveChoice）
     s = step(s, { type: 'PASS', playerId: 1, note: '长'.repeat(100) })
     expect(s.players[1].notes.at(-1)).toHaveLength(80)
     s = step(s, { type: 'PASS', playerId: 2, note: '   ' })
