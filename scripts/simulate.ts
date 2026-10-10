@@ -8,12 +8,15 @@
 //   SIM_VARIANT=expansion npm run simulate -- 100   # 只跑某个变体（classic / full / expansion / marathon）
 //   SIM_HOUSE=1 npm run simulate -- 100     # 强制开 / 关桌规（1 / 0；省略按变体默认：经典关、其余开）
 //   SIM_SESSION=1 npm run simulate -- 20   # 额外用 GameSession 运行时跑 20 局（同时校验动作日志可重放）
+//   SIM_STYLE=ruthless npm run simulate -- 100   # 桌风：friendly / business（默认）/ ruthless，缩放启发式的出价、让步、搅局力度
 //   SIM_REPLAY=1 npm run simulate -- 100   # 每局跑完用"开局参数 + 动作日志"重放，终态必须逐位一致
 // ============================================================
 
 import { runGame, runGameViaSession, narrateGame, type SimMode, type SimResult } from '../src/sim/harness'
 import { VARIANT_IDS } from '../src/engine/config'
 import type { GameVariantId } from '../src/engine/types'
+import { setDefaultHeuristicStyle } from '../src/ai/heuristic'
+import { isTableStyle } from '../src/ai/tableStyle'
 
 const MAX_STEPS = Number(process.env.SIM_MAX_STEPS ?? 60000)
 /** 桌规开关：SIM_HOUSE=1 / 0；省略则按变体默认 */
@@ -22,6 +25,12 @@ const HOUSE: boolean | undefined = process.env.SIM_HOUSE === undefined ? undefin
 const REPLAY = process.env.SIM_REPLAY !== undefined && process.env.SIM_REPLAY !== '0'
 
 async function main() {
+  const style = process.env.SIM_STYLE
+  if (style !== undefined) {
+    if (!isTableStyle(style)) { console.error(`SIM_STYLE 只能是 friendly / business / ruthless，收到：${style}`); process.exit(2) }
+    setDefaultHeuristicStyle(style)
+    console.log(`桌风：${style}`)
+  }
   if (process.argv[3] !== undefined) {
     const playerCount = Number(process.argv[2])
     const seed = Number(process.argv[3])

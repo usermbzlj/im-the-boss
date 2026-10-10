@@ -407,6 +407,8 @@ interface ActionBase {
   say?: string
   /** 电脑玩家随动作写下的私人笔记（不公开），见 Player.notes */
   note?: string
+  /** LLM 电脑玩家的内心盘算（不公开、不影响规则；随动作写进动作日志，供复盘） */
+  thought?: string
 }
 
 export type PlayerAction =

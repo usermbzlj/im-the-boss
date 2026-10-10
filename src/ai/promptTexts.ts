@@ -61,6 +61,11 @@ export function buildRulesSummary(o: RulesSummaryOptions): string {
 `
 }
 
+/** 回复各字段的长度上限：提示词里写的数字与代码里截断的数字出自同一处，不会再各说各的 */
+export const SPEECH_MAX_LEN = 60
+export const NOTE_MAX_LEN = 40
+export const THOUGHT_MAX_LEN = 60
+
 /** 决策 Prompt 模板与提示语。{{name}} 会被替换为该玩家实际的显示名 */
 export const DECISION_PROMPTS = {
   /** 接在角色卡后面：怎么"演"这个人 */
@@ -82,20 +87,21 @@ export const DECISION_PROMPTS = {
 
   retryHint: '你上一次的回复未能解析为有效动作（编号不存在、JSON格式不对，或附加字段不合法）。请只回复一个JSON对象，choice字段必须是合法编号列表里的整数。',
   jsonFormatHint: '请用JSON格式回复。',
-  defaultSpeech: '…',
+  /** 已弃用：模型没给台词时不再显示占位符，改用该人物的启发式台词（见 llmPolicy.resolveChoice） */
+  defaultSpeech: '',
   userFooterTemplate: `{{notes}}
 【可选动作（回复其编号；→ 后是算给你看的后果，不是建议）】
 {{legalActions}}
 
 请回复JSON：
 {
-  "thought": "<你的内心盘算，≤60字：局面对你意味着什么、你想要什么、为什么这么选。不会给任何人看>",
+  "thought": "<你的内心盘算，≤${THOUGHT_MAX_LEN}字：局面对你意味着什么、你想要什么、为什么这么选。不会给任何人看>",
   "choice": <上面列表中的编号，整数>,
-  "speech": "<你在桌上说的话，≤60字，用{{name}}的口吻；可点名、提条件、回应刚才别人的话；提到的金额必须与动作一致>",
+  "speech": "<你在桌上说的话，≤${SPEECH_MAX_LEN}字，用{{name}}的口吻；可点名、提条件、回应刚才别人的话；提到的金额必须与动作一致>",
   "demand": null 或 整数 或 对象（你的承诺价，单位百万，按"每个代表"计；用于「喊话」「打出家族成员卡」时报出出借价 / 封口费，或「拒绝」时的反报价。整数 = 你本格所有代表同一个价（没有代表时是封口费）；对象 = 按家族分别报价，键是家族字母，如 {"B":3,"D":1}，可只写一部分家族，"*" 是其余家族的默认价）,
   "payouts": null 或 [{"playerId":<玩家ID 或 玩家名>,"amount":数字}, ...]（仅当选择「提出方案」时可覆盖分成金额；玩家ID见【其他玩家】括号内标注；只能付给方案中被选用代表的持有者或已公开要价的人，总额不得超过交易总额；对象填错则整组忽略、沿用该方案原分成）,
   "cardIds": null 或 [数字, ...]（选择「弃牌」时指定弃掉哪些牌，数量必须等于超出张数；选择「兑换」时可改选交出的两张不同种类的牌；牌的编号见【你的手牌】里的 #）,
-  "note": null 或 "<写给下一回合的自己，≤40字：谁坑了你、谁欠你、你打算怎么做>"
+  "note": null 或 "<写给下一回合的自己，≤${NOTE_MAX_LEN}字：谁坑了你、谁欠你、你打算怎么做>"
 }
 只输出这一个JSON对象，不要输出其他文字。`,
 }
