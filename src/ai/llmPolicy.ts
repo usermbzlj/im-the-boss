@@ -14,7 +14,7 @@ import { FAMILY_IDS, FAMILIES } from '../engine/config'
 import { chatCompletion, isLLMConfigured, type LLMConfig } from './llmClient'
 import { buildDecisionPrompt } from './prompts'
 import { DECISION_PROMPTS, SPEECH_MAX_LEN, NOTE_MAX_LEN, THOUGHT_MAX_LEN } from './promptTexts'
-import { safeName } from './sanitize'
+import { promptNames } from './sanitize'
 import type { TableStyle } from './tableStyle'
 import { getActingPlayerId, getLegalActions, isLegal } from '../engine/validator'
 import { getGrossValue, offerOwners, hasDemand, playerRelevantFamilies, usedFamiliesOf } from '../engine/rules'
@@ -207,7 +207,7 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
   if (!option) return null
 
   // 台词压成单行再按提示词里承诺的长度截断（提示词写 ≤SPEECH_MAX_LEN，这里就按它截）
-  const speech = [...(parsed.speech ?? '').replace(/\s+/g, ' ').trim()].slice(0, SPEECH_MAX_LEN).join('')
+  const speech = [...restoreNames(state, (parsed.speech ?? '').replace(/\s+/g, ' ').trim())].slice(0, SPEECH_MAX_LEN).join('')
   const gross = getGrossValue(state)
   const clamp = (d: number) => Math.max(0, Math.min(gross, d))
   /** 只保留作用域内的家族条目与通用价（模型写错的家族直接丢掉，其余照常生效） */
@@ -267,6 +267,15 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
   return isLegal(state, action) ? action : null
 }
 
+/** 台词里模型用的是提示词里的替身名（见 sanitize.promptNames）：上桌前换回玩家的真实名字 */
+export function restoreNames(state: GameState, text: string): string {
+  const names = promptNames(state.players)
+  return state.players
+    .filter(p => names[p.id] !== p.name)
+    .sort((a, b) => names[b.id].length - names[a.id].length)
+    .reduce((t, p) => t.split(names[p.id]).join(p.name), text)
+}
+
 /** 把"玩家 ID 或玩家名"落成 ID；任一条目无法唯一对应则整组放弃（调用方沿用候选方案的分成） */
 export function resolvePayees(state: GameState, raw: RawPayout[]): Payout[] | null {
   const out: Payout[] = []
@@ -275,7 +284,8 @@ export function resolvePayees(state: GameState, raw: RawPayout[]): Payout[] | nu
     if (typeof p.playerId === 'number') id = state.players[p.playerId] ? p.playerId : undefined
     else {
       // 模型看到的是净化后的名字（见 sanitize.promptView），两种写法都认
-      const matches = state.players.filter(pl => pl.name === p.playerId || safeName(pl.name) === p.playerId)
+      const names = promptNames(state.players)
+      const matches = state.players.filter(pl => pl.name === p.playerId || names[pl.id] === p.playerId)
       id = matches.length === 1 ? matches[0].id : undefined
     }
     if (id == null) return null
