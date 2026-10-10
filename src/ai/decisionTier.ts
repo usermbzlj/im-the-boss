@@ -10,7 +10,8 @@
 //   · 反应窗口（要不要打阻止牌）：永远 trivial——有没有阻止牌不能从"思考得久不久"看出来
 //   · 成交倒计时、谈判里的非 Boss（含与这一笔无关的旁观者）：只有启发式本身想报价 / 出牌 / 搅局时才请教 LLM
 //     （让它定夺、配台词），启发式想放行 / 跳过的，直接放行
-//   · Boss 的谈判回合与应答方案：永远 critical
+//   · Boss 的谈判回合：提案 / 出牌 / 放弃 critical；启发式只想收口成交（CLOSE_DEAL）或过的，是机械收尾，trivial
+//   · 应答方案：永远 critical
 // ============================================================
 
 import type { GameState, PlayerAction } from '../engine/types'
@@ -24,7 +25,8 @@ export function decisionTier(state: GameState, actorId: number, legal: readonly 
     case 'OFFER_RESPONSE':
       return 'critical'
     case 'NEGOTIATION':
-      if (state.negotiation?.bossId === actorId) return 'critical'
+      // Boss：提案 / 搅局牌 / 放弃都是真取舍；启发式只想「收口成交」或「过」的，是收尾的机械动作
+      if (state.negotiation?.bossId === actorId) return heuristic && (heuristic.type === 'CLOSE_DEAL' || heuristic.type === 'PASS') ? 'trivial' : 'critical'
       // 非 Boss：启发式要报价 / 出牌 / 搅局才问（与这一笔无关的旁观者因此几乎从不请求）；想放行的直接放行
       return wantsToAct ? 'critical' : 'trivial'
     case 'CLOSING':

@@ -590,7 +590,8 @@ describe('人物差异体现为可见行为（启发式）', () => {
         expect(paid, id + ' 总付出').toBeLessThan(gross)
       }
     }
-  })})
+  })
+})
 
 // ------------------------------------------------------------------
 describe('混合决策：分级与路由', () => {
@@ -603,14 +604,18 @@ describe('混合决策：分级与路由', () => {
     return s
   }
 
-  it('分级：琐碎决策 trivial；Boss 谈判 / 应答 critical；非 Boss 想放行的 trivial、想动手的 critical；倒计时与反应窗口按"想动手才问"', () => {
+  it('分级：琐碎决策 trivial；Boss 提案 / 出牌与应答 critical（只想收口成交的 trivial）；非 Boss 想放行的 trivial、想动手的 critical；倒计时与反应窗口按"想动手才问"', () => {
     const turn = baseState(4, 101)
     expect(turn.phase).not.toBe('NEGOTIATION')
     const actor = getActingPlayerId(turn)
     expect(decisionTier(turn, actor, getLegalActions(turn, actor), heuristicAction(turn))).toBe('trivial')
 
     const boss = bossState()
-    expect(decisionTier(boss, 0, getLegalActions(boss, 0), heuristicAction(boss))).toBe('critical')
+    const bossLegal = getLegalActions(boss, 0)
+    expect(decisionTier(boss, 0, bossLegal, { type: 'PROPOSE_OFFER', playerId: 0, payouts: [] } as never)).toBe('critical')
+    expect(decisionTier(boss, 0, bossLegal, { type: 'ABANDON_DEAL', playerId: 0 })).toBe('critical')
+    expect(decisionTier(boss, 0, bossLegal, { type: 'CLOSE_DEAL', playerId: 0 })).toBe('trivial')
+    expect(decisionTier(boss, 0, bossLegal, { type: 'PASS', playerId: 0 })).toBe('trivial')
 
     let s = baseState(4, 102)
     setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
