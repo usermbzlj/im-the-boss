@@ -91,7 +91,7 @@ describe('终局排名', () => {
     const { container } = renderAs(<GameOverCard state={s} onRestart={onRestart} onReview={onReview} />, 1)
     expect([...container.querySelectorAll('.standing')].map(el => el.getAttribute('data-rank'))).toEqual(['1', '2', '3'])
     await user.click(screen.getByRole('button', { name: '再来一局' }))
-    await user.click(screen.getByRole('button', { name: '回牌桌复盘' }))
+    await user.click(screen.getByRole('button', { name: '回到牌桌' }))
     expect(onRestart).toHaveBeenCalledTimes(1)
     expect(onReview).toHaveBeenCalledTimes(1)
   })

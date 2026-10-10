@@ -315,7 +315,7 @@ flushAutosave(session)                                  // 立即落盘（pagehi
 | --- | --- |
 | `App.tsx` | 布局与全局状态：开始页（"继续上一局"走 `continueSaved`）/ 牌桌、侧栏标签（`useSideTab`）、帮助与设置弹层、方案编辑器开关、终局结果卡（可关闭后复盘、可再打开）；顶栏的节奏控制与 AI 状态徽标、"轮到你了"标题提醒（`useTurnAlert`）、桌面上方的提示层与结算卡（见 7.2）；用 `ViewerProvider` 声明视角玩家（单机版固定 0 号位，`App` 内唯一出现座位号的地方） |
 | `ViewerContext`（`ViewerProvider` / `useViewerId`） | "我是谁"的唯一来源，默认 0。组件里凡是"自己 / 你"（座位标"你"、谈判记录的 `mine`、行动区的 `playerId`、引导条的"轮到你"、病假 / 目标是你的提示）都取 `useViewerId()`，不写死座位号；换视角（联机、观战、回放）只需换 `Provider` 的值 |
-| `GameOverCard` | 终局结果：胜者 + 按现金排名，现金相同并列同名次（`rankStandings`：1、1、3），并列者标"（并列）" |
+| `GameOverCard` | 终局结果：胜者 + 按现金排名，现金相同并列同名次（`ui/standings.ts` 的 `rankStandings`：1、1、3），并列者标"（并列）"；每人的现金构成与关键数据、现金走势图、精彩时刻、"逐步复盘"入口，详见 7.3 |
 | `useModalDismiss(dirty, onClose)` | 弹层关闭规则（方案编辑器、设置面板用）：点遮罩**不**关闭，`Esc` 关闭；有未保存改动（`dirty`）时先 `window.confirm`。返回的 `requestClose` 同时给"关闭"按钮用 |
 | `useSideTab(hasNeg, active)` | 侧栏标签：谈判开始自动切到"谈判桌"（用户手动选过标签就不抢），谈判结束时若停在谈判桌则退回日志；离开牌桌后重置"手动选择"记忆 |
 | `PhaseGuide` | 顶部引导条：阶段、行动者、该做什么（病假 / 缺代表速流局也在这里提醒） |
@@ -364,6 +364,27 @@ flushAutosave(session)                                  // 立即落盘（pagehi
 - **桌风**：`StartScreen` 写 `LLMConfig.tableStyle`（友好 / 商战 / 冷血），由 AI 线决定其对电脑玩家的影响。
 
 测试：`tests/ui/` 下 `toasts` / `eventFeed` / `uiLogic` 是纯函数单测，`feedback.ui` / `feedbackControls.ui` / `tableRelation.ui` 是组件测试。
+
+### 7.3 终局统计与逐步复盘
+
+一局 = 开局参数 + 被接受的动作日志，回放是确定的（`game/replay.ts`）。终局后用它还原任意一步，统计与精彩时刻只读状态，不碰引擎。`state.events` 只留最近 300 条，所以**以 `dealHistory` 为主、录像补全**。
+
+| 模块 | 内容 |
+| --- | --- |
+| `ui/recording.ts` | `Recording`：一次完整回放建立的索引——每步 `RecordedStep`（动作、事件、`dealNo`、各人现金、成交时的桌上代表）、`DealSpan`（每笔交易的开单 / 结束步）、`stateAt(p)` 随机访问（每 48 步一个检查点 + 96 个状态的 LRU，不逐步 `structuredClone` 全量缓存）。位置 `p` = 已应用的动作数（0 = 开局，`length` = 终局）；日志第 i 步通向位置 i + 1。`tryBuildRecording` 校验日志与终态一致，对不上返回 `null`（"不可回放"） |
+| `ui/stats.ts` | `computeStats(state, recording?)`：每人现金构成、Boss 次数（成交 / 流局）、夺权、干扰牌、被干扰、被排除、最大单笔、逐笔现金曲线 |
+| `ui/highlights.ts` | `computeHighlights`：最多 8 条精彩时刻（见下） |
+| `ui/review.ts` / `ui/replayNav.ts` / `ui/standings.ts` | `buildReview`（统计 + 精彩时刻）/ 复盘的步进、按笔跳转、跳过放行、播放节奏（纯函数）/ 排名 |
+| `components/review/` | `ReplayViewer`、`CashChart`（内联 SVG）、`HighlightList`、`useRecording`（终局后分片整理录像，不卡 UI；状态 `idle / building / ready / unavailable`） |
+| `styles/review.css` | 复盘与结果卡的样式（类名前缀 `go-` / `standing-` / `cc-` / `hl-` / `rv-`，不与 `game.css` 冲突） |
+
+**统计口径与对账**：起始现金为 0，故 `最终现金 = Boss 所得（总额 − 分成）+ 代表分成 + 地标租金 − (买牌 + 兑换支出)`，各人支出之和 = `state.bank`。事件完整（有录像，或 `events[0]` 是 `GAME_STARTED`）时支出逐笔精确，现金曲线每个点都等于录像里该笔成交后的现金；事件不完整时支出 = max(0, 收入 − 现金)，不拆买牌 / 兑换，曲线退化为"累计收入"，图下与"口径"折叠区都会写明。`Reconciliation` 记录是否对上，对不上时列出差额与说明。"被排除"需要录像（成交时桌上各家族代表的归属）：只算与该笔空间家族相关、且不是 Boss、没有被用上也没分到钱的人。
+
+**精彩时刻**：夺权翻盘（成交 Boss ≠ 开单人）/ 截胡（旅行、招募被打断，成交倒计时内更高分）/ 一锤定音（之后一直领先的那一笔：最后一笔逆转或拉开差距最多）/ 独吞（无人分成）/ 最大单笔 / 被排除后报复（被排除者在后续 8 笔内对同一 Boss 出干扰牌，或自己当 Boss 时排除对方）/ 压价成交（首轮要价 − 最终分成 ≥ 2）/ 阻止牌救场。按分数排序，每类、每笔交易各有上限；每条带交易号，有录像时带动作序号（`actionIndex`），可直接跳转。
+
+**复盘入口**：对局进行中没有；终局后结果卡、顶栏"逐步复盘"和交易记录里每笔的"在复盘中查看"进入。`replayable=false`（存档没有开局参数 / 日志，或日志与终态对不上）时一律隐藏入口，统计仅来自 `dealHistory`。`ReplayViewer`：上一步 / 下一步、上一笔 / 下一笔、可拖进度条、自动播放（0.5–8×，可跳过放行）、跳到精彩时刻；中间是只读的 `TableBoard`（`readOnly`：格子不可选、不显示"可独成"，终局后一切公开，所以也不再屏蔽 REACTION / CLOSING 的行动者），侧栏是谈判桌 / 当前交易事件流、步骤说明、AI 台词与思考（`action.thought`）、私人笔记；"揭晓幕后"开关（默认开）控制手牌与思考的显示。键盘：← →、Shift+← →、空格、Home / End、Esc。
+
+测试：`stats` / `highlights` 用 sim harness 跑出的真实对局（`tests/ui/played.ts`）断言对账与引用的步骤存在；`review.ui` 覆盖结果卡、复盘器（步进、跳转、揭晓开关、自动播放、不可回放时无入口）、交易记录入口、`useRecording` 与 App 全链路。
 
 ---
 
