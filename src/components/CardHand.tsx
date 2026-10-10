@@ -84,7 +84,6 @@ function actionsForCard(legal: PlayerAction[], card: InfluenceCard): PlayerActio
 export default function CardHand({ state, legal, act, selectMode, selection, onToggleSelect }: CardHandProps) {
   const viewerId = useViewerId()
   const [openCardId, setOpenCardId] = useState<number | null>(null)
-  const [popoverLeft, setPopoverLeft] = useState(0)
   const [clanDemand, setClanDemand] = useState<string>('')
   const [clanText, setClanText] = useState('')
   const handRef = useRef<HTMLDivElement>(null)
@@ -138,15 +137,8 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
   const player = state.players[viewerId]
   if (!player) return null
 
-  /** 弹层挂在 .hand 下而不是横向滚动的 .hand-cards 内，避免被 overflow 裁切 */
-  const openPopoverAt = (cardId: number, el: HTMLElement) => {
-    const hand = handRef.current
-    if (hand) {
-      const hr = hand.getBoundingClientRect()
-      const cr = el.getBoundingClientRect()
-      const width = 300
-      setPopoverLeft(Math.max(8, Math.min(cr.left - hr.left, hr.width - width - 8)))
-    }
+  /** 出牌弹层挂在 .hand 下（不被横向滚动的 .hand-cards 裁切），且固定在手牌区左上角：带按钮的弹层不随所点的牌漂移 */
+  const openPopover = (cardId: number) => {
     setZoomId(null)
     setOpenCardId(cardId)
   }
@@ -368,7 +360,7 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
   return (
     <div className="hand" ref={handRef}>
       {openCard && !selecting && openActions.length > 0 && (
-        <div className="card-popover" role="group" aria-label={`${cardFace(openCard).title}：出牌选项`} style={{ left: popoverLeft }} onClick={e => e.stopPropagation()}>
+        <div className="card-popover" role="group" aria-label={`${cardFace(openCard).title}：出牌选项`} onClick={e => e.stopPropagation()}>
           {renderPopover(openCard)}
           <button className="popover-close" aria-label="关闭出牌选项" onClick={() => setOpenCardId(null)}>×</button>
         </div>
@@ -392,7 +384,7 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
           const idle = (!playable && !selecting) || (selecting && !pickable)
           const activate = (el: HTMLElement) => {
             if (selecting) { if (pickable) onToggleSelect(card.id) }
-            else if (playable) { if (open) setOpenCardId(null); else openPopoverAt(card.id, el) }
+            else if (playable) { if (open) setOpenCardId(null); else openPopover(card.id) }
             // 当前打不出的牌：点按 / Enter 直接看说明与"为什么不能打"（触屏没有悬停；键盘聚焦本来就会放大，再按一次切换）
             else if (zoomId !== card.id) showZoom(card.id, el)
           }
@@ -450,7 +442,7 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
                   {face.badge && <span className="card-badge">{face.badge}</span>}
                 </div>
                 <div className="card-name">
-                  {card.familyId && <span className="card-letter" aria-hidden="true">{card.familyId}</span>}
+                  {card.familyId && <span className="card-letter" aria-hidden="true" style={{ background: face.familyColor }}>{card.familyId}</span>}
                   <span className="card-title">{face.title}</span>
                 </div>
                 <div className="card-effect">{face.summary}</div>
@@ -472,7 +464,7 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
               <span className="zoom-kind">{face.kind}{face.badge ? ` · ${face.badge}` : ''}</span>
             </div>
             <div className="zoom-title">
-              {zoomCard.familyId && <span className="card-letter" aria-hidden="true">{zoomCard.familyId}</span>}
+              {zoomCard.familyId && <span className="card-letter" aria-hidden="true" style={{ background: face.familyColor }}>{zoomCard.familyId}</span>}
               {face.title}
             </div>
             <div className="zoom-summary">{face.summary}</div>

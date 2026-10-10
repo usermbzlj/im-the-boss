@@ -36,6 +36,10 @@ describe('cardFace（纯逻辑）', () => {
     expect(wild.title).not.toBe(directed.title)
     expect(directed.title).toContain(FAMILIES.B.name)
     expect(directed.accent).toBe(CARD_ACCENT.TRAVEL)
+    // 家族字母徽章恒用家族色：定向旅行牌与同家族的家族卡颜色一致
+    expect(directed.familyColor).toBe(FAMILIES.B.color)
+    expect(cardFace({ id: 7, type: 'CLAN', familyId: 'B' }).familyColor).toBe(FAMILIES.B.color)
+    expect(wild.familyColor).toBeUndefined()
     expect(cardFace({ id: 4, type: 'BOOM' }).summary).toContain(String(BOOM_BONUS))
     expect(cardFace({ id: 5, type: 'BUST' }).summary).toContain(String(BUST_PENALTY))
     expect(cardFace({ id: 6, type: 'BOOM' }).badge).toBe('稀有')
