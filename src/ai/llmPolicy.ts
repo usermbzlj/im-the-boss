@@ -3,24 +3,54 @@
 //
 // 合法动作由 validator 枚举、经 prompts.pruneForLLM 剪枝并附上后果注释后编号成列表；
 // 模型回复序号，用 speech / demand / payouts / cardIds 定台词、金额或选牌，
-// 可附 thought（内心盘算，只用于让它想清楚，不落地）与 note（写给下回合自己的私人笔记，存入 Player.notes）。
+// 可附 thought（内心盘算，不公开，随动作写进动作日志供复盘）与 note（写给下回合自己的私人笔记，存入 Player.notes）。
 // 解析出的动作必须通过 isLegal，否则重试一次；仍失败返回 null，
-// 由 withFallback 交给启发式策略——LLM 永远不会让游戏卡住。
+// 由上层（aiPolicy 的混合策略）交给启发式——LLM 永远不会让游戏卡住。
+// 这里只管"一次 LLM 决策"；要不要请求（决策分级）、熔断、回退与状态上报在 aiPolicy.ts。
 // ============================================================
 
 import type { GameState, Negotiation, PlayerAction, Payout, FamilyId, Quote } from '../engine/types'
 import { FAMILY_IDS, FAMILIES } from '../engine/config'
 import { chatCompletion, isLLMConfigured, type LLMConfig } from './llmClient'
 import { buildDecisionPrompt } from './prompts'
-import { DECISION_PROMPTS } from './promptTexts'
+import { DECISION_PROMPTS, SPEECH_MAX_LEN, NOTE_MAX_LEN, THOUGHT_MAX_LEN } from './promptTexts'
+import { safeName } from './sanitize'
+import type { TableStyle } from './tableStyle'
 import { getActingPlayerId, getLegalActions, isLegal } from '../engine/validator'
 import { getGrossValue, offerOwners, hasDemand, playerRelevantFamilies, usedFamiliesOf } from '../engine/rules'
 import { heuristicSpeech } from './heuristic'
 import type { Policy } from './policy'
 
-const SPEECH_MAX_LEN = 120
-const NOTE_MAX_LEN = 80
+/**
+ * 向模型请求一次决策（含一次"回复无法解析"的重试）。
+ * 返回 null = 模型回复了但没给出合法动作；网络错误 / 超时 / 取消直接抛出（调用方按 classifyLLMError 归类）。
+ * 编号列表是剪枝后的 options（去掉自伤 / 冗余项），落成动作也必须用同一份列表。
+ */
+export async function decideWithLLM(
+  state: GameState, actingId: number, legal: PlayerAction[], config: LLMConfig, signal: AbortSignal,
+  opts: { style?: TableStyle } = {},
+): Promise<PlayerAction | null> {
+  const { system, user, options } = buildDecisionPrompt(state, actingId, legal, { style: opts.style })
+  if (options.length === 1) return { ...options[0], say: heuristicSpeech(state, options[0]) || undefined }
+  const raw = await chatCompletion(config, [
+    { role: 'system', content: system },
+    { role: 'user', content: user },
+  ], { signal, purpose: 'decision' })
+  const first = resolveChoice(raw, options, state)
+  if (first) return first
 
+  const retrySystem = `${system}\n${DECISION_PROMPTS.retryHint}\n【你上一次的原始回复】\n${raw.slice(0, 400)}`
+  const raw2 = await chatCompletion(config, [
+    { role: 'system', content: retrySystem },
+    { role: 'user', content: user },
+  ], { signal, temperatureOverride: 0, purpose: 'decision-retry' })
+  return resolveChoice(raw2, options, state)
+}
+
+/**
+ * 纯 LLM 策略：每个有选择的决策都请求模型（失败返回 null / 抛出，交给 withFallback）。
+ * 游戏里实际用的是 aiPolicy.createAiPolicy（分级 + 熔断 + 人物化兜底）；这个保留给只想要"裸 LLM"的场合与测试。
+ */
 export function createLLMPolicy(getConfig: () => LLMConfig): Policy {
   return {
     name: 'llm',
@@ -34,23 +64,7 @@ export function createLLMPolicy(getConfig: () => LLMConfig): Policy {
 
       const config = getConfig()
       if (!isLLMConfigured(config)) return null
-
-      // 编号列表是剪枝后的 options（去掉自伤 / 冗余项），落成动作也必须用同一份列表
-      const { system, user, options } = buildDecisionPrompt(state, actingId, legal)
-      if (options.length === 1) return { ...options[0], say: heuristicSpeech(state, options[0]) || undefined }
-      const raw = await chatCompletion(config, [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ], { signal, purpose: 'decision' })
-      const first = resolveChoice(raw, options, state)
-      if (first) return first
-
-      const retrySystem = `${system}\n${DECISION_PROMPTS.retryHint}\n【你上一次的原始回复】\n${raw.slice(0, 400)}`
-      const raw2 = await chatCompletion(config, [
-        { role: 'system', content: retrySystem },
-        { role: 'user', content: user },
-      ], { signal, temperatureOverride: 0, purpose: 'decision-retry' })
-      return resolveChoice(raw2, options, state)
+      return decideWithLLM(state, actingId, legal, config, signal, { style: config.tableStyle })
     },
   }
 }
@@ -73,6 +87,8 @@ interface ChoiceResponse {
   cardIds?: number[]
   /** 写给下回合自己的私人笔记 */
   note?: string
+  /** 内心盘算（不公开；保留到动作负载供复盘） */
+  thought?: string
 }
 
 const GENERAL_KEYS = new Set(['*', 'all', 'default', 'other', 'others', 'rest', '其他', '其余', '全部', '默认'])
@@ -176,8 +192,8 @@ export function parseChoiceResponse(raw: string): ChoiceResponse | null {
     }
     const cardIds = Array.isArray(obj.cardIds) ? obj.cardIds.map(toInt).filter((n: number | undefined): n is number => n != null) : undefined
     const note = typeof obj.note === 'string' && obj.note.trim() ? obj.note.trim() : undefined
-    // thought 字段是模型自己的盘算，读过即弃：既不落地也不展示
-    return { choice, speech: typeof obj.speech === 'string' ? obj.speech : undefined, quotes, payouts, cardIds, note }
+    const thought = typeof obj.thought === 'string' && obj.thought.trim() ? obj.thought.trim() : undefined
+    return { choice, speech: typeof obj.speech === 'string' ? obj.speech : undefined, quotes, payouts, cardIds, note, thought }
   } catch {
     return null
   }
@@ -190,7 +206,8 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
   const option = legal[parsed.choice - 1]
   if (!option) return null
 
-  const speech = (parsed.speech ?? '').trim().slice(0, SPEECH_MAX_LEN)
+  // 台词压成单行再按提示词里承诺的长度截断（提示词写 ≤SPEECH_MAX_LEN，这里就按它截）
+  const speech = [...(parsed.speech ?? '').replace(/\s+/g, ' ').trim()].slice(0, SPEECH_MAX_LEN).join('')
   const gross = getGrossValue(state)
   const clamp = (d: number) => Math.max(0, Math.min(gross, d))
   /** 只保留作用域内的家族条目与通用价（模型写错的家族直接丢掉，其余照常生效） */
@@ -204,9 +221,10 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
 
   switch (action.type) {
     case 'SPEAK': {
-      action.say = speech || DECISION_PROMPTS.defaultSpeech
       const quotes = scoped(playerRelevantFamilies(state, action.playerId))
       if (quotes) action.quotes = quotes
+      // 模型没给台词：用该人物的台词库按最终报价说一句，不再显示"…"
+      action.say = speech || heuristicSpeech(state, action) || undefined
       break
     }
     case 'PLAY_CLAN': {
@@ -244,7 +262,8 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
   }
 
   if (action.type !== 'SPEAK') action.say = speech || heuristicSpeech(state, action) || undefined
-  if (parsed.note) action.note = parsed.note.slice(0, NOTE_MAX_LEN)
+  if (parsed.note) action.note = [...parsed.note.replace(/\s+/g, ' ')].slice(0, NOTE_MAX_LEN).join('')
+  if (parsed.thought) action.thought = [...parsed.thought.replace(/\s+/g, ' ')].slice(0, THOUGHT_MAX_LEN * 2).join('')
   return isLegal(state, action) ? action : null
 }
 
@@ -255,7 +274,8 @@ export function resolvePayees(state: GameState, raw: RawPayout[]): Payout[] | nu
     let id: number | undefined
     if (typeof p.playerId === 'number') id = state.players[p.playerId] ? p.playerId : undefined
     else {
-      const matches = state.players.filter(pl => pl.name === p.playerId)
+      // 模型看到的是净化后的名字（见 sanitize.promptView），两种写法都认
+      const matches = state.players.filter(pl => pl.name === p.playerId || safeName(pl.name) === p.playerId)
       id = matches.length === 1 ? matches[0].id : undefined
     }
     if (id == null) return null
