@@ -358,7 +358,7 @@ flushAutosave(session)                                  // 立即落盘（pagehi
 组件约定：
 - **`EventFeed`**：谈判桌底部，按 `dealNo` 取本笔交易的事件；喊话是带人物色的头像气泡，新条目一次性入场高亮（以挂载时最后的事件 id 为基线，不会因重渲染重复闪）。
 - **`RecentStrip`**：PhaseGuide 下方固定高度的一行"刚刚"，谈判之外也能看到最近发生了什么。
-- **`ToastLayer`**：桌面上方不挡操作的提示（`pointer-events` 只给提示本身），自动消失、点击关闭；挂载与换局时以当前最后事件为基线，**载入存档不会补弹**。尊重 `prefers-reduced-motion`。
+- **`ToastLayer`**：贴在版图下沿、行动区上方（不挡座位行），不挡操作的提示（`pointer-events` 只给提示本身），自动消失、点击关闭；挂载与换局时以当前最后事件为基线，**载入存档不会补弹**。尊重 `prefers-reduced-motion`。
 - **`DealResultCard`**：成交 / 流局后在桌面中央显示约 7 秒（可收起、可跳转到"交易记录"）；终局那一笔不弹。
 - **`PaceControls`**：电脑速度 快 / 中 / 慢读写 `LLMConfig.aiSpeed`（`session` 每次实时读取），"快进"调用 `GameSession.skipWait`；**`AiStatusBadge`** 读 `snapshot.ai`（未启用 LLM 显示"启发式"，降级黄、熔断红，回退原因进 title）。
 - **`useTurnAlert`**：轮到你且页面在后台时 `document.title` 交替闪烁，回到前台恢复。

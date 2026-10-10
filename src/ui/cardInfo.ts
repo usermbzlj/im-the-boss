@@ -30,7 +30,7 @@ export const CARD_ICONS: Record<CardType, string> = {
 }
 
 export const CARD_KIND: Record<CardType, string> = {
-  CLAN: '家族成员', TRAVEL: '旅行', RECRUITMENT: '招募', BOSS: '老板', STOP: '阻止', BOOM: '利好', BUST: '利空', EXCLUSIVE: '独家协议', SICK: '病假',
+  CLAN: '家族卡', TRAVEL: '旅行', RECRUITMENT: '招募', BOSS: '老板', STOP: '阻止', BOOM: '利好', BUST: '利空', EXCLUSIVE: '独家协议', SICK: '病假',
 }
 
 /** 非家族牌的主题色（与 game.css 里 .card.type-* 的强调色一致） */
@@ -49,7 +49,7 @@ export function cardFace(card: InfluenceCard): CardFace {
       }
     case 'TRAVEL':
       return {
-        ...common, title: fam ? `${fam.name}·旅行` : '万能旅行', summary: fam ? '打飞该家族代表' : '打飞任一代表', accent: CARD_ACCENT.TRAVEL,
+        ...common, title: fam ? fam.name : '万能旅行', summary: fam ? '打飞该家族代表' : '打飞任一代表', accent: CARD_ACCENT.TRAVEL,
         detail: fam
           ? `定向旅行牌：只能打飞 ${fam.name} 的代表，让他本笔交易中失效（投资者本局结束后恢复，家族卡直接弃置）。包含该代表的方案会作废。`
           : '万能旅行牌：可以打飞桌上任意一个代表，让他本笔交易中失效（投资者本局结束后恢复，家族卡直接弃置）。包含该代表的方案会作废。',

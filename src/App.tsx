@@ -196,10 +196,15 @@ export default function App() {
 
       <div className="app-body">
         <main className="table-area" id="main">
-          <ToastLayer state={state} />
           <CueStage />
-          <DealResultCard state={state} onDetails={() => openSide('history')} />
           <TableBoard state={state} thinkingId={thinkingId} onPlaceMarker={id => act({ type: 'PLACE_MARKER', playerId: VIEWER_ID, spaceId: id })} />
+          {/* 结算卡与提示框共用一个贴在版图下沿的竖向栈：互不遮挡，也不挡座位行（金钱飞向座位的演出在那里） */}
+          <div className="float-anchor">
+            <div className="float-stack">
+              <DealResultCard state={state} onDetails={() => openSide('history')} />
+              <ToastLayer state={state} />
+            </div>
+          </div>
           {/* 桌面：行动区 + 手牌叠在一起；平板 / 手机：另含侧栏手柄，手机上固定在底部 */}
           <div className="table-bottom" id="action-area" tabIndex={-1} role="region" aria-label="行动区与手牌">
             {drawer && <DrawerHandle open={sideOpen} negotiating={hasNeg} unread={unread} controlsId={sidebarId} onToggle={() => setSideOpen(v => !v)} />}

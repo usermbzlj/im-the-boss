@@ -20,7 +20,7 @@ export interface EventBrief {
   mine: boolean
   /** 合并分组：连续、同组的提示合并成一条并计数 */
   group: string
-  /** 是否值得弹提示（false：只进"刚刚发生"简报，如掷骰移动） */
+  /** 是否值得弹提示（false：只进"刚刚发生"简报，如掷骰移动；成交 / 流局由结算卡展示） */
   toast: boolean
   /** 这是视角玩家自己刚做的动作的回声（他自己点的，不必再弹） */
   selfEcho: boolean
@@ -164,11 +164,13 @@ export function briefOf(state: GameState, e: LoggedEvent, viewerId: number): Eve
       const text = e.bossId === viewerId
         ? `成交！第 ${e.dealNumber} 笔 $${e.gross}M：你净得 $${e.bossKeep}M`
         : `成交！第 ${e.dealNumber} 笔 $${e.gross}M：${n(e.bossId)}净得 $${e.bossKeep}M${iGet > 0 ? `，你分得 $${iGet}M` : ''}`
-      return brief(text, iGet > 0 ? 'good' : 'deal', { mine: iGet > 0, group: `result:${e.id}` })
+      return brief(text, iGet > 0 ? 'good' : 'deal', { mine: iGet > 0, group: `result:${e.id}`, toast: false })
     }
     case 'DEAL_FAILED': {
       const text = `#${e.spaceId} 的交易流局（${failReasonName(e.reason)}${e.missing?.length ? `，缺 ${e.missing.map(famName).join('、')}` : ''}）`
-      return e.bossId === viewerId ? bad(`你的${text}`) : brief(text, 'fail', { group: `result:${e.id}` })
+      return e.bossId === viewerId
+        ? brief(`你的${text}`, 'bad', { mine: true, group: `result:${e.id}`, toast: false })
+        : brief(text, 'fail', { group: `result:${e.id}`, toast: false })
     }
     case 'LANDMARK_CLAIMED':
       return e.playerId === viewerId ? good(`地标 #${e.spaceId} 归你了：以后每笔成交都收租`) : brief(`${n(e.playerId)}成为地标 #${e.spaceId} 的主人`, 'info', { group: 'rent' })

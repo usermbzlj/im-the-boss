@@ -322,8 +322,15 @@ input[type="number"] { width: 90px; }
 .card-type { font-size: 12px; color: #b9c2cc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .card-badge { margin-left: auto; flex: none; font-size: 12px; line-height: 14px; padding: 0 4px; border-radius: 3px; background: rgba(255, 255, 255, 0.13); color: #e6edf3; }
 .card-name { font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 5px; color: #e6edf3; margin-top: 2px; min-width: 0; }
-.card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.card-title { min-width: 0; line-height: 1.2; overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .card-letter { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 19px; height: 19px; border-radius: 6px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 900; box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.2), 0 1px 2px rgba(0, 0, 0, 0.4); }
+/* 卡宽 < 100px（--card-w 的 clamp 在 1210px 以下取 92px，手机 / 矮屏另有更窄档）：四字家族名单行放得下 */
+@media (max-width: 1209px), (max-height: 500px) {
+  .card-name { font-size: 12.5px; gap: 3px; }
+  .card-name .card-letter { width: 16px; height: 16px; font-size: 12px; border-radius: 5px; }
+  .card-head { gap: 2px; }
+  .card-icon { font-size: 13px; }
+}
 .card-effect { margin-top: auto; font-size: 12px; line-height: 1.3; color: #c9d1d9; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .card.type-boss .card-name { color: #ff9b95; }
 .card.type-stop .card-name { color: #a5cfff; }
@@ -644,10 +651,13 @@ input[type="number"] { width: 90px; }
 .recent-item.tone-bad.mine { border-color: rgba(248, 81, 73, 0.6); }
 
 /* ---- 行动提示（Toast）：牌桌上方，非阻塞 ---- */
-.toast-layer {
-  position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 50;
-  width: min(560px, calc(100% - 28px)); display: flex; flex-direction: column; gap: 6px; align-items: center; pointer-events: none;
+/* 贴在版图下沿、行动区上方：不挡座位行（电脑玩家的气泡 / 行动高亮），也离你的视线最近 */
+.float-anchor { position: relative; height: 0; flex: none; z-index: 50; }
+.float-stack {
+  position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+  width: min(560px, calc(100% - 28px)); display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none;
 }
+.toast-layer { width: 100%; display: flex; flex-direction: column; gap: 6px; align-items: center; }
 .toast {
   pointer-events: auto; cursor: pointer; width: 100%; text-align: left; font-family: inherit;
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
@@ -662,7 +672,7 @@ input[type="number"] { width: 90px; }
 .toast.tone-bad { border-left-color: var(--red); background: rgba(64, 24, 24, 0.97); border-color: rgba(248, 81, 73, 0.7); font-weight: 600; }
 .toast.mine.tone-info { border-left-color: var(--gold); background: rgba(52, 44, 18, 0.97); border-color: rgba(240, 180, 41, 0.55); }
 .toast-count { flex: none; font-size: 12px; color: var(--gold); background: rgba(0, 0, 0, 0.35); border-radius: 10px; padding: 0 7px; }
-@keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
 /* ---- 轮到你了：行动区高亮（明显但不刺眼） ---- */
 .dock.my-turn { border-top-color: var(--gold); background: linear-gradient(180deg, rgba(240, 180, 41, 0.1), var(--bg-panel) 55%); animation: dock-pulse 2.4s ease-in-out infinite; }
@@ -706,7 +716,7 @@ input[type="number"] { width: 90px; }
 
 /* ---- 交易结算卡：牌桌中央 ---- */
 .deal-result {
-  position: absolute; left: 50%; top: 44%; transform: translate(-50%, -50%); z-index: 45; width: min(380px, calc(100% - 32px));
+  pointer-events: auto; width: min(380px, 100%); max-height: 52vh; max-height: 52dvh; overflow-y: auto;
   background: rgba(22, 27, 34, 0.98); border: 2px solid var(--green); border-radius: 14px; padding: 14px 18px;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7); animation: card-in 0.28s ease-out; font-size: 13px;
 }
@@ -723,7 +733,7 @@ input[type="number"] { width: 90px; }
 .deal-result-you { text-align: center; font-size: 15px; font-weight: bold; padding: 5px; color: var(--muted); }
 .deal-result-you.gain { color: var(--gold); }
 .deal-result-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
-@keyframes card-in { from { opacity: 0; transform: translate(-50%, -46%) scale(0.94); } to { opacity: 1; transform: translate(-50%, -50%); } }
+@keyframes card-in { from { opacity: 0; transform: translateY(10px) scale(0.96); } to { opacity: 1; transform: none; } }
 
 /* 减少动态：关闭所有新增动画（保留静态高亮） */
 @media (prefers-reduced-motion: reduce) {
@@ -1160,10 +1170,12 @@ button, [role="button"], [role="tab"], [role="menuitem"], a, input, select, labe
   .card.playable:hover, .card.open { transform: translateY(-4px); }
 
   /* ---- 提示框 / 结算卡 / 演出：窄屏下位置正确、不挡关键按钮 ---- */
-  .toast-layer { top: 4px; width: calc(100% - 16px); gap: 4px; }
+  .float-stack { bottom: 6px; width: calc(100% - 16px); gap: 6px; }
+  .toast-layer { gap: 4px; }
   .toast { font-size: 14px; padding: 8px 12px; }
-  .deal-result { top: 8px; transform: translateX(-50%); width: calc(100% - 20px); max-height: 62%; overflow-y: auto; padding: 12px 14px; animation: card-in-top 0.28s ease-out; }
-  @keyframes card-in-top { from { opacity: 0; transform: translate(-50%, -12px); } to { opacity: 1; transform: translateX(-50%); } }
+  .deal-result { width: 100%; max-height: 30vh; max-height: 30dvh; padding: 12px 14px; }
+  /* 手机版图区只有约 270px：结算卡在时只露出最新一条提示，栈不会顶出顶栏（其余仍在抽屉的事件流里） */
+  .float-stack:has(.deal-result) .toast:not(:last-child) { display: none; }
   .cue-caption { white-space: normal; max-width: calc(100% - 24px); text-align: center; top: 22%; }
   .cue-win-banner { max-width: calc(100% - 24px); padding: 8px 16px; }
   .cue-win-text { font-size: 15px; }
@@ -1271,7 +1283,6 @@ button, [role="button"], [role="tab"], [role="menuitem"], a, input, select, labe
 /* 低矮的手机（如 360×740）：行动区再让出一点高度给版图；主按钮行吸底，不会因此够不着 */
 @media (max-width: 767px) and (max-height: 780px) {
   .table-bottom { max-height: 47vh; max-height: 47dvh; }
-  .hand { --card-w: 86px; }
 }
 
 /* ============================================================
@@ -1337,11 +1348,12 @@ button, [role="button"], [role="tab"], [role="menuitem"], a, input, select, labe
   }
   .table-bottom > .drawer-handle, .table-bottom > .hand { flex: none; }
   .table-bottom > .drawer-handle { min-height: 40px; }
+  .float-anchor { grid-column: 1; grid-row: 1; align-self: end; }
   .dock { flex: 1 1 auto; min-height: 72px; overflow-y: auto; overscroll-behavior: contain; padding: 6px 10px; gap: 6px; box-shadow: none; }
-  .hand { --card-w: 80px; padding: 2px 10px 6px; }
+  .hand { --card-w: 88px; padding: 2px 10px 6px; }
   .ring-wrap { min-height: 180px; }
   .ring-compact .pile-value { font-size: 18px; }
-  .deal-result { top: 6px; }
+  .deal-result { max-height: 58vh; max-height: 58dvh; }
   .modal-overlay { padding: 0; }
   .help-panel, .settings-panel, .offer-editor { max-height: 100vh; max-height: 100dvh; width: 100%; max-width: none; border-radius: 0; }
   .go-card { max-height: 100dvh; }

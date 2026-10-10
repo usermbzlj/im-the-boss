@@ -105,17 +105,25 @@ describe('toastDraftsFor：自己刚做的动作不回声，结果照常提示',
     expect(toastDraftsFor(state, [ev({ kind: 'MARKER_MOVED', playerId: 2, die: 3, spaceId: 4, gross: 8 })], VIEWER)).toHaveLength(0)
   })
 
-  it('电脑玩家的重要动作都有草稿：开单 / 出牌 / 提案 / 承诺价变更 / 成交 / 流局 / 收租', () => {
+  it('电脑玩家的重要动作都有草稿：开单 / 出牌 / 提案 / 承诺价变更 / 收租', () => {
     const drafts = toastDraftsFor(state, [
       ev({ kind: 'DEAL_OPENED', playerId: 2, spaceId: 1, gross: 10 }),
       ev({ kind: 'BOOM_PLAYED', playerId: 2 }),
       ev({ kind: 'OFFER_PROPOSED', bossId: 2, offerNo: 1, reps: [], payouts: [], bossKeep: 5, waitingFor: [], autoAccepted: [] }),
       ev({ kind: 'COMMITMENT_UPDATED', playerId: 3, changes: [{ familyId: 'D', from: null, to: 2 }] }),
       ev({ kind: 'RENT_PAID', payments: [{ playerId: 3, amount: 1 }] }),
-      ev({ kind: 'DEAL_FAILED', spaceId: 1, bossId: 2, reason: 'ABANDONED' }),
     ], VIEWER)
-    expect(drafts).toHaveLength(6)
+    expect(drafts).toHaveLength(5)
     expect(drafts.every(d => d.ttl >= 2500 && d.ttl <= 4000)).toBe(true)
+  })
+
+  it('成交 / 流局只进简报不弹提示：结算卡已经完整展示，避免同一结果出现两遍', () => {
+    const results = [
+      ev({ kind: 'DEAL_CLOSED', dealNumber: 1, spaceId: 1, tileId: 1, bossId: 2, gross: 10, payouts: [{ playerId: VIEWER, amount: 3 }], bossKeep: 7, reps: [] }),
+      ev({ kind: 'DEAL_FAILED', spaceId: 1, bossId: VIEWER, reason: 'STALEMATE' }),
+    ]
+    for (const e of results) expect(briefOf(state, e, VIEWER)).not.toBeNull()
+    expect(toastDraftsFor(state, results, VIEWER)).toHaveLength(0)
   })
 })
 
