@@ -3,7 +3,7 @@
 import { describe, it, expect } from 'vitest'
 import type { GameEvent, LoggedEvent } from '../../src/engine/types'
 import {
-  CUE_MS, SHOT_MAX_MS, MERGE_WINDOW_MS, MAX_ACTIVE_CUES, STAGGER_MAX_MS, cueLifetime, cuesFor, mergeActive, mergeCues, motionFilter, pickSounds, planCues, staggerCues,
+  CUE_MS, SHOT_MAX_MS, MERGE_WINDOW_MS, MAX_ACTIVE_CUES, STAGGER_MAX_MS, cueLifetime, mergeActive, mergeCues, motionFilter, pickSounds, planCues, staggerCues,
   type ActiveCue, type Cue,
 } from '../../src/ui/cues'
 import { FULL_MOTION, markFastForward, motionBlocked, readMotionEnv, resetFastForward, rollValue, isFastForward } from '../../src/ui/motion'
