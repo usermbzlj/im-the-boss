@@ -8,6 +8,7 @@ import type { GameState } from '../engine/types'
 import { HAND_LIMIT, FAMILIES, LANDMARK_RENT } from '../engine/config'
 import { isSick } from '../engine/rules'
 import FamilyChip from './FamilyChip'
+import AnimatedNumber from './AnimatedNumber'
 import { getPersonaForPlayer } from '../ai/personas'
 import type { Relation } from '../ai/relations'
 import { monogram, seatColor } from '../ui/personaColor'
@@ -57,7 +58,7 @@ export default function PlayerSeat({ state, playerId, isActing, isThinking, rela
   const att = !isViewer && relation && relation.score !== 0 ? RELATION_ICON[relation.score] : null
 
   return (
-    <div className={`player-seat${isActing ? ' acting' : ''}${isBoss ? ' is-boss' : ''}${isViewer ? ' is-human' : ''}`} style={style}>
+    <div className={`player-seat${isActing ? ' acting' : ''}${isBoss ? ' is-boss' : ''}${isViewer ? ' is-human' : ''}`} style={style} data-seat-id={playerId}>
       {speech && (
         <button
           key={speech}
@@ -88,7 +89,7 @@ export default function PlayerSeat({ state, playerId, isActing, isThinking, rela
             {persona ? persona.title.split(' · ')[0] : '人类玩家'}
           </div>
         </div>
-        <div className="seat-cash">${player.cash}M</div>
+        <div className="seat-cash"><AnimatedNumber value={player.cash} format={n => `$${n}M`} /></div>
       </div>
       <div className="seat-row">
         <span className="seat-label">投资者</span>

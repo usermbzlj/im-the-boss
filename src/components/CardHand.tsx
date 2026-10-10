@@ -2,11 +2,13 @@
 // CardHand — 人类手牌：可打的牌由合法动作列表驱动，点牌弹出目标/参数选择
 // ============================================================
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { CSSProperties, KeyboardEvent, PointerEvent } from 'react'
 import type { InfluenceCard, GameState, PlayerAction, FamilyId } from '../engine/types'
 import { FAMILIES, HAND_LIMIT, BOOM_BONUS, BUST_PENALTY } from '../engine/config'
 import { findRep, oneShareOf, canReclaim, recruitCost, standardRecruitCost, getGrossValue, swapTargetType, isSick } from '../engine/rules'
 import { grossAfterDelta } from '../text/labels'
+import { cardFace } from '../ui/cardInfo'
 import { useViewerId } from './ViewerContext'
 
 /** 手牌多选模式：弃牌（超上限）/ 兑换（桌规：两张异类牌换招募） */
@@ -21,16 +23,46 @@ interface CardHandProps {
   onToggleSelect: (cardId: number) => void
 }
 
-const TYPE_LABEL: Record<InfluenceCard['type'], string> = {
-  CLAN: '家族成员', TRAVEL: '旅行', RECRUITMENT: '招募', BOSS: '老板', STOP: '阻止', BOOM: '利好·稀有', BUST: '利空·稀有', EXCLUSIVE: '独家协议·稀有', SICK: '病假·桌规',
-}
-const TYPE_ICON: Record<InfluenceCard['type'], string> = {
-  CLAN: '👤', TRAVEL: '✈️', RECRUITMENT: '📋', BOSS: '👑', STOP: '🛑', BOOM: '📈', BUST: '📉', EXCLUSIVE: '🔒', SICK: '🤒',
-}
-const TYPE_SHORT: Partial<Record<InfluenceCard['type'], string>> = {
-  TRAVEL: '万能', RECRUITMENT: '×3 成组', BOSS: '夺权', STOP: '取消', BOOM: `+$${BOOM_BONUS}M/份`, BUST: `−$${BUST_PENALTY}M/份`, EXCLUSIVE: '锁定交易', SICK: '禁出牌一回合',
+/** 新抽到的牌保留"新"标记的时间（毫秒） */
+export const NEW_CARD_MS = 2800
+/** 悬停多久后放大（毫秒）/ 触屏长按多久后放大 */
+const HOVER_ZOOM_MS = 280
+const LONG_PRESS_MS = 450
+const ZOOM_WIDTH = 268
+
+/** 键盘聚焦才放大（鼠标点击聚焦不算）；不支持 :focus-visible 的环境一律当作键盘聚焦 */
+function focusVisible(el: HTMLElement): boolean {
+  try { return el.matches(':focus-visible') } catch { return true }
 }
 
+/**
+ * 跟踪"新进手牌"的牌：渲染后对比上一次的手牌 id，新增的标记 NEW_CARD_MS 毫秒。
+ * 首次渲染（含载入存档）不算新；打出 / 弃掉的牌离开不影响其他牌。
+ */
+function useFreshCards(ids: readonly number[]): Set<number> {
+  const prev = useRef<Set<number> | null>(null)
+  const [fresh, setFresh] = useState<ReadonlySet<number>>(new Set())
+  const timers = useRef(new Set<ReturnType<typeof setTimeout>>())
+  const key = ids.join(',')
+
+  useLayoutEffect(() => {
+    const before = prev.current
+    prev.current = new Set(ids)
+    if (!before) return
+    const added = ids.filter(id => !before.has(id))
+    if (added.length === 0) return
+    setFresh(cur => new Set([...cur, ...added]))
+    const h = setTimeout(() => {
+      timers.current.delete(h)
+      setFresh(cur => new Set([...cur].filter(id => !added.includes(id))))
+    }, NEW_CARD_MS)
+    timers.current.add(h)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key])
+
+  useEffect(() => () => { timers.current.forEach(clearTimeout); timers.current.clear() }, [])
+  return new Set([...fresh].filter(id => ids.includes(id)))
+}
 function actionsForCard(legal: PlayerAction[], card: InfluenceCard): PlayerAction[] {
   return legal.filter(action => {
     switch (action.type) {
@@ -56,8 +88,27 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
   const [clanDemand, setClanDemand] = useState<string>('')
   const [clanText, setClanText] = useState('')
   const handRef = useRef<HTMLDivElement>(null)
+  const [zoomId, setZoomId] = useState<number | null>(null)
+  const [zoomLeft, setZoomLeft] = useState(0)
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** 长按放大之后的那次 click 不应当触发"打牌" */
+  const suppressClick = useRef(false)
+  const fresh = useFreshCards((state.players[viewerId]?.hand ?? []).map(c => c.id))
+  const clearTimers = () => {
+    if (hoverTimer.current) { clearTimeout(hoverTimer.current); hoverTimer.current = null }
+    if (pressTimer.current) { clearTimeout(pressTimer.current); pressTimer.current = null }
+  }
+  useEffect(() => clearTimers, [])
   // 状态推进后关闭弹层（牌可能已不可打 / 目标已变化）
-  useEffect(() => { setOpenCardId(null) }, [state.stateVersion])
+  useEffect(() => { setOpenCardId(null); setZoomId(null) }, [state.stateVersion])
+  // 放大预览：点击空白处（触屏长按后）收起
+  useEffect(() => {
+    if (zoomId == null) return
+    const onDown = (e: Event) => { if (!(e.target as HTMLElement | null)?.closest('.card')) setZoomId(null) }
+    document.addEventListener('pointerdown', onDown)
+    return () => document.removeEventListener('pointerdown', onDown)
+  }, [zoomId])
   // 点击弹层与手牌以外的区域关闭弹层
   useEffect(() => {
     if (openCardId == null) return
@@ -81,13 +132,26 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
       const width = 300
       setPopoverLeft(Math.max(8, Math.min(cr.left - hr.left, hr.width - width - 8)))
     }
+    setZoomId(null)
     setOpenCardId(cardId)
+  }
+
+  /** 放大预览挂在 .hand 下（同弹层），位置贴着那张牌 */
+  const showZoom = (cardId: number, el: HTMLElement) => {
+    const hand = handRef.current
+    if (hand) {
+      const hr = hand.getBoundingClientRect()
+      const cr = el.getBoundingClientRect()
+      setZoomLeft(Math.max(8, Math.min(cr.left - hr.left, hr.width - ZOOM_WIDTH - 8)))
+    }
+    setZoomId(cardId)
   }
 
   const neg = state.negotiation
   const recruitCount = player.hand.filter(c => c.type === 'RECRUITMENT').length
   const recruitNeed = standardRecruitCost(state)
   const openCard = player.hand.find(c => c.id === openCardId) ?? null
+  const zoomCard = player.hand.find(c => c.id === zoomId) ?? null
   const openActions = openCard ? actionsForCard(legal, openCard) : []
 
   const fire = (action: PlayerAction) => {
@@ -308,23 +372,70 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
           const selected = selection.has(card.id)
           const pickable = selecting && canPick(card)
           const open = openCardId === card.id
-          const color = card.familyId ? FAMILIES[card.familyId].color : undefined
+          const face = cardFace(card)
+          const isNew = fresh.has(card.id)
+          const idle = (!playable && !selecting) || (selecting && !pickable)
+          const activate = (el: HTMLElement) => {
+            if (selecting) { if (pickable) onToggleSelect(card.id) }
+            else if (playable) { if (open) setOpenCardId(null); else openPopoverAt(card.id, el) }
+          }
+          const onPointerEnter = (e: PointerEvent<HTMLElement>) => {
+            if (e.pointerType !== 'mouse' || open) return
+            const el = e.currentTarget
+            clearTimers()
+            hoverTimer.current = setTimeout(() => showZoom(card.id, el), HOVER_ZOOM_MS)
+          }
+          const onPointerLeave = (e: PointerEvent<HTMLElement>) => {
+            if (e.pointerType !== 'mouse') return
+            clearTimers()
+            setZoomId(z => (z === card.id ? null : z))
+          }
+          const onPointerDown = (e: PointerEvent<HTMLElement>) => {
+            clearTimers()
+            if (e.pointerType === 'mouse') { setZoomId(null); return }
+            const el = e.currentTarget
+            pressTimer.current = setTimeout(() => { suppressClick.current = true; showZoom(card.id, el) }, LONG_PRESS_MS)
+          }
+          const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(e.currentTarget) }
+            else if (e.key === 'Escape') setZoomId(null)
+          }
           return (
             <div key={card.id} className="card-slot">
               <div
-                className={`card type-${card.type.toLowerCase()}${playable ? ' playable' : ''}${open ? ' open' : ''}${selected ? ' selected' : ''}${selectMode === 'trade' && selected ? ' trade-selected' : ''}${pickable ? ' discard-mode' : ''}${(!playable && !selecting) || (selecting && !pickable) ? ' idle' : ''}`}
-                style={color ? { borderColor: color } : undefined}
+                role="button"
+                tabIndex={0}
+                aria-disabled={idle || undefined}
+                aria-label={`${face.kind}：${face.title}，${face.summary}${isNew ? '（新抽到）' : ''}`}
+                aria-describedby={zoomId === card.id ? 'card-zoom' : undefined}
+                data-card-id={card.id}
+                className={`card type-${card.type.toLowerCase()}${card.familyId ? ' has-family' : ''}${playable ? ' playable' : ''}${open ? ' open' : ''}${selected ? ' selected' : ''}${selectMode === 'trade' && selected ? ' trade-selected' : ''}${pickable ? ' discard-mode' : ''}${idle ? ' idle' : ''}${isNew ? ' card-new' : ''}`}
+                style={{ '--accent': face.accent, '--i': isNew ? [...fresh].indexOf(card.id) : 0 } as CSSProperties}
                 onClick={e => {
-                  if (selecting) { if (pickable) onToggleSelect(card.id) }
-                  else if (playable) { if (open) setOpenCardId(null); else openPopoverAt(card.id, e.currentTarget) }
+                  if (suppressClick.current) { suppressClick.current = false; return }
+                  activate(e.currentTarget)
                 }}
-                title={cardTitle(card, playable)}
+                onKeyDown={onKeyDown}
+                onFocus={e => { if (!open && focusVisible(e.currentTarget)) showZoom(card.id, e.currentTarget) }}
+                onBlur={() => setZoomId(z => (z === card.id ? null : z))}
+                onPointerEnter={onPointerEnter}
+                onPointerLeave={onPointerLeave}
+                onPointerDown={onPointerDown}
+                onPointerUp={clearTimers}
+                onPointerCancel={clearTimers}
+                onContextMenu={e => { if (pressTimer.current || zoomId === card.id) e.preventDefault() }}
               >
-                <div className="card-type">{TYPE_ICON[card.type]} {TYPE_LABEL[card.type]}</div>
-                <div className="card-name" style={color ? { color } : undefined}>
-                  {card.familyId ? <><span className="card-letter" style={{ background: color }}>{card.familyId}</span>{FAMILIES[card.familyId].name}</>
-                    : TYPE_SHORT[card.type] ?? ''}
+                <div className="card-head">
+                  <span className="card-icon" aria-hidden="true">{face.icon}</span>
+                  <span className="card-type">{face.kind}</span>
+                  {face.badge && <span className="card-badge">{face.badge}</span>}
                 </div>
+                <div className="card-name">
+                  {card.familyId && <span className="card-letter" aria-hidden="true">{card.familyId}</span>}
+                  <span className="card-title">{face.title}</span>
+                </div>
+                <div className="card-effect">{face.summary}</div>
+                {isNew && <span className="card-new-badge">新</span>}
                 {selected && <div className="card-discard-mark">{selectMode === 'trade' ? '换' : '弃'}</div>}
               </div>
             </div>
@@ -332,6 +443,25 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
         })}
         {player.hand.length === 0 && <span className="muted">空手</span>}
       </div>
+      {zoomCard && !selecting && openCardId == null && (() => {
+        const face = cardFace(zoomCard)
+        const playable = actionsForCard(legal, zoomCard).length > 0
+        return (
+          <div id="card-zoom" role="tooltip" className={`card-zoom type-${zoomCard.type.toLowerCase()}`} style={{ left: zoomLeft, '--accent': face.accent } as CSSProperties}>
+            <div className="zoom-head">
+              <span className="zoom-icon" aria-hidden="true">{face.icon}</span>
+              <span className="zoom-kind">{face.kind}{face.badge ? ` · ${face.badge}` : ''}</span>
+            </div>
+            <div className="zoom-title">
+              {zoomCard.familyId && <span className="card-letter" aria-hidden="true">{zoomCard.familyId}</span>}
+              {face.title}
+            </div>
+            <div className="zoom-summary">{face.summary}</div>
+            <p className="zoom-detail">{face.detail}</p>
+            <div className={`zoom-status${playable ? ' ok' : ''}`}>{cardTitle(zoomCard, playable)}</div>
+          </div>
+        )
+      })()}
     </div>
   )
 }

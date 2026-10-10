@@ -11,6 +11,8 @@ import { relationsToward } from '../ai/relations'
 import { spaceKindName, spaceKindEffect } from '../text/narrate'
 import FamilyChip from './FamilyChip'
 import PlayerSeat from './PlayerSeat'
+import DieFace from './DieFace'
+import { useCuesOf } from './CueProvider'
 import { useViewerId } from './ViewerContext'
 
 interface TableBoardProps {
@@ -110,6 +112,11 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBo
   const closedCount = state.board.filter(b => b.closedByTileId != null).length
   // 每位电脑玩家对视角玩家的态度：每次状态变化算一次，分发给各座位
   const relations = useMemo(() => relationsToward(state, viewerId), [state, viewerId])
+  // 演出层（不在 CueProvider 内时为空）：成交的格子短暂高亮、飞行中的金钱标记先隐藏、股价变动闪一下
+  const closeCues = useCuesOf('close')
+  const markerCues = useCuesOf('marker')
+  const priceCues = useCuesOf('price')
+  const priceFlash = priceCues.length ? (priceCues[priceCues.length - 1].tone === 'good' ? ' flash-up' : ' flash-down') : ''
 
   return (
     <div className="table-board">
@@ -136,15 +143,18 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBo
             const clickable = canPlace && !closed
             const soloOk = !closed && canCompleteAlone(state, viewerId, space)
             const special = space.kind !== 'STANDARD'
+            const closing = closeCues.some(cue => cue.target.type === 'cell' && cue.target.spaceId === space.id)
+            const markerIncoming = markerCues.some(cue => cue.target.type === 'cell' && cue.target.spaceId === space.id)
             return (
               <div
                 key={space.id}
-                className={`ring-cell${isCurrent ? ' current' : ''}${closed ? ' closed' : ''}${clickable ? ' selectable' : ''}${state.negotiation?.spaceId === space.id ? ' negotiating' : ''}${special ? ` kind-${space.kind.toLowerCase()}` : ''}`}
+                className={`ring-cell${isCurrent ? ' current' : ''}${closed ? ' closed' : ''}${closing ? ' cue-closing' : ''}${clickable ? ' selectable' : ''}${state.negotiation?.spaceId === space.id ? ' negotiating' : ''}${special ? ` kind-${space.kind.toLowerCase()}` : ''}`}
+                data-space-id={space.id}
                 style={{ gridRow: pos.row, gridColumn: pos.col }}
                 onClick={() => clickable && onPlaceMarker?.(space.id)}
                 title={clickable ? `点击把金钱标记放在 #${space.id}` : spaceTooltip(state, space)}
               >
-                {isCurrent && <span className="marker-icon" title="金钱标记">💰</span>}
+                {isCurrent && <span className={`marker-icon${markerIncoming ? ' incoming' : ''}`} title="金钱标记">💰</span>}
                 <div className="cell-top">
                   <span className="cell-id">#{space.id}</span>
                   <span className="cell-div">{space.dividends}份</span>
@@ -177,7 +187,7 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBo
           <div className="table-center" style={{ gridRow: `2 / span ${layout.rows - 2}`, gridColumn: `2 / span ${layout.cols - 2}` }}>
             <div className="deal-pile">
               <div className="pile-label">景气牌 #{tile?.id ?? '-'} / {state.dealTiles.length} · 当前股价</div>
-              <div className="pile-value">
+              <div className={`pile-value${priceFlash}`}>
                 ${shareNow}M<span>/份</span>
                 {shareNow !== (tile?.shareValue ?? 0) && <span className="pile-adjust" title="景气牌股价 + 抢手格 / 利好 / 利空">（景气牌 ${tile?.shareValue ?? 0}M）</span>}
               </div>
@@ -189,7 +199,7 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBo
                 )}
               </div>
               <div className="pile-meta">{variant.name} · 已成交 {closedCount}/{state.dealTiles.length} · 牌堆 {state.drawPile.length} · 弃牌 {state.discardPile.length}</div>
-              {state.lastDie != null && <div className="die-display">🎲 {state.lastDie}</div>}
+              {state.lastDie != null && <div className="die-display"><DieFace value={state.lastDie} className="die-sm" /></div>}
             </div>
             {neutral.length > 0 && (
               <div className="public-market" title="4/5 人局多出的投资者：招募必须先从这里夺取">
