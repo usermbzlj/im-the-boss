@@ -13,7 +13,8 @@ import { heuristicAction } from '../src/ai/heuristic'
 import { decisionTier } from '../src/ai/decisionTier'
 import { createAiPolicy, createAiRuntime, wantsLLM } from '../src/ai/aiPolicy'
 import { buildDecisionPrompt } from '../src/ai/prompts'
-import { sanitizeInline, promptView } from '../src/ai/sanitize'
+import { sanitizeInline, promptView, promptNames, STAND_IN_NAME } from '../src/ai/sanitize'
+import { restoreNames, resolvePayees } from '../src/ai/llmPolicy'
 import { GameSession } from '../src/game/session'
 import { startGameSession } from '../src/game/createSession'
 import { checkReplay } from '../src/game/replay'
@@ -810,6 +811,43 @@ describe('提示词：不可信文字的净化与转义', () => {
     // 净化视图不改原状态
     expect(s.players[0].name).toContain('"""')
     expect(promptView(s).players[0].name).not.toMatch(/["\n【{]/)
+  })
+
+  it('人类名叫"你"：电脑玩家的提示词里改称"挑战者"，不会把人类的代表读成"你的"', () => {
+    let s = baseState(4, 112)
+    s.players[0].isAI = false
+    s.players[0].name = '你'
+    setInvestors(s, { A: 1, B: 0, C: 2, D: 3 })
+    s = openDealAt(s, 1, 1)
+    const actor = getActingPlayerId(s)
+    expect(actor).not.toBe(0)
+    const p = buildDecisionPrompt(s, actor, getLegalActions(s, actor))
+    expect(p.user).toContain(`(${STAND_IN_NAME})`) // 【投资者】里人类持有的那家
+    expect(p.user).not.toContain('(你)')
+    expect(p.user).not.toContain('你的投资者')
+    expect(p.user).not.toMatch(/\n你（ID=0）/)
+    expect(p.user).toContain(`${STAND_IN_NAME}（ID=0）`)
+  })
+
+  it('提示词名字：人称 / 角色词换成替身名、与电脑玩家重名时电脑保留原名；台词与收款人都能对回真实玩家', () => {
+    const s = baseState(4, 113)
+    s.players[0].isAI = false
+    s.players[0].name = '你'
+    expect(promptNames(s.players)[0]).toBe(STAND_IN_NAME)
+    s.players[0].name = '我是大老板'
+    expect(promptNames(s.players)[0]).toBe(STAND_IN_NAME)
+    s.players[0].name = 'Boss'
+    expect(promptNames(s.players)[0]).toBe(STAND_IN_NAME)
+    s.players[0].name = s.players[2].name
+    const names = promptNames(s.players)
+    expect(names[2]).toBe(s.players[2].name)
+    expect(names[0]).toBe(`${s.players[2].name}2`)
+    expect(new Set(names).size).toBe(4)
+
+    s.players[0].name = '你'
+    expect(restoreNames(s, `${STAND_IN_NAME}，赤岩集团在你手里，开个价`)).toBe('你，赤岩集团在你手里，开个价')
+    expect(resolvePayees(s, [{ playerId: STAND_IN_NAME, amount: 2 }])).toEqual([{ playerId: 0, amount: 2 }])
+    expect(resolvePayees(s, [{ playerId: '你', amount: 2 }])).toEqual([{ playerId: 0, amount: 2 }])
   })
 
   it('提示词带上性格参考价位、桌风语气与关系记忆', () => {

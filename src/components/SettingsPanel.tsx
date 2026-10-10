@@ -1,8 +1,8 @@
 // ============================================================
-// SettingsPanel — LLM 配置 + 决策范围 + 桌风 + AI 速度 + 调用日志
+// SettingsPanel — LLM 配置 + 决策范围 + 桌风 + AI 速度 + 动画速度 + 调用日志
 // ============================================================
 
-import { useState } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import {
   loadLLMConfig, saveLLMConfig, testLLMConnection, getLLMCallLog, clearLLMCallLog,
   validateExtraBodyJson, DEFAULT_LLM_CONFIG, TABLE_STYLES,
@@ -10,6 +10,7 @@ import {
 } from '../ai/llmClient'
 import { STYLE_LABELS } from '../ai/tableStyle'
 import { useModalDismiss } from './useModalDismiss'
+import { getAnimSpeed, setAnimSpeed, subscribeAnimSpeed, type AnimSpeed } from '../ui/motion'
 
 interface SettingsPanelProps {
   open: boolean
@@ -31,6 +32,36 @@ const LOG_TAGS: Record<NonNullable<LLMCallLogEntry['tag']>, string> = {
   fallback: '回退内置策略',
   breaker: '熔断',
   recover: '已恢复',
+}
+
+const ANIM_OPTIONS: Array<{ value: AnimSpeed; label: string; hint: string }> = [
+  { value: 'off', label: '关', hint: '不播放金额飞入、镜头字幕、骰子等演出，也停掉界面过渡动画' },
+  { value: 'fast', label: '快', hint: '演出时长约 0.6 倍' },
+  { value: 'normal', label: '标准', hint: '默认时长' },
+  { value: 'slow', label: '慢', hint: '演出时长约 1.6 倍，看得更清楚' },
+]
+
+/** 画面偏好，与 LLM 配置的"保存"无关：点了就生效并记住 */
+function AnimSpeedSelector() {
+  const speed = useSyncExternalStore(subscribeAnimSpeed, getAnimSpeed)
+  return (
+    <>
+      <div className="speed-selector" role="group" aria-label="动画速度">
+        {ANIM_OPTIONS.map(opt => (
+          <button
+            key={opt.value}
+            className={`speed-btn${speed === opt.value ? ' active' : ''}`}
+            aria-pressed={speed === opt.value}
+            title={opt.hint}
+            onClick={() => setAnimSpeed(opt.value)}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+      <p className="settings-hint">{ANIM_OPTIONS.find(o => o.value === speed)?.hint}。不影响电脑的行动节奏。</p>
+    </>
+  )
 }
 
 /** 每次打开都挂载一份新的编辑态：从已保存配置重新载入，上次没保存的修改不会残留 */
@@ -69,8 +100,8 @@ function SettingsPanelBody({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="modal-overlay">
-      <div className="settings-panel" role="dialog" aria-label="LLM 设置">
-        <h2>⚙️ LLM 设置</h2>
+      <div className="settings-panel" role="dialog" aria-label="设置">
+        <h2>⚙️ 设置</h2>
         <p className="settings-hint">
           配置 OpenAI 兼容接口。未启用时使用基础 AI。<br />
           DeepSeek 示例：Base URL <code>https://api.deepseek.com/v1</code>，模型 <code>deepseek-chat</code>
@@ -186,6 +217,9 @@ function SettingsPanelBody({ onClose }: { onClose: () => void }) {
             </button>
           ))}
         </div>
+
+        <label>动画速度（即时生效）</label>
+        <AnimSpeedSelector />
 
         <div className="settings-actions">
           <button className="btn" onClick={handleTest} disabled={testing}>

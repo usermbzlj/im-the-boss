@@ -12,7 +12,7 @@ import DieFace, { DIE_PIPS } from '../../src/components/DieFace'
 import { useTurnChime } from '../../src/components/useTurnChime'
 import { getActingPlayerId } from '../../src/engine/validator'
 import type { GameState } from '../../src/engine/types'
-import { FULL_MOTION, type MotionEnv } from '../../src/ui/motion'
+import { ANIM_SCALE, FULL_MOTION, readMotionEnv, setAnimSpeed, type AnimSpeed, type MotionEnv } from '../../src/ui/motion'
 import { cueLifetime } from '../../src/ui/cues'
 import { biddingState, clearHand, closingState, giveCards, renderAs, step } from './fixtures'
 
@@ -88,6 +88,36 @@ describe('CueProvider + CueStage', () => {
       expect(container.querySelectorAll('.cue'), JSON.stringify(patch)).toHaveLength(0)
       expect(play.mock.calls.some(c => c[0] === 'deal'), JSON.stringify(patch)).toBe(expectDeal)
       unmount()
+    }
+  })
+
+  it('动画速度：慢档拉长演出时长与到期时间；关闭档不出视觉演出但保留音效', () => {
+    const { before, after } = closing()
+    const durationOfClose = (speed: AnimSpeed) => {
+      setAnimSpeed(speed, null)
+      const { sound, play } = soundSpy()
+      const env = { ...FULL_MOTION, animOff: readMotionEnv().animOff }
+      const { container, rerender, unmount } = renderAs(stageTree(before, sound, env))
+      rerender(stageTree(after, sound, env))
+      const el = container.querySelector<HTMLElement>('.cue-close')
+      const ms = el ? parseFloat(el.style.animationDuration) : null
+      const delay = el ? parseFloat(el.style.animationDelay) || 0 : 0
+      return { ms, delay, deal: play.mock.calls.some(c => c[0] === 'deal'), container, unmount }
+    }
+    try {
+      const normal = durationOfClose('normal'); normal.unmount()
+      const slow = durationOfClose('slow')
+      expect(slow.ms).toBe(Math.round(normal.ms! * ANIM_SCALE.slow))
+      advance(cueLifetime({ ms: normal.ms!, delay: normal.delay }) + 100)
+      expect(slow.container.querySelector('.cue-close'), '慢档按原时长到期时仍在播').not.toBeNull()
+      slow.unmount()
+      const off = durationOfClose('off')
+      expect(off.ms).toBeNull()
+      expect(off.deal).toBe(true)
+      expect(document.documentElement.dataset.anim).toBe('off')
+      off.unmount()
+    } finally {
+      setAnimSpeed('normal', null)
     }
   })
 

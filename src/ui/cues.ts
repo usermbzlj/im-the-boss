@@ -295,9 +295,15 @@ export function planCues(state: GameState, events: readonly LoggedEvent[], viewe
   return staggerCues(mergeCues(cuesFor(state, events, viewerId, ctx)))
 }
 
-/** 视觉演出的跳过策略：快进 / 后台 / 减少动画 / 无动画环境 → 全部跳过 */
+/** 视觉演出的跳过策略：快进 / 后台 / 减少动画 / 无动画环境 / 动画已关闭 → 全部跳过 */
 export function motionFilter(cues: readonly Cue[], env: MotionEnv): Cue[] {
   return motionBlocked(env) ? [] : [...cues]
+}
+
+/** 按动画速度倍率缩放演出的时长与延迟（k = 1 原样返回） */
+export function scaleCues(cues: readonly Cue[], k: number): Cue[] {
+  if (k === 1 || !(k > 0)) return [...cues]
+  return cues.map(c => ({ ...c, ms: Math.max(1, Math.round(c.ms * k)), delay: Math.round(c.delay * k) }))
 }
 
 export interface SoundPlan { id: SfxId; delayMs: number }

@@ -21,6 +21,8 @@ export interface CardFace {
   /** 主题色：家族牌用家族色，其余按牌种 */
   accent: string
   familyId?: FamilyId
+  /** 家族字母徽章的颜色：恒为家族色（与版图 / 家族标签一致），不随牌种的主题色变 */
+  familyColor?: string
   /** 稀有牌 / 桌规牌（卡面加一条角标） */
   badge?: string
 }
@@ -40,7 +42,7 @@ export const CARD_ACCENT: Record<Exclude<CardType, 'CLAN'>, string> = {
 
 export function cardFace(card: InfluenceCard): CardFace {
   const fam = card.familyId ? FAMILIES[card.familyId] : null
-  const common = { type: card.type, icon: CARD_ICONS[card.type], kind: CARD_KIND[card.type], familyId: card.familyId }
+  const common = { type: card.type, icon: CARD_ICONS[card.type], kind: CARD_KIND[card.type], familyId: card.familyId, familyColor: fam?.color }
   switch (card.type) {
     case 'CLAN':
       return {

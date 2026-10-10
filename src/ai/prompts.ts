@@ -7,6 +7,7 @@
 //   · 谈判阶段给一段局势摘要：缺口、最省方案、你的杠杆、终局态势
 //   · 模型自己写的私人笔记（Player.notes）原样回灌：让它记账、记人、记打算，形成跨回合的连续性格
 // 所有文字描述复用 text/ 层（与 UI 展示一致），这里只负责组织结构。
+// 静态文案（角色卡、桌风、框架、规则摘要、回复格式）在 src/prompts/；这里是随局面变化的部分。
 // ============================================================
 
 import type { GameState, PlayerAction, FamilyId, SpaceKind } from '../engine/types'
@@ -24,7 +25,7 @@ import { narrate, isMinorEvent, famLabel, famName, playerName, reactionKindName,
 import { describeAction, describeCard, describeGroups, describeReactionTarget, describeSpaceKind, describeSpaceKindFull, grossAfterDelta } from '../text/labels'
 import { getPersonaForPlayer } from './personas'
 import { estimateDeal, decisionHints, type DecisionHints } from './heuristic'
-import { buildRulesSummary, DECISION_PROMPTS } from './promptTexts'
+import { buildRulesSummary, ROLE_FRAME, TABLE_TRUTHS, USER_FOOTER } from '../prompts'
 import { promptView } from './sanitize'
 import { relationsOf } from './relations'
 import { toneOf, type TableStyle } from './tableStyle'
@@ -544,11 +545,11 @@ export function buildDecisionPrompt(state: GameState, playerId: number, legal: P
   const hints = decisionHints(state, playerId, style)
   const notes = describeNotes(view, playerId)
   const actions = formatLegalActions(view, options, playerId, hints)
-  const footer = withName(DECISION_PROMPTS.userFooterTemplate)
+  const footer = withName(USER_FOOTER)
     .replace('{{notes}}', () => `${describeRelations(view, playerId)}${notes}`)
     .replace('{{legalActions}}', () => actions)
   return {
-    system: `${withName(persona.brief)}\n${toneOf(style)}\n${withName(DECISION_PROMPTS.roleFrame)}\n${DECISION_PROMPTS.tableTruths}`,
+    system: `${withName(persona.brief)}\n${toneOf(style)}\n${withName(ROLE_FRAME)}\n${TABLE_TRUTHS}`,
     user: `${buildGameContext(view, playerId)}\n${footer}`,
     options,
   }

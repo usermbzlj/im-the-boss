@@ -2,7 +2,8 @@
 // 周边面板的 bug 修复回归：设置面板重开 / 关闭规则、终局排名并列、交易历史口径、侧栏标签自动切换、阶段引导不泄露行动者
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { cleanup, screen, fireEvent, renderHook, act, render } from '@testing-library/react'
+import { cleanup, screen, fireEvent, renderHook, act, render, within } from '@testing-library/react'
+import { ANIM_SCALE, ANIM_STORAGE_KEY, getAnimSpeed, setAnimSpeed } from '../../src/ui/motion'
 import userEvent from '@testing-library/user-event'
 import SettingsPanel from '../../src/components/SettingsPanel'
 import GameOverCard, { rankStandings } from '../../src/components/GameOverCard'
@@ -67,6 +68,26 @@ describe('SettingsPanel', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledTimes(1)
     expect(confirmSpy).not.toHaveBeenCalled()
+  })
+
+  it('动画速度：点了即时生效并记住，不算 LLM 配置的未保存改动', async () => {
+    const onClose = vi.fn()
+    const confirmSpy = vi.spyOn(window, 'confirm')
+    const user = userEvent.setup()
+    render(<SettingsPanel open onClose={onClose} />)
+    const group = screen.getByRole('group', { name: '动画速度' })
+    try {
+      await user.click(within(group).getByRole('button', { name: '慢' }))
+      expect(getAnimSpeed()).toBe('slow')
+      expect(localStorage.getItem(ANIM_STORAGE_KEY)).toBe('slow')
+      expect(document.documentElement.style.getPropertyValue('--anim-k')).toBe(String(ANIM_SCALE.slow))
+      expect(within(group).getByRole('button', { name: '慢' }).getAttribute('aria-pressed')).toBe('true')
+      fireEvent.keyDown(document, { key: 'Escape' })
+      expect(confirmSpy).not.toHaveBeenCalled()
+      expect(onClose).toHaveBeenCalledTimes(1)
+    } finally {
+      setAnimSpeed('normal', null)
+    }
   })
 })
 

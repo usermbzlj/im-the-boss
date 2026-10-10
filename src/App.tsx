@@ -201,8 +201,8 @@ export default function App() {
           {/* 结算卡与提示框共用一个贴在版图下沿的竖向栈：互不遮挡，也不挡座位行（金钱飞向座位的演出在那里） */}
           <div className="float-anchor">
             <div className="float-stack">
-              <DealResultCard state={state} onDetails={() => openSide('history')} />
-              <ToastLayer state={state} />
+          <ToastLayer state={state} />
+          <DealResultCard state={state} onDetails={() => openSide('history')} />
             </div>
           </div>
           {/* 桌面：行动区 + 手牌叠在一起；平板 / 手机：另含侧栏手柄，手机上固定在底部 */}

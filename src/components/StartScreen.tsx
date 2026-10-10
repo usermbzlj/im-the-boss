@@ -143,7 +143,7 @@ export default function StartScreen({ onStart, onContinue, onSettings, syncKey }
 
         <button className="btn-primary" onClick={start}>开始新游戏</button>
         {canContinue && <button className="btn continue-btn" onClick={onContinue}>继续上一局</button>}
-        <button className="btn settings-link" onClick={onSettings}>⚙️ LLM 设置</button>
+        <button className="btn settings-link" onClick={onSettings}>⚙️ 设置（LLM / 动画）</button>
       </div>
 
       <div className="start-tips">

@@ -2,7 +2,7 @@
 // LLM 配置与 OpenAI 兼容客户端
 // ============================================================
 
-import { DECISION_PROMPTS } from './promptTexts'
+import { JSON_FORMAT_HINT } from '../prompts/frame'
 
 export type AISpeed = 'fast' | 'normal' | 'slow'
 
@@ -235,8 +235,8 @@ export async function chatCompletion(
     const hasJsonHint = messages.some(m => /json/i.test(m.content))
     if (!hasJsonHint) {
       finalMessages = messages[0]?.role === 'system'
-        ? [{ ...messages[0], content: messages[0].content + '\n' + DECISION_PROMPTS.jsonFormatHint }, ...messages.slice(1)]
-        : [{ role: 'system', content: DECISION_PROMPTS.jsonFormatHint }, ...messages]
+        ? [{ ...messages[0], content: messages[0].content + '\n' + JSON_FORMAT_HINT }, ...messages.slice(1)]
+        : [{ role: 'system', content: JSON_FORMAT_HINT }, ...messages]
     }
   }
 

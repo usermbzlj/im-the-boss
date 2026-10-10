@@ -365,7 +365,7 @@ input[type="number"] { width: 90px; }
 /* 放大预览（悬停 / 键盘聚焦 / 触屏长按）：完整说明 + 当前为何能 / 不能打 */
 .card-zoom {
   --accent: #8b949e;
-  position: absolute; bottom: calc(100% + 8px); z-index: 35; width: min(268px, calc(100vw - 24px)); padding: 12px 14px 10px; border-radius: 14px;
+  position: absolute; bottom: calc(100% + 8px); z-index: 48; width: min(268px, calc(100vw - 24px)); padding: 12px 14px 10px; border-radius: 14px;
   background: var(--bg-elev); background: linear-gradient(170deg, color-mix(in srgb, var(--accent) 26%, #2a3039), #1b2028 78%);
   border: 1.5px solid var(--accent); box-shadow: var(--shadow-lg); pointer-events: none; animation: zoom-in 0.14s ease-out;
 }
@@ -379,7 +379,7 @@ input[type="number"] { width: 90px; }
 @keyframes zoom-in { from { opacity: 0; transform: translateY(6px) scale(0.97); } to { opacity: 1; transform: none; } }
 
 .card-popover {
-  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 30; width: 300px;
+  position: absolute; bottom: calc(100% + 6px); left: 8px; z-index: 60; width: min(300px, calc(100% - 16px));
   background: var(--bg-elev); border: 1px solid var(--gold); border-radius: 10px; padding: 10px 12px; box-shadow: var(--shadow);
 }
 .popover-body { display: flex; flex-direction: column; gap: 8px; }
@@ -652,18 +652,21 @@ input[type="number"] { width: 90px; }
 
 /* ---- 行动提示（Toast）：牌桌上方，非阻塞 ---- */
 /* 贴在版图下沿、行动区上方：不挡座位行（电脑玩家的气泡 / 行动高亮），也离你的视线最近 */
-.float-anchor { position: relative; height: 0; flex: none; z-index: 50; }
+/* 浮层优先级：带按钮的弹层（结算卡 / 出牌弹层，z 60）> 信息类（放大预览 48 > 提示 47 > 演出 46）。
+   .float-anchor / .float-stack 不建层叠上下文（无 z-index / transform），结算卡与提示才能各按自己的层级参与比较；
+   结算卡排在栈底（最后一个子元素）钉住不动，提示在它上方增减 */
+.float-anchor { position: relative; height: 0; flex: none; }
 .float-stack {
-  position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+  position: absolute; bottom: 8px; left: 0; right: 0; margin: 0 auto;
   width: min(560px, calc(100% - 28px)); display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none;
 }
-.toast-layer { width: 100%; display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.toast-layer { position: relative; z-index: 47; width: 100%; display: flex; flex-direction: column; gap: 6px; align-items: center; }
 .toast {
   pointer-events: auto; cursor: pointer; width: 100%; text-align: left; font-family: inherit;
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
   background: rgba(22, 27, 34, 0.96); color: var(--text); border: 1px solid var(--border); border-left: 4px solid var(--blue);
   border-radius: 8px; padding: 7px 12px; font-size: 13px; line-height: 1.4; box-shadow: var(--shadow);
-  animation: toast-in 0.22s ease-out;
+  animation: toast-in calc(0.22s * var(--anim-k, 1)) ease-out;
 }
 .toast:hover { background: rgba(33, 38, 45, 0.98); }
 .toast.tone-deal { border-left-color: var(--green); }
@@ -692,7 +695,7 @@ input[type="number"] { width: 90px; }
 .info-tip-btn { background: none; border: none; color: var(--blue); font-size: 15px; line-height: 1; cursor: pointer; padding: 0 3px; }
 .info-tip-btn:hover { color: #9cc8ff; }
 .info-tip-pop {
-  position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-30%); z-index: 40; width: 320px;
+  position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-30%); z-index: 49; width: 320px;
   background: var(--bg-elev); color: var(--text); border: 1px solid var(--blue); border-radius: 8px; padding: 8px 11px;
   font-size: 12px; line-height: 1.55; box-shadow: var(--shadow); font-weight: normal;
 }
@@ -716,9 +719,9 @@ input[type="number"] { width: 90px; }
 
 /* ---- 交易结算卡：牌桌中央 ---- */
 .deal-result {
-  pointer-events: auto; width: min(380px, 100%); max-height: 52vh; max-height: 52dvh; overflow-y: auto;
+  position: relative; z-index: 60; pointer-events: auto; width: min(380px, 100%); max-height: 52vh; max-height: 52dvh; overflow-y: auto;
   background: rgba(22, 27, 34, 0.98); border: 2px solid var(--green); border-radius: 14px; padding: 14px 18px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7); animation: card-in 0.28s ease-out; font-size: 13px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7); animation: card-in calc(0.28s * var(--anim-k, 1)) ease-out; font-size: 13px;
 }
 .deal-result.fail { border-color: #8b949e; }
 .deal-result-title { font-size: 16px; font-weight: bold; color: var(--green); margin-bottom: 6px; }
@@ -821,16 +824,16 @@ button:focus:not(:focus-visible) { outline: none; }
 
 /* ---- 版图：成交关闭、标记落地、股价闪动 ---- */
 .ring-cell { transition: border-color 0.2s, box-shadow 0.2s, opacity 0.6s, background 0.3s; }
-.ring-cell.cue-closing { animation: cell-closing 0.9s ease-out; }
+.ring-cell.cue-closing { animation: cell-closing calc(0.9s * var(--anim-k, 1)) ease-out; }
 @keyframes cell-closing {
   0% { box-shadow: 0 0 0 0 rgba(255, 217, 102, 0.9); transform: scale(1.06); background: #3b3317; opacity: 1; }
   100% { box-shadow: 0 0 0 14px rgba(255, 217, 102, 0); transform: none; }
 }
-.marker-icon { animation: marker-land 0.45s var(--ease-out); }
+.marker-icon { animation: marker-land calc(0.45s * var(--anim-k, 1)) var(--ease-out); }
 .marker-icon.incoming { animation: none; visibility: hidden; }
 @keyframes marker-land { 0% { transform: translateY(-14px) scale(1.7); opacity: 0.2; } 60% { transform: translateY(2px) scale(0.95); opacity: 1; } 100% { transform: none; } }
-.pile-value.flash-up { animation: value-up 0.8s ease-out; }
-.pile-value.flash-down { animation: value-down 0.8s ease-out; }
+.pile-value.flash-up { animation: value-up calc(0.8s * var(--anim-k, 1)) ease-out; }
+.pile-value.flash-down { animation: value-down calc(0.8s * var(--anim-k, 1)) ease-out; }
 @keyframes value-up { 0% { transform: scale(1.18); color: #7ee2a8; text-shadow: 0 0 18px rgba(63, 185, 80, 0.8); } 100% { transform: none; } }
 @keyframes value-down { 0% { transform: scale(0.86); color: #ff8f88; text-shadow: 0 0 18px rgba(248, 81, 73, 0.8); } 100% { transform: none; } }
 
@@ -840,7 +843,7 @@ button:focus:not(:focus-visible) { outline: none; }
 .die .pip { place-self: center; width: calc(var(--s) * 0.19); height: calc(var(--s) * 0.19); border-radius: 50%; }
 .die .pip.on { background: radial-gradient(circle at 35% 30%, #4a4f57, #14171c); }
 .die.rolling { animation: die-tumble 0.42s linear infinite; }
-.die.settled { animation: die-land 0.3s var(--ease-out); }
+.die.settled { animation: die-land calc(0.3s * var(--anim-k, 1)) var(--ease-out); }
 .die.die-sm { --s: 26px; box-shadow: 0 3px 8px rgba(0, 0, 0, 0.5), inset 0 -2px 0 rgba(0, 0, 0, 0.12); }
 @keyframes die-tumble { 0% { transform: rotate(0) scale(1); } 50% { transform: rotate(180deg) scale(1.12) translateY(-6px); } 100% { transform: rotate(360deg) scale(1); } }
 @keyframes die-land { 0% { transform: scale(1.35) rotate(-14deg); } 100% { transform: none; } }
@@ -1422,3 +1425,9 @@ button, [role="button"], [role="tab"], [role="menuitem"], a, input, select, labe
   .sidebar { transition-delay: 0s !important; }
   .drawer-unread { animation: none; }
 }
+/* 设置里把动画速度设为"关闭"：与减少动画同口径 */
+:root[data-anim="off"] *, :root[data-anim="off"] *::before, :root[data-anim="off"] *::after {
+  animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important;
+}
+:root[data-anim="off"] .sidebar { transition-delay: 0s !important; }
+:root[data-anim="off"] .cue-stage, :root[data-anim="off"] .cue-win { display: none; }

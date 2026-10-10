@@ -11,7 +11,7 @@ import { DEFAULT_LLM_CONFIG } from '../src/ai/llmClient'
 import { heuristicPolicy } from '../src/ai/heuristic'
 import { PERSONAS, PERSONA_IDS, getPersonaForPlayer } from '../src/ai/personas'
 import { AI_ROSTER } from '../src/engine/config'
-import { SPEECH_MAX_LEN, NOTE_MAX_LEN } from '../src/ai/promptTexts'
+import { SPEECH_MAX_LEN, NOTE_MAX_LEN } from '../src/prompts'
 import { baseState, setInvestors, openDealAt, step, clearHand, giveCards, toBoss } from './helpers'
 
 describe('回复解析', () => {

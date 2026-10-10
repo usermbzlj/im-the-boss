@@ -3,14 +3,15 @@
 //   并把"正在播放的演出"通过 context 提供给 CueStage（覆盖层）、TableBoard（格子 / 标记 / 骰子）等。
 //   · 演出只是覆盖层：不改变游戏推进、不阻塞操作；到期自动清除
 //   · 载入存档 / 换局时以当前最后事件为基线，不会把旧事件补演一遍（与 ToastLayer 同口径）
-//   · 快进 / 页面后台 / 减少动画 / 无 matchMedia 环境 → 不产生视觉演出；音效另按 pickSounds 的规则
+//   · 快进 / 页面后台 / 减少动画 / 无 matchMedia 环境 / 动画已关闭 → 不产生视觉演出；音效另按 pickSounds 的规则
+//   · 视觉演出的时长与延迟按设置里的"动画速度"缩放
 // ============================================================
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { GameState } from '../engine/types'
-import { cueLifetime, mergeActive, motionFilter, pickSounds, planCues, type ActiveCue, type CueKind } from '../ui/cues'
-import { readMotionEnv, type MotionEnv } from '../ui/motion'
+import { cueLifetime, mergeActive, motionFilter, pickSounds, planCues, scaleCues, type ActiveCue, type CueKind } from '../ui/cues'
+import { ANIM_SCALE, getAnimSpeed, readMotionEnv, type MotionEnv } from '../ui/motion'
 import { getSound, type AudioEngine } from '../audio'
 
 const EMPTY: readonly ActiveCue[] = []
@@ -76,7 +77,7 @@ export default function CueProvider({ state, viewerId, children, readEnv = readM
     if (cues.length === 0) return
     const env = readEnv()
     for (const s of pickSounds(cues, env)) play(s.id, s.delayMs)
-    const visual = motionFilter(cues, env)
+    const visual = scaleCues(motionFilter(cues, env), ANIM_SCALE[getAnimSpeed()])
     if (visual.length) setActive(cur => mergeActive(cur, visual, now(), () => ++idSeq.current))
   }, [state, viewerId, readEnv, play, now])
 

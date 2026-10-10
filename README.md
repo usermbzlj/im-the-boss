@@ -29,7 +29,7 @@ npm run build        # 类型检查 + 产物构建（dist/）
 7. 右侧标签页：谈判桌（席位竞价与当前方案）、日志（默认折叠跳过 / 放行，可勾选显示）、交易历史（每笔分成与累计收入，含地标租金）。
 8. 扩张 / 马拉松版里留意格子上的徽标：🏛 地标成交后每笔收租、🔥 抢手股价 +$1M、🕶 黑市出牌无人能阻止、🎯 猎头两张招募牌就能挖人。谁的最后一位投资者被挖走，座位上会亮出"夺回权"——1 张招募牌抢回来。
 9. 开了桌规：回合开始时行动区多一条"桌规"操作条（按价买 1 / 2 / 3 张、兑换招募牌——点选两张不同种类的牌确认）；持有某家族投资者时，点该家族的成员卡 / 旅行牌会多出"换牌"按钮；病假牌点开选目标。座位上的 🤒 表示这个人本回合出不了牌。
-10. 电脑玩家的重要动作会在版图下沿弹出提示（与你有关的更醒目、停留更久，点击即关）；每笔交易结束有结算卡（谁拿了多少、你的收益、流局原因）。顶栏可调电脑速度（快 / 中 / 慢）、⏩ 快进跳过当前停顿、开关合成音效；LLM 徽标显示模型是否正常（降级 / 暂停时给出原因）。座位上的图标是这位对手对你的态度，悬停可看原因。
+10. 电脑玩家的重要动作会在版图下沿弹出提示（与你有关的更醒目、停留更久，点击即关）；每笔交易结束有结算卡（谁拿了多少、你的收益、流局原因）。顶栏可调电脑速度（快 / 中 / 慢）、⏩ 快进跳过当前停顿、开关合成音效；⚙️ 设置里可调动画速度（关 / 快 / 标准 / 慢，即时生效，与电脑速度互不影响）；LLM 徽标显示模型是否正常（降级 / 暂停时给出原因）。座位上的图标是这位对手对你的态度，悬停可看原因。
 11. 终局卡给出排名、现金曲线、精彩时刻与各项统计；点"逐步复盘"可按动作 / 按交易步进回看整局（含所有人的手牌）。
 12. 手机 / 平板可直接玩：侧栏变成抽屉（手柄上有未读数），行动区与手牌固定在底部，长按卡牌或带说明的元素查看详情；支持键盘操作与读屏，尊重系统的"减少动态效果"设置。
 13. 点 📖 查看规则速查（按当前版本与桌规开关显示扩展规则），点 ⚙️ 配置 LLM。
@@ -66,7 +66,8 @@ npm run build        # 类型检查 + 产物构建（dist/）
 src/
   engine/       纯函数引擎：types / config / rules / validator / gameEngine（不含任何文案）
   text/         文案层：narrate（事件 → 文字）、labels（动作 / 卡牌 / 方案 → 文字），UI 与 LLM 提示词共用
-  ai/           电脑玩家：policy（接口）/ heuristic（启发式）/ llmPolicy + prompts + promptTexts + personas / llmClient
+  ai/           电脑玩家：policy（接口）/ heuristic（启发式）/ llmPolicy + prompts（按局面拼提示词）+ personas / llmClient
+  prompts/      LLM 提示词的全部静态文案：角色卡 / 桌风 / 框架与回复格式 / 规则摘要（见目录内 README.md；npm run prompts:preview 预览）
   game/         对局运行时（框架无关）：session（GameSession：持有状态、驱动电脑玩家、节奏停顿、动作日志）/ replay（开局参数 + 动作日志完整重放）/ createSession（依赖注入）/ autosave（节流存档）
   hooks/        useGameSession：把 GameSession 接进 React；browserEnv：装配浏览器环境（LLM + 启发式回退、localStorage、停顿）
   components/   React 界面（ActionDock、CardHand、OfferEditor、NegotiationPanel、TableBoard、GameOverCard …）；ViewerContext（视角玩家）、useModalDismiss / useDialogLayer（弹层关闭与焦点）、CueProvider + CueStage（演出层）、review/（终局统计与逐步复盘）
