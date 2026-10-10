@@ -38,9 +38,9 @@ export const STYLE_PARAMS: Record<TableStyle, StyleParams> = {
 }
 
 export const STYLE_LABELS: Record<TableStyle, { label: string; hint: string }> = {
-  friendly: { label: '和气生财', hint: '电脑玩家更愿意让利、更容易成交，少搅局、少记仇' },
+  friendly: { label: '友好', hint: '电脑玩家更愿意让利、更容易成交，少搅局、少记仇' },
   business: { label: '商战', hint: '默认：各凭本事，该争的争，不无故翻脸' },
-  ruthless: { label: '不留情面', hint: '电脑玩家报价更狠、更爱压价和搅局，也更记仇' },
+  ruthless: { label: '冷血', hint: '电脑玩家报价更狠、更爱压价和搅局，也更记仇' },
 }
 
 export function isTableStyle(v: unknown): v is TableStyle {

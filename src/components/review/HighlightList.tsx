@@ -38,7 +38,7 @@ export default function HighlightList({ highlights, players, onPick, activeId, c
               <div className="hl-text">{h.text}</div>
             </div>
             {jump
-              ? <button type="button" className="btn btn-sm hl-go" onClick={() => onPick!(h)} aria-label={`回放：${h.title}`}>回放</button>
+              ? <button type="button" className="btn btn-sm hl-go" onClick={() => onPick!(h)} aria-label={`回放：第 ${h.dealNo} 次交易 · ${h.title}`}>回放</button>
               : <span className="hl-deal muted">第 {h.dealNo} 次交易</span>}
           </li>
         )

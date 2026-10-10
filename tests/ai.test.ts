@@ -552,7 +552,7 @@ describe('人物差异体现为可见行为（启发式）', () => {
     expect(asks.size).toBeGreaterThanOrEqual(2) // 取整倾向 / 倍率不同 → 不止两档之外还有差异
   })
 
-  it('桌风缩放报价：和气生财 ≤ 商战 ≤ 不留情面', () => {
+  it('桌风缩放报价：友好 ≤ 商战 ≤ 冷血', () => {
     let s = baseState(4, 96)
     setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
     s = openDealAt(s, 1, 0)

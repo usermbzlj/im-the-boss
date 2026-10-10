@@ -37,7 +37,9 @@ npm run build        # 类型检查 + 产物构建（dist/）
 | --- | --- |
 | Base URL / API Key / 模型名 | 任意 OpenAI 兼容 `chat/completions` 接口（DeepSeek、OpenAI、Ollama、vLLM…） |
 | 温度 | 决策任务建议 0–0.6（默认 0.5） |
-| 请求超时（秒） | 默认 60；thinking / reasoning 模型建议调大。超时后本次决策自动降级为启发式 |
+| 请求超时（秒） | 默认 30；thinking / reasoning 模型建议调大。超时后本次决策自动降级为启发式（人物口吻不变）；连续失败会暂停调用 LLM，冷却后自动探测恢复，顶栏徽标显示状态 |
+| LLM 决策范围 | 关键决策（默认：报价、提案、应答、出影响牌、封口费才问模型，其余由启发式按同一人物处理）/ 全部 |
+| 桌风 | 友好 / 商战 / 冷血，与开始页同一设置，下一局生效 |
 | 自定义请求体 | JSON 对象，顶层字段合并进请求。例：DeepSeek 关思考 `{"thinking":{"type":"disabled"}}`、Qwen `{"enable_thinking":false}`、OpenAI `{"reasoning_effort":"low"}` |
 | AI 行动节奏 | 只影响电脑行动前的停顿观感 |
 
