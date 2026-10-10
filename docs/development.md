@@ -28,7 +28,9 @@ Node 18+（需要 `structuredClone`、`AbortSignal.any` 可选）。
 | `storage.test.ts` | 存档（内存 localStorage）：head + 分块日志布局与增量写、续局后日志续接、终局存档与续局、节流与销毁落盘、v10 夹具迁移并打完整局、迁移机制（逐级 / 只加字段 / keepsReplay / 太旧 / 来自未来）、损坏 / 缺块 / 落后的日志降级、配额不足、无 localStorage、`createSession` 注入 |
 | `hook.test.ts` | `useGameSession`：开局记录种子（含 0）、日志随快照增长、继续上一局（含终局）。自行动态加载 jsdom 与 @testing-library/react（不用文件头声明），缺依赖时自动跳过 |
 | `seed.test.ts` | 开局页种子输入解析（"0" 是合法种子） |
-| `ui/*.test.tsx` | 组件测试（jsdom，见下"组件测试"）：`ActionDock`（各阶段按钮发出以视角玩家为行动者的动作、报价 / 放弃二次确认、倒计时放行）、`CardHand`（按视角取牌、点牌弹层与选牌模式）、`OfferEditor`（提交 / 非法置灰、关闭规则：点遮罩不关、Esc 关、有改动先确认）、`NegotiationPanel` / `PlayerSeat`（"你"跟随视角）、`TableBoard`（REACTION / CLOSING 隐藏他人行动者与思考中、自己行动时照常显示）、`panels.ui`（`SettingsPanel` 关闭规则、`GameOverCard` 并列同名次、`DealHistoryPanel` 累计口径、`useSideTab`、`PhaseGuide` 倒计时不点名）。夹具在 `ui/fixtures.tsx` |
+| `ui/*.test.tsx` | 组件测试（jsdom，见下"组件测试"）：`ActionDock`（各阶段按钮发出以视角玩家为行动者的动作、报价 / 放弃二次确认、倒计时放行）、`CardHand`（按视角取牌、点牌弹层与选牌模式）、`OfferEditor`（提交 / 非法置灰、关闭规则：点遮罩不关、Esc 关、有改动先确认）、`NegotiationPanel` / `PlayerSeat`（"你"跟随视角）、`TableBoard`（REACTION / CLOSING 隐藏他人行动者与思考中、自己行动时照常显示）、`panels.ui`（`SettingsPanel` 关闭规则、`GameOverCard` 并列同名次、`DealHistoryPanel` 累计口径、`useSideTab`、`PhaseGuide` 倒计时不点名）；反馈层（`toasts` / `eventFeed` / `feedback.ui` / `feedbackControls.ui`：提示筛选与合并、结算卡、快进与 AI 状态徽标）；手感层（`cues` / `cueLayer` / `cardFace` / `soundControl`）；复盘（`stats` / `highlights` / `review.ui`）；人际关系图标（`tableRelation.ui`）；布局与无障碍（`layout` 断点与样式表同步、`a11y.ui` 弹层焦点 / 键盘 / 读屏播报、`appLayout.ui` 各视口档位冒烟）。夹具在 `ui/fixtures.tsx` |
+| `ai.test.ts` | 电脑玩家：熔断状态机与 `AiHealth` 中文原因、REACTION / CLOSING 停顿与手牌无关、GameSession 停顿与决策并行 / 快进 / AI 状态通道、关系记忆（状态推导的纯函数）、人物台词库、人物差异体现为可见行为、混合决策分级与路由、提示词中不可信文字的净化与转义 |
+| `audio.test.ts` | 合成音效：音效配方、引擎解锁与播放、开关 / 音量持久化与无 AudioContext 时的降级 |
 | `llm.test.ts` | LLM 协议：JSON 提取容错、字段宽容解析、编号落成动作（台词 / 要价夹取 / 分成覆盖与退回 / 收款人写错整组放弃 / 反报价 / 指定弃牌）、剪枝（自伤旅行、冗余万能旅行、需同意的独吞方案）、后果注释、默认建议与局势摘要出现在提示词中、谈判阶段不带棋盘概览、不泄露他人手牌、未配置时返回 `null` 并由回退接管、唯一合法动作不请求模型 |
 | `actionDock.test.ts` | 操作区按钮与合法动作同口径（服务端渲染成静态 HTML 检查）：本任 Boss 提案次数用完时"提出方案"置灰并说明原因 |
 | `simulation.test.ts` | 整局回归：启发式 3–6 人各 12 局、随机 3 / 6 人各 12 局；GameSession 与同步仿真同种子结果一致；事件流可完整叙述；谈判活跃度（多数交易有公开报价、承诺价自动同意被触发） |
