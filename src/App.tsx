@@ -18,6 +18,8 @@ import PhaseGuide from './components/PhaseGuide'
 import HelpPanel from './components/HelpPanel'
 import SettingsPanel from './components/SettingsPanel'
 import GameOverCard from './components/GameOverCard'
+import ReplayViewer from './components/review/ReplayViewer'
+import { useRecording } from './components/review/useRecording'
 import RecentStrip from './components/RecentStrip'
 import ToastLayer from './components/ToastLayer'
 import DealResultCard from './components/DealResultCard'
@@ -32,12 +34,14 @@ import { getLegalActions } from './engine/validator'
 import { needsAttention, canSkipWait } from './ui/attention'
 import { proposeAndClose } from './ui/proposeAndClose'
 import { clearSavedGame } from './utils/storage'
+import { buildReview } from './ui/review'
+import { highlightPosition, type Highlight } from './ui/highlights'
 
 /** 视角玩家：单机版人类固定坐 0 号位；组件通过 ViewerProvider / useViewerId 取得，不再各自写死 */
 const VIEWER_ID = 0
 
 export default function App() {
-  const { snapshot, start, leave, act, continueSaved, getState, skipWait } = useGameSession()
+  const { snapshot, start, leave, act, continueSaved, getState, skipWait, getLog, getOrigin } = useGameSession()
   const state = snapshot?.state ?? null
   const thinkingId = snapshot?.thinkingId ?? null
   const [showHelp, setShowHelp] = useState(false)
@@ -49,6 +53,14 @@ export default function App() {
   const [resultDismissed, setResultDismissed] = useState(false)
   const gameOver = state?.phase === 'GAME_OVER'
   useEffect(() => { if (!gameOver) setResultDismissed(false) }, [gameOver])
+
+  // 终局后的复盘：录像由动作日志重放而来（分片整理）；不可回放时 recording 为 null，入口随之隐藏。对局进行中没有复盘入口
+  const { recording, status: replayStatus } = useRecording(gameOver, getOrigin(), getLog(), state)
+  const review = useMemo(() => (gameOver && state ? buildReview(state, recording) : null), [gameOver, state, recording])
+  /** 逐步复盘打开时所在的位置；null = 未打开 */
+  const [replayAt, setReplayAt] = useState<number | null>(null)
+  useEffect(() => { if (!gameOver) setReplayAt(null) }, [gameOver])
+  const openHighlight = (h: Highlight) => { const p = highlightPosition(h); if (p != null) setReplayAt(p) }
 
   const legal = useMemo(() => (state ? getLegalActions(state, VIEWER_ID) : []), [state])
   const hasNeg = !!state?.negotiation
@@ -109,6 +121,9 @@ export default function App() {
         <div className="header-actions">
           <AiStatusBadge status={snapshot!.ai} />
           <PaceControls canSkip={canSkipWait(state, legal)} onSkip={skipWait} syncKey={showSettings} />
+          {gameOver && recording && replayAt === null && (
+            <button className="btn btn-sm result-fab" onClick={() => setReplayAt(0)}>逐步复盘</button>
+          )}
           {gameOver && resultDismissed && (
             <button className="btn btn-sm result-fab" onClick={() => setResultDismissed(false)}>查看最终结果</button>
           )}
@@ -144,7 +159,13 @@ export default function App() {
             </button>
           </div>
           {sideTab === 'neg' && hasNeg ? <NegotiationPanel state={state} />
-            : sideTab === 'history' ? <DealHistoryPanel state={state} />
+            : sideTab === 'history' ? <DealHistoryPanel
+              state={state}
+              highlights={review?.highlights}
+              reviewable={gameOver && !!recording}
+              onReviewDeal={n => setReplayAt(recording?.positionOpened(n) ?? 0)}
+              onReviewHighlight={openHighlight}
+            />
               : <GameLog state={state} />}
         </aside>
       </div>
@@ -166,6 +187,20 @@ export default function App() {
           state={state}
           onRestart={() => { clearSavedGame(); leave() }}
           onReview={() => { pickTab('history'); setResultDismissed(true) }}
+          recording={recording}
+          replayStatus={replayStatus}
+          review={review ?? undefined}
+          onOpenReplay={p => setReplayAt(p ?? 0)}
+        />
+      )}
+
+      {gameOver && recording && replayAt !== null && (
+        <ReplayViewer
+          state={state}
+          recording={recording}
+          highlights={review?.highlights ?? []}
+          initialPosition={replayAt}
+          onClose={() => setReplayAt(null)}
         />
       )}
 
