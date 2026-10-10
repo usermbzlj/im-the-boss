@@ -321,11 +321,12 @@ flushAutosave(session)                                  // 立即落盘（pagehi
 | `PhaseGuide` | 顶部引导条：阶段、行动者、该做什么（病假 / 缺代表速流局也在这里提醒） |
 | `TableBoard` + `PlayerSeat` | 环形版图（`config.ringLayout` 按格数排成外圈；行数由 `useRingFit` 按版图区域实际宽高从 `ringRowOptions` 里挑——默认 6×4 / 8×6 / 10×8，宽屏或矮窗口自动换成更扁的外圈如 32 格 → 13×5，仍放不下则整体等比缩小，保证一屏看全、区域内不滚动；特殊格带色条与徽标，地标格显示主人）、中央景气牌（有效股价 / 版本 / 进度）、座位（现金 / 投资者 / 夺回权 / 地标数 / 病假徽标 / 手牌数 / 台词气泡 / 思考中；人物主题色、对视角玩家的态度图标 `relationsToward`；气泡完整显示最多 3 行，点击展开） |
 | `ActionDock` | 人类的行动区：状态摘要 + 按当前阶段与 `getLegalActions` 渲染的按钮；开桌规时多一条"桌规"操作条（买 1 / 2 / 3 张按价标注、花费过半现金时先确认、兑换招募牌进入选牌模式并确认）；轮到视角玩家时高亮脉冲（`needsAttention`）；"报价即承诺"提示框、同意出借按钮上写明同意后的收入与新承诺价（`acceptOutcome`）；方案全员同意后"宣布成交"置顶高亮；固定最小高度，切换阶段不让版图重新缩放 |
-| `CardHand` | 手牌；可打的牌由合法动作列表决定，点牌弹出目标 / 参数选择（招募弹层按 `recruitCost` 标注 3 / 2 / 夺回 1 张；稀有牌弹层给出股价变化；家族 / 定向旅行牌弹层附"换牌"按钮；病假牌弹层选目标玩家）；多选模式 `selectMode: 'discard' | 'trade'`——手牌上限时弃牌多选，兑换时限选两张不同种类 |
+| `CardHand` | 手牌；每张牌是可聚焦的卡面（图标 / 牌种 / 标题 / 一句效果摘要 / 家族色边与斑纹，文案与配色来自 `ui/cardInfo.cardFace`）；鼠标悬停约 0.3 秒、键盘聚焦、触屏长按会放大显示完整说明与当前能否打出的原因，点击仍弹出目标 / 参数选择（招募弹层按 `recruitCost` 标注 3 / 2 / 夺回 1 张；稀有牌弹层给出股价变化；家族 / 定向旅行牌弹层附"换牌"按钮；病假牌弹层选目标玩家）；不可打的牌只降饱和度与亮度（不再叠 opacity），文字保持可读；新抽到的牌带"新"标记与入场动画（约 2.8 秒）；多选模式 `selectMode: 'discard' | 'trade'`——手牌上限时弃牌多选，兑换时限选两张不同种类 |
 | `OfferEditor` | Boss 的方案编辑器：每个需求组挑选代表、可选池勾选、逐人分成、预设方案（`buildOfferCandidates`）、实时校验（`validateOfferShape` + `describeOfferError`）；所有需应答者都会按承诺价自动同意时多一个"提案并宣布成交"（`onSubmit(repKeys, payouts, true)`，由 `ui/proposeAndClose` 先提案、再用 `getState()` 确认可宣布后立刻宣布） |
 | `NegotiationPanel` | 谈判桌只读视图：本格特殊效果 / 独家协议 / 股价变动徽标、席位竞价（每个家族的多方代表与报价）、当前方案与应答；底部固定"本笔交易动态"事件流（`EventFeed`，见 7.2） |
 | `GameLog` / `DealHistoryPanel` | `GameLog`：事件流渲染（`narrate`），默认折叠 `minor` 事件（跳过 / 放行），可勾选"显示跳过 / 放行"；`DealHistoryPanel`：每笔交易的结算明细与各玩家累计收入（`dealTotals` = Boss 净得 + 他人分成 + 地标租金，流局不计），面板上写明口径并并排列出当前现金（现金 = 累计收入 − 买牌 / 兑换支出），流局原因含"缺代表" |
 | `EventFeed` / `RecentStrip` / `ToastLayer` / `DealResultCard` / `PaceControls` / `AiStatusBadge` / `InfoTip` | 即时反馈与节奏控件，见 7.2 |
+| `CueProvider` / `CueStage` / `AnimatedNumber` / `DieFace` / `SoundControl` / `useTurnChime` | 手感层（演出覆盖层、数字滚动、点阵骰子、音效开关、"轮到你"提示音），见 7.3 |
 | `StartScreen` / `SettingsPanel` / `HelpPanel` | 开局（人数 / 桌风 / 版本 / 桌规开关 / 名字 / 种子 / 续档；矮屏可滚动）、LLM 设置与调用日志、规则速查（按当前版本与桌规开关显示扩展规则） |
 
 界面从不自行判断规则：按钮出现与否只看 `getLegalActions`，参数合法性由 `rules.ts` 的查询函数给出结构化结果、`text/labels.ts` 转成提示文本。
@@ -364,6 +365,49 @@ flushAutosave(session)                                  // 立即落盘（pagehi
 - **桌风**：`StartScreen` 写 `LLMConfig.tableStyle`（友好 / 商战 / 冷血），由 AI 线决定其对电脑玩家的影响。
 
 测试：`tests/ui/` 下 `toasts` / `eventFeed` / `uiLogic` 是纯函数单测，`feedback.ui` / `feedbackControls.ui` / `tableRelation.ui` 是组件测试。
+
+### 7.3 手感与仪式感（`ui/cues` + `audio/` + 对应组件）
+
+目标：让出牌、付钱、成交、掷骰有"落地感"，同时**绝不影响游戏进度**——演出只是叠在桌面上的覆盖层，不拦截点击、不进无障碍树、不改 `GameState`，关掉也不丢任何信息。
+
+**数据流**
+
+```
+state.events（已落地的事件）
+  → cuesFor(state, 新事件, viewerId, {prevMarkerPos})   每个事件 → 0..n 个 Cue（类型 / 目标 / 时长 / 音效 id）
+  → mergeCues      同类、同目标、500ms 内的连续 Cue 合并（金额累加、计数 +1），如 Boss 保留 + 分成
+  → staggerCues    多个镜头依次错开（步长 450ms，上限 900ms），避免同时炸开
+  → pickSounds     挑音效（与视觉独立）
+  → motionFilter   环境不允许时视觉整体丢弃
+  → mergeActive    并入"正在演"的列表（上限 10 条，同 key 续期而不是叠加）
+  → CueStage       按 data-* 锚点量出位置，渲染 CSS 动画；到期自动移除
+```
+
+- **纯逻辑**（`ui/cues.ts`、`ui/motion.ts`、`ui/cardInfo.ts`）无 React，直接单测。`Cue` = `{ kind, target(seat | cell | rep | hand | pile), amount?, tone, mine, ms, delay, sfx?, count }`。
+- **Cue 种类**：`money`（收付款飘字，座位现金数字同时滚动）、`play` / `boss` / `travel` / `recruit` / `stop` / `price`（关键牌 ≤ 0.8 秒镜头：Boss 徽章飞到座位、代表被送走、代表换主、阻止牌被划掉、涨跌股价）、`close`（成交格圈光 + "成交"印章）、`fail`、`dice`（掷骰翻滚）、`marker`（金钱标记沿版图移动）、`draw`（自己抽牌：牌背飞入手牌；别人抽牌只显示"+N 张"）、`win`（终局赢家庆祝，只在桌面层，不改 `GameOverCard`）。
+- **锚点**：不通过 props 穿透组件，而是 `CueStage` 用 `[data-seat-id]` / `[data-space-id]` / `[data-family]` / `.hand-cards` 等 DOM 属性在渲染时测位置。`PlayerSeat`、`TableBoard`、`FamilyChip` 只多出这些属性与少量 class（`cue-closing`、`incoming`、`flash-up/down`）。
+- **`CueProvider`**（App 里包住牌桌）监听 `state`：挂载与换局（事件 id 倒退）时以当前最后事件为基线，**载入存档不补演**；其余新事件走上面的管线。`useCuesOf(kind)` 给 `TableBoard` 取格 / 标记 / 股价的演出。
+- **跳过规则**（`motionBlocked`）：`prefers-reduced-motion`、页面在后台、快进中（`PaceControls` 的"快进"调用 `markFastForward()`，之后 2 秒内）、环境无 `matchMedia`（jsdom 等）→ 视觉演出全部丢弃。音效另算（`pickSounds`）：后台不出声；快进中只保留成交 / 失败 / 终局；成交音会盖掉同批的入账 / 出牌 / 抽牌音；一批最多 2 个，第二个延后 170ms。
+- **信息隐藏（7.1）**：只对已落地事件出 Cue；`PASSED` / 喊话 / 报价过程没有演出；REACTION / CLOSING 不出现"谁在考虑"；他人抽牌只出张数，不出牌面、不出声。
+
+**音效模块 `src/audio/`**（Web Audio 实时合成，无任何音频资源文件）
+
+| 导出 | 说明 |
+| --- | --- |
+| `SfxId` / `RECIPES` | `play stop deal fail turn dice coin pay win end boss swoosh up down draw`；每个音效是一组 `Tone { at, freq, to?, dur, wave, gain, lowpass? }`（成交 = 硬币叮 + C-E-G-C 琶音 + 高音闪光） |
+| `createAudioEngine({ contextFactory?, storage?, gestureTarget?, now? })` | 返回 `{ getState, subscribe, setEnabled, toggle, setVolume, play(id, { delayMs?, gain? }), unlock, dispose }`；依赖都可注入，测试用假 `AudioContext` |
+| `getSound()` / `useAudioState(engine)` | 全局单例（懒创建）与 `useSyncExternalStore` 订阅 |
+| 持久化 | localStorage key `im-the-boss:audio`：`{ enabled, volume }`，默认开、音量 0.5（总增益 `v² × 0.8`，经压缩器，整体偏克制） |
+
+行为：默认开启，但**首次用户交互**（pointerdown / keydown / touchstart）之前不发声；`play` 在关闭 / 未解锁 / 无 `AudioContext` / 音量 0 / 被节流（每种音效有最小间隔）时返回 `false` 且不抛错；无 Web Audio 的环境里 `SoundControl` 的按钮置灰。顶栏的 `SoundControl` 是喇叭按钮 + 音量滑块（关闭时滑块隐藏）；`useTurnChime(active)` 在"轮到你做决定"的上升沿响一声。
+
+**卡面（`ui/cardInfo.ts`）**：`cardFace(card)` → `{ icon, kind, title, summary, detail, accent, familyId?, badge? }`，稀有牌的数值取自 `BOOM_BONUS` / `BUST_PENALTY`，家族色取自 `FAMILIES`；`CardHand` 只负责渲染与交互。家族标记（版图、座位、手牌）共用家族色 + 字母徽章。
+
+**按钮层级**：`.btn-primary`（主操作）/ 默认次要 / `.btn-danger` / `.btn-ghost`；统一圆角、阴影、间距与 `:focus-visible` 轮廓；顶栏信息收成 `stat-chip`。样式在 `styles/game.css` 末尾"第 2 阶段"段。
+
+测试：`tests/ui/cues.test.ts`（调度 / 合并 / 跳过 / 音效挑选 / 滚动数值的纯函数）、`tests/audio.test.ts`（引擎：解锁、静音、节流、持久化、降级）、`tests/ui/cueLayer.test.tsx`（Provider + Stage + 版图钩子 + 数字滚动 + 骰子）、`tests/ui/cardFace.test.tsx`（卡面、放大、新牌标记）、`tests/ui/soundControl.test.tsx`。
+
+---
 
 ---
 
