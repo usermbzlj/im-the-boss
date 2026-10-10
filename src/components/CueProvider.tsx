@@ -21,6 +21,11 @@ export function useActiveCues(): readonly ActiveCue[] {
   return useContext(CueContext)
 }
 
+/** 屏蔽外层演出：复盘等展示历史状态的子树不应收到实时对局的演出 */
+export function NoCues({ children }: { children: ReactNode }) {
+  return <CueContext.Provider value={EMPTY}>{children}</CueContext.Provider>
+}
+
 /** 某一类演出里满足条件的那些 */
 export function useCuesOf(kind: CueKind, pick?: (c: ActiveCue) => boolean): ActiveCue[] {
   const all = useActiveCues()

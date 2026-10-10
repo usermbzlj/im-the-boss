@@ -19,6 +19,8 @@ interface TableBoardProps {
   state: GameState
   thinkingId: number | null
   onPlaceMarker?: (spaceId: number) => void
+  /** 复盘用的只读模式：不可放置标记、不显示“可独成”提示，也不隐藏反应窗口里的行动者（终局后一切公开）。默认 false，行为不变 */
+  readOnly?: boolean
 }
 
 const KIND_ICON: Record<SpaceKind, string> = { STANDARD: '', LANDMARK: '🏛', PREMIUM: '🔥', BLACK_MARKET: '🕶', HEADHUNT: '🎯' }
@@ -90,7 +92,7 @@ function spaceTooltip(state: GameState, space: BoardSpace): string {
   return `#${space.id}｜${parts.join('｜')}｜${space.dividends} 份分红${kind}${landlord}`
 }
 
-export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBoardProps) {
+export default function TableBoard({ state, thinkingId, onPlaceMarker, readOnly = false }: TableBoardProps) {
   const viewerId = useViewerId()
   const tile = getCurrentTile(state)
   const nextTile = state.dealTiles[state.dealTileIndex + 1]
@@ -104,10 +106,10 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBo
   const rawActing = getActingPlayerId(state)
   // 反应窗口与成交倒计时都依次询问所有人，但不向视角玩家显示"别人谁在行动 / 思考"：
   // 持阻止牌 / 干扰牌者需要真正决策（LLM 耗时更长），显示"谁在想"会暴露手牌。视角玩家自己行动时照常显示。
-  const hideActor = (state.phase === 'REACTION' || state.phase === 'CLOSING') && rawActing !== viewerId
+  const hideActor = !readOnly && (state.phase === 'REACTION' || state.phase === 'CLOSING') && rawActing !== viewerId
   const actingId = hideActor ? -1 : rawActing
   const shownThinking = hideActor ? null : thinkingId
-  const canPlace = state.phase === 'PLACE_MARKER' && state.markerChooserId === viewerId
+  const canPlace = !readOnly && state.phase === 'PLACE_MARKER' && state.markerChooserId === viewerId
   const neutral = state.investors.filter(inv => inv.ownerId === null)
   const closedCount = state.board.filter(b => b.closedByTileId != null).length
   // 每位电脑玩家对视角玩家的态度：每次状态变化算一次，分发给各座位
@@ -141,7 +143,7 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker }: TableBo
             const isCurrent = space.id === state.markerPos
             const closed = space.closedByTileId != null
             const clickable = canPlace && !closed
-            const soloOk = !closed && canCompleteAlone(state, viewerId, space)
+            const soloOk = !readOnly && !closed && canCompleteAlone(state, viewerId, space)
             const special = space.kind !== 'STANDARD'
             const closing = closeCues.some(cue => cue.target.type === 'cell' && cue.target.spaceId === space.id)
             const markerIncoming = markerCues.some(cue => cue.target.type === 'cell' && cue.target.spaceId === space.id)
