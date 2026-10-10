@@ -14,10 +14,10 @@ import type { GameState, PlayerAction } from '../engine/types'
 import { hasDemand, playerRelevantFamilies } from '../engine/rules'
 import { AI_SPEED_DELAYS_MS, type AISpeed } from './llmClient'
 
-/** 窗口内第 k 位的停顿：第一位全额，之后逐位减半，不低于 40ms（5 位 AI 连续放行 ≈ 2.4 × 基准） */
+/** 窗口内第 k 位的停顿：第一位全额，之后逐位减半，不低于 30ms（5 位 AI 连续放行 ≈ 2.4 × 基准） */
 export function windowStepDelay(base: number, k: number): number {
   if (base <= 0) return 0
-  return Math.max(Math.min(base, 40), Math.round(base * Math.pow(0.5, Math.min(k, 6))))
+  return Math.max(Math.min(base, 30), Math.round(base * Math.pow(0.5, Math.min(k, 6))))
 }
 
 /** 一整个窗口（n 位依次放行）的总停顿上限，供测试与文档引用 */
