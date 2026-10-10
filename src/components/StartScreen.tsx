@@ -69,16 +69,16 @@ export default function StartScreen({ onStart, onContinue, onSettings, syncKey }
         <div className="llm-badge">{llmOn ? '🤖 LLM 电脑玩家已启用' : '🎲 使用内置启发式 AI（可在设置中启用 LLM）'}</div>
 
         <div className="form-group">
-          <label>你的名字</label>
-          <input value={playerName} onChange={e => setPlayerName(e.target.value)} placeholder="输入名字" maxLength={12}
+          <label htmlFor="start-name">你的名字</label>
+          <input id="start-name" autoComplete="nickname" enterKeyHint="go" value={playerName} onChange={e => setPlayerName(e.target.value)} placeholder="输入名字" maxLength={12}
             onKeyDown={e => e.key === 'Enter' && start()} />
         </div>
 
         <div className="form-group">
-          <label>玩家人数（含你）</label>
-          <div className="player-count-selector">
+          <label id="start-count-label">玩家人数（含你）</label>
+          <div className="player-count-selector" role="group" aria-labelledby="start-count-label">
             {COUNTS.map(c => (
-              <button key={c} type="button" className={`player-count-btn${c === playerCount ? ' active' : ''}`} onClick={() => setPlayerCount(c)}>{c} 人</button>
+              <button key={c} type="button" aria-pressed={c === playerCount} className={`player-count-btn${c === playerCount ? ' active' : ''}`} onClick={() => setPlayerCount(c)}>{c} 人</button>
             ))}
           </div>
           <p className="form-hint">{playerCount === 3 ? '每人 2 张投资者牌' : playerCount === 6 ? '每人 1 张投资者牌' : `每人 1 张投资者牌，${6 - playerCount} 张放公共区（需招募取得）`}</p>
@@ -99,12 +99,13 @@ export default function StartScreen({ onStart, onContinue, onSettings, syncKey }
         </div>
 
         <div className="form-group">
-          <label>对局版本</label>
-          <div className="variant-selector">
+          <label id="start-variant-label">对局版本</label>
+          <div className="variant-selector" role="group" aria-labelledby="start-variant-label">
             {VARIANT_LIST.map(v => (
               <button
                 key={v.id}
                 type="button"
+                aria-pressed={v.id === variantId}
                 className={`variant-btn${v.id === variantId ? ' active' : ''}`}
                 onClick={() => { setVariantId(v.id); setHouseRulesChoice(null) }}
                 title={v.blurb}
@@ -136,8 +137,8 @@ export default function StartScreen({ onStart, onContinue, onSettings, syncKey }
         </div>
 
         <div className="form-group">
-          <label>对局种子（可选，同一种子可复现发牌与骰子）</label>
-          <input value={seedText} onChange={e => setSeedText(e.target.value)} placeholder="留空随机" inputMode="numeric" />
+          <label htmlFor="start-seed">对局种子（可选，同一种子可复现发牌与骰子）</label>
+          <input id="start-seed" value={seedText} onChange={e => setSeedText(e.target.value)} placeholder="留空随机" inputMode="numeric" />
         </div>
 
         <button className="btn-primary" onClick={start}>开始新游戏</button>

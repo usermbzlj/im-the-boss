@@ -2,7 +2,7 @@
 // PlayerSeat — 座位卡：名字 / 现金 / 投资者 / 手牌数 / 台词气泡 / 人物主题色 / 对你的态度
 // ============================================================
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { GameState } from '../engine/types'
 import { HAND_LIMIT, FAMILIES, LANDMARK_RENT } from '../engine/config'
@@ -13,6 +13,7 @@ import { getPersonaForPlayer } from '../ai/personas'
 import type { Relation } from '../ai/relations'
 import { monogram, seatColor } from '../ui/personaColor'
 import { useViewerId } from './ViewerContext'
+import { useLayout } from './useLayout'
 
 interface PlayerSeatProps {
   state: GameState
@@ -35,6 +36,16 @@ export default function PlayerSeat({ state, playerId, isActing, isThinking, rela
   const viewerId = useViewerId()
   /** 点开的气泡（记台词原文：换了新台词自动收起） */
   const [openBubble, setOpenBubble] = useState<string | null>(null)
+  const seatRef = useRef<HTMLDivElement>(null)
+  const { scrollSeats } = useLayout()
+  // 座位排成横向滚动条时（窄屏），轮到谁行动就把谁滚到视野中央，别让行动者在屏幕外
+  useEffect(() => {
+    if (!isActing || !scrollSeats) return
+    const el = seatRef.current
+    if (!el || typeof el.scrollIntoView !== 'function') return
+    const reduce = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    el.scrollIntoView({ inline: 'center', block: 'nearest', behavior: reduce ? 'auto' : 'smooth' })
+  }, [isActing, scrollSeats])
   const player = state.players[playerId]
   if (!player) return null
   const isViewer = playerId === viewerId
@@ -56,9 +67,11 @@ export default function PlayerSeat({ state, playerId, isActing, isThinking, rela
   const speech = player.lastSpeech
   const expanded = !!speech && openBubble === speech
   const att = !isViewer && relation && relation.score !== 0 ? RELATION_ICON[relation.score] : null
+  const summary = `${player.name}${isViewer ? '（你）' : ''}，现金 $${player.cash}M，手牌 ${player.hand.length} 张${isBoss ? '，本笔交易的 Boss' : ''}${isActing ? '，正在行动' : ''}`
 
   return (
-    <div className={`player-seat${isActing ? ' acting' : ''}${isBoss ? ' is-boss' : ''}${isViewer ? ' is-human' : ''}`} style={style} data-seat-id={playerId}>
+    <div ref={seatRef} className={`player-seat${isActing ? ' acting' : ''}${isBoss ? ' is-boss' : ''}${isViewer ? ' is-human' : ''}`} style={style} data-seat-id={playerId}
+      role="group" aria-label={summary}>
       {speech && (
         <button
           key={speech}

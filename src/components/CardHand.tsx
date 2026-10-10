@@ -112,13 +112,28 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
   // 点击弹层与手牌以外的区域关闭弹层
   useEffect(() => {
     if (openCardId == null) return
-    const onDown = (e: MouseEvent) => {
+    const onDown = (e: Event) => {
       const t = e.target as HTMLElement | null
       if (t?.closest('.card-popover') || t?.closest('.card')) return
       setOpenCardId(null)
     }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
+    // pointerdown：触屏轻点空白处同样收起（mousedown 在部分触屏浏览器上延迟 / 不触发）
+    document.addEventListener('pointerdown', onDown)
+    return () => document.removeEventListener('pointerdown', onDown)
+  }, [openCardId])
+  // 键盘：弹层打开后焦点进入弹层第一个控件；Esc 收起并把焦点还给那张牌
+  useEffect(() => {
+    if (openCardId == null) return
+    const pop = handRef.current?.querySelector<HTMLElement>('.card-popover')
+    pop?.querySelector<HTMLElement>('input, button:not(.popover-close)')?.focus({ preventScroll: true })
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      e.preventDefault()
+      setOpenCardId(null)
+      handRef.current?.querySelector<HTMLElement>(`[data-card-id="${openCardId}"]`)?.focus({ preventScroll: true })
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
   }, [openCardId])
   const player = state.players[viewerId]
   if (!player) return null
@@ -353,9 +368,9 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
   return (
     <div className="hand" ref={handRef}>
       {openCard && !selecting && openActions.length > 0 && (
-        <div className="card-popover" style={{ left: popoverLeft }} onClick={e => e.stopPropagation()}>
+        <div className="card-popover" role="group" aria-label={`${cardFace(openCard).title}：出牌选项`} style={{ left: popoverLeft }} onClick={e => e.stopPropagation()}>
           {renderPopover(openCard)}
-          <button className="popover-close" onClick={() => setOpenCardId(null)}>×</button>
+          <button className="popover-close" aria-label="关闭出牌选项" onClick={() => setOpenCardId(null)}>×</button>
         </div>
       )}
       <div className="hand-title">
@@ -366,7 +381,7 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
         {recruitCount > 0 && recruitCount < recruitNeed && <span className="muted" title={recruitNeed < 3 ? '猎头格：本笔交易中招募只需 2 张' : '3 张招募牌一组'}>招募 {recruitCount}/{recruitNeed}</span>}
         {player.reclaim && <span className="gold" title="你的最后一位常驻投资者被夺走了：只需 1 张招募牌即可抢回">夺回权：{FAMILIES[player.reclaim].name}</span>}
       </div>
-      <div className="hand-cards">
+      <div className="hand-cards" role="group" aria-label="你的手牌">
         {player.hand.map(card => {
           const playable = !selecting && actionsForCard(legal, card).length > 0
           const selected = selection.has(card.id)
@@ -378,6 +393,8 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
           const activate = (el: HTMLElement) => {
             if (selecting) { if (pickable) onToggleSelect(card.id) }
             else if (playable) { if (open) setOpenCardId(null); else openPopoverAt(card.id, el) }
+            // 当前打不出的牌：点按 / Enter 直接看说明与"为什么不能打"（触屏没有悬停；键盘聚焦本来就会放大，再按一次切换）
+            else if (zoomId !== card.id) showZoom(card.id, el)
           }
           const onPointerEnter = (e: PointerEvent<HTMLElement>) => {
             if (e.pointerType !== 'mouse' || open) return
@@ -406,6 +423,8 @@ export default function CardHand({ state, legal, act, selectMode, selection, onT
                 role="button"
                 tabIndex={0}
                 aria-disabled={idle || undefined}
+                aria-pressed={selecting ? selected : undefined}
+                aria-expanded={playable ? open : undefined}
                 aria-label={`${face.kind}：${face.title}，${face.summary}${isNew ? '（新抽到）' : ''}`}
                 aria-describedby={zoomId === card.id ? 'card-zoom' : undefined}
                 data-card-id={card.id}

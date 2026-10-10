@@ -260,14 +260,14 @@ describe('ReplayViewer', () => {
     const { review } = mount()
     const positions = highlightPositions(review.highlights)
     expect(positions.length).toBeGreaterThan(0)
-    await user.click(screen.getByRole('button', { name: /▶◆/ }))
+    await user.click(screen.getByRole('button', { name: '下一个精彩时刻' }))
     expect(stepLabel()).toBe(String(positions[0]))
     expect(document.querySelector('.rv-hl-flag')).not.toBeNull() // 当前步就是精彩时刻：侧栏有提示
     await user.click(screen.getByRole('tab', { name: /精彩时刻/ }))
     const last = review.highlights.reduce((a, b) => (highlightPosition(b)! > highlightPosition(a)! ? b : a))
     await user.click(screen.getByRole('button', { name: `回放：${last.title}` }))
     expect(stepLabel()).toBe(String(highlightPosition(last)))
-    await user.click(screen.getByRole('button', { name: /◆◀/ }))
+    await user.click(screen.getByRole('button', { name: '上一个精彩时刻' }))
     expect(Number(stepLabel())).toBeLessThan(highlightPosition(last)!)
   })
 

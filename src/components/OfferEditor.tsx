@@ -163,9 +163,10 @@ export default function OfferEditor({ state, onSubmit, onClose }: OfferEditorPro
 
   return (
     <div className="modal-overlay">
-      <div className="offer-editor" role="dialog" aria-label="提出方案">
+      <div className="offer-editor" role="dialog" aria-modal="true" aria-labelledby="offer-title">
+        <button type="button" className="sheet-close" aria-label="取消并关闭方案编辑器" onClick={requestClose}>✕</button>
         <div className="offer-editor-head">
-          <h2>提出方案 · #{space.id} 总额 ${gross}M</h2>
+          <h2 id="offer-title">提出方案 · #{space.id} 总额 ${gross}M</h2>
           <span className="muted">一份分红 ≈ ${share}M · 本任已提 {neg.offersMade}/{MAX_OFFERS_PER_BOSS}</span>
         </div>
 
@@ -236,7 +237,7 @@ export default function OfferEditor({ state, onSubmit, onClose }: OfferEditorPro
                   {commit && <i>{commit}</i>}
                   {usesRep && (auto ? <b className="green"> ✓ 付到承诺价，自动同意</b> : <b className="muted"> 需其表态</b>)}
                 </span>
-                <input type="number" min={0} max={gross} value={pay[p.id] ?? 0}
+                <input type="number" min={0} max={gross} value={pay[p.id] ?? 0} inputMode="numeric" aria-label={`分给${p.name}${p.id === viewerId ? '（你）' : ''}的金额（百万美元）`}
                   onChange={e => setPay({ ...pay, [p.id]: Math.max(0, Math.floor(Number(e.target.value) || 0)) })} />
                 <span>M</span>
               </div>
@@ -249,14 +250,14 @@ export default function OfferEditor({ state, onSubmit, onClose }: OfferEditorPro
         </div>
 
         {error
-          ? <p className="red offer-error">⚠ {describeOfferError(error)}</p>
-          : <p className="green offer-ok">
+          ? <p className="red offer-error" role="alert">⚠ {describeOfferError(error)}</p>
+          : <p className="green offer-ok" role="status">
             方案结构合法。
             {consent.auto.length + consent.asked.length === 0 ? '全用自己的代表，提出后可直接宣布成交。'
               : consent.asked.length === 0 ? '所有持有者都已付到承诺价，提出即视为全员同意，然后可直接宣布成交。'
                 : `${consent.asked.map(id => state.players[id]?.name).join('、')} 需表态${consent.auto.length ? `；${consent.auto.map(id => state.players[id]?.name).join('、')} 自动同意` : ''}。`}
           </p>}
-        <div className="neg-actions">
+        <div className="neg-actions sheet-footer">
           {!error && consent.asked.length === 0 && (
             <button className="btn btn-success btn-cta" onClick={() => onSubmit(repKeys, payouts, true)}
               title="所有人都会按承诺价自动同意：提出方案后立刻宣布成交，进入最后出牌倒计时">

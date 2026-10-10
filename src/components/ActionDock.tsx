@@ -271,7 +271,8 @@ export default function ActionDock({ state, legal, act, selection, selectMode, o
                       return (
                         <label key={f} className="quote-row" title={`${FAMILIES[f].name}代表的出借价（$M）${cur != null ? `，当前承诺 $${cur}M` : ''}`}>
                           <FamilyChip familyId={f} size="md" />
-                          <input className="demand-input" type="number" min={0} max={gross} value={prices[f] ?? ''}
+                          <input className="demand-input" type="number" inputMode="numeric" min={0} max={gross} value={prices[f] ?? ''}
+                            aria-label={`${FAMILIES[f].name}代表的出借价（百万美元）`}
                             placeholder={cur != null ? `现 ${cur}` : `≈${share}`} onChange={e => setPrice(f, e.target.value)}
                             onKeyDown={e => { if (e.key === 'Enter' && canSend) doSpeak() }} />
                         </label>
@@ -279,7 +280,8 @@ export default function ActionDock({ state, legal, act, selection, selectMode, o
                     }) : (
                       <label className="quote-row" title="封口费：不搅局的价码（$M）">
                         <span className="quote-name">封口费</span>
-                        <input className="demand-input" type="number" min={0} max={gross} value={prices[HUSH] ?? ''}
+                        <input className="demand-input" type="number" inputMode="numeric" min={0} max={gross} value={prices[HUSH] ?? ''}
+                          aria-label="封口费（百万美元）"
                           placeholder={demandOf(neg!, viewerId) != null ? `现 ${demandOf(neg!, viewerId)}` : `≈${Math.max(1, Math.round(share / 2))}`}
                           onChange={e => setPrice(HUSH, e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && canSend) doSpeak() }} />
                       </label>
@@ -291,7 +293,7 @@ export default function ActionDock({ state, legal, act, selection, selectMode, o
                     )}
                   </div>
                 )}
-                <input className="speak-text" value={speakText} maxLength={120} placeholder={isBoss ? '对桌上的人说点什么…' : mine.length ? '台词（可空：只报价会自动生成一句）' : '喊话：施压 / 表态 / 索要封口费…'}
+                <input className="speak-text" aria-label="喊话内容" enterKeyHint="send" value={speakText} maxLength={120} placeholder={isBoss ? '对桌上的人说点什么…' : mine.length ? '台词（可空：只报价会自动生成一句）' : '喊话：施压 / 表态 / 索要封口费…'}
                   onChange={e => setSpeakText(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter' && canSend) doSpeak() }} />
                 <button className="btn" disabled={!canSend} onClick={doSpeak}>
@@ -362,7 +364,8 @@ export default function ActionDock({ state, legal, act, selection, selectMode, o
                 return (
                   <label key={f} className="quote-row" title={`${FAMILIES[f].name}代表的反报价（$M）${cur != null ? `，当前承诺 $${cur}M` : ''}`}>
                     <FamilyChip familyId={f} size="md" />
-                    <input className="demand-input" type="number" min={0} max={gross} value={prices[f] ?? ''}
+                    <input className="demand-input" type="number" inputMode="numeric" min={0} max={gross} value={prices[f] ?? ''}
+                      aria-label={`${FAMILIES[f].name}代表的反报价（百万美元）`}
                       placeholder={cur != null ? `现 ${cur}` : '反报价'} onChange={e => setPrice(f, e.target.value)} />
                   </label>
                 )

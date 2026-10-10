@@ -92,7 +92,7 @@ describe('CardHand 卡面', () => {
     expect(clan.getAttribute('aria-disabled')).toBeNull()
   })
 
-  it('卡牌是可聚焦的按钮：读屏标签含牌种与效果；Enter 打开弹层，Space 再次收起', async () => {
+  it('卡牌是可聚焦的按钮：读屏标签含牌种与效果；Enter 打开弹层并把焦点移进去，Esc 收起且焦点回到这张牌', async () => {
     const user = userEvent.setup()
     const { container } = view(hand0())
     const clan = cardEls(container).find(c => c.classList.contains('type-clan'))!
@@ -101,9 +101,12 @@ describe('CardHand 卡面', () => {
     expect(clan.getAttribute('aria-label')).toContain(FAMILIES.B.name)
     clan.focus()
     await user.keyboard('{Enter}')
-    expect(container.querySelector('.card-popover')).not.toBeNull()
-    await user.keyboard(' ')
+    const pop = container.querySelector('.card-popover') as HTMLElement
+    expect(pop).not.toBeNull()
+    expect(pop.contains(document.activeElement)).toBe(true) // 焦点进入弹层，键盘用户能直接操作出牌选项
+    await user.keyboard('{Escape}')
     expect(container.querySelector('.card-popover')).toBeNull()
+    expect(document.activeElement).toBe(clan) // 焦点还给这张牌
   })
 
   it('键盘聚焦放大预览：完整说明 + 当前能 / 不能打的原因；失焦收起', async () => {
