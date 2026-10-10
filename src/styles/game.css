@@ -1268,6 +1268,12 @@ button, [role="button"], [role="tab"], [role="menuitem"], a, input, select, labe
 .ring-compact .public-market { padding: 2px 6px; gap: 3px; flex-wrap: wrap; justify-content: center; }
 .ring-compact .pile-adjust { display: block; margin-left: 0; }
 
+/* 低矮的手机（如 360×740）：行动区再让出一点高度给版图；主按钮行吸底，不会因此够不着 */
+@media (max-width: 767px) and (max-height: 780px) {
+  .table-bottom { max-height: 47vh; max-height: 47dvh; }
+  .hand { --card-w: 86px; }
+}
+
 /* ============================================================
    D + E 共用（手机竖屏 或 矮屏）：行动区容器自己滚动，所以会飞出去的浮层改用 position: fixed，不被裁掉
    - 出牌选项 = 底部 sheet；放大预览 = 屏幕中央（手指不遮挡）；InfoTip 说明 = 底部横幅

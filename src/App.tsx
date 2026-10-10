@@ -7,7 +7,7 @@
 //   · ≥1024：侧栏常驻；<1024（平板 / 手机）：侧栏变抽屉——行动区上方有一条手柄（DrawerHandle，带未读提示）一键打开，
 //     平板是右侧抽屉，手机是底部全屏 sheet；抽屉打开时按弹层处理（role="dialog"、焦点圈、Esc 关闭、焦点还给手柄）。
 //   · 手机顶栏：次要入口（规则 / 设置 / 返回 / 复盘 / AI 状态）收进"更多"菜单，速度 / 快进 / 音效留在外面。
-//   · 行动区与手牌包在 .table-bottom 里：桌面上 display: contents（不改变原有布局），手机上固定在底部并可滚动。
+//   · 行动区与手牌包在 .table-bottom 里：桌面上只是把两块叠在一起（视觉与旧版一致），手机上固定在底部、行动区自己滚动、手牌始终可见。
 // ============================================================
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
@@ -200,9 +200,9 @@ export default function App() {
           <CueStage />
           <DealResultCard state={state} onDetails={() => openSide('history')} />
           <TableBoard state={state} thinkingId={thinkingId} onPlaceMarker={id => act({ type: 'PLACE_MARKER', playerId: VIEWER_ID, spaceId: id })} />
-          {/* 桌面：display: contents（不改变布局）；手机：固定在底部、可滚动，含侧栏手柄 */}
+          {/* 桌面：行动区 + 手牌叠在一起；平板 / 手机：另含侧栏手柄，手机上固定在底部 */}
           <div className="table-bottom" id="action-area" tabIndex={-1} role="region" aria-label="行动区与手牌">
-            <DrawerHandle open={sideOpen} negotiating={hasNeg} unread={unread} controlsId={sidebarId} onToggle={() => setSideOpen(v => !v)} />
+            {drawer && <DrawerHandle open={sideOpen} negotiating={hasNeg} unread={unread} controlsId={sidebarId} onToggle={() => setSideOpen(v => !v)} />}
             <ActionDock
               state={state} legal={legal} act={act}
               selection={selection} selectMode={selectMode}
@@ -228,7 +228,7 @@ export default function App() {
                 交易历史{state.dealHistory.length > 0 && ` (${state.dealHistory.length})`}
               </button>
             </div>
-            <button type="button" className="sidebar-close" aria-label="收起侧栏" onClick={() => setSideOpen(false)}>✕</button>
+            {drawer && <button type="button" className="sidebar-close" aria-label="收起侧栏" onClick={() => setSideOpen(false)}>✕</button>}
           </div>
           <div className="sidebar-panel" role="tabpanel">
             {sideTab === 'neg' && hasNeg ? <NegotiationPanel state={state} />
