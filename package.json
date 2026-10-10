@@ -11,6 +11,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "simulate": "tsx scripts/simulate.ts",
+    "prompts:preview": "tsx scripts/preview-prompts.ts",
     "check": "npm run typecheck && npm run test && npm run simulate -- 400"
   },
   "dependencies": {

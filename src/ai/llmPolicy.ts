@@ -13,7 +13,7 @@ import type { GameState, Negotiation, PlayerAction, Payout, FamilyId, Quote } fr
 import { FAMILY_IDS, FAMILIES } from '../engine/config'
 import { chatCompletion, isLLMConfigured, type LLMConfig } from './llmClient'
 import { buildDecisionPrompt } from './prompts'
-import { DECISION_PROMPTS, SPEECH_MAX_LEN, NOTE_MAX_LEN, THOUGHT_MAX_LEN } from './promptTexts'
+import { RETRY_HINT, SPEECH_MAX_LEN, NOTE_MAX_LEN, THOUGHT_MAX_LEN } from '../prompts'
 import { promptNames } from './sanitize'
 import type { TableStyle } from './tableStyle'
 import { getActingPlayerId, getLegalActions, isLegal } from '../engine/validator'
@@ -39,7 +39,7 @@ export async function decideWithLLM(
   const first = resolveChoice(raw, options, state)
   if (first) return first
 
-  const retrySystem = `${system}\n${DECISION_PROMPTS.retryHint}\n【你上一次的原始回复】\n${raw.slice(0, 400)}`
+  const retrySystem = `${system}\n${RETRY_HINT}\n【你上一次的原始回复】\n${raw.slice(0, 400)}`
   const raw2 = await chatCompletion(config, [
     { role: 'system', content: retrySystem },
     { role: 'user', content: user },

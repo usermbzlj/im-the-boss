@@ -3,12 +3,13 @@
 //
 // 同一批人物，在不同桌风下表现不同：
 //   · 启发式：StyleParams 缩放报价、让步、搅局、压价、Boss 的自留底线与记仇
-//   · LLM：toneOf(style) 写进提示词的"今晚的桌风"，改变语气与取舍的倾向
+//   · LLM：toneOf(style) 写进提示词的"今晚的桌风"（文案在 src/prompts/table-tone.ts）
 // 桌风只来自配置（LLMConfig.tableStyle / SIM_STYLE），不入存档、不影响规则；
 // 日志里记录的是已经做出的动作，所以重放与桌风无关。
 // ============================================================
 
 import { TABLE_STYLES, type TableStyle } from './llmClient'
+import { TABLE_TONE } from '../prompts/table-tone'
 
 export { TABLE_STYLES, type TableStyle }
 
@@ -47,14 +48,7 @@ export function isTableStyle(v: unknown): v is TableStyle {
   return typeof v === 'string' && (TABLE_STYLES as readonly string[]).includes(v)
 }
 
-/** 写进 LLM 提示词的桌风说明（短，故事化；不是行为戒律，只是今晚的气氛） */
+/** 写进 LLM 提示词的桌风说明（文案在 src/prompts/table-tone.ts） */
 export function toneOf(style: TableStyle): string {
-  switch (style) {
-    case 'friendly':
-      return '今晚这桌是熟人局，大家图个开心：成交比占便宜重要，让一点利、给人台阶是常事，没到万不得已没人翻脸，更没人上来就搅局。'
-    case 'ruthless':
-      return '今晚这桌谁也不让谁：报价往高里报，谈不拢就拖，搅局、夺权、记仇都是家常便饭，示弱就是被吃掉。但你仍是你——狠法要符合你这个人。'
-    default:
-      return '今晚这桌是正经生意局：各凭本事，该争的争，该让的让，不无故翻脸，也不白送钱。'
-  }
+  return TABLE_TONE[style] ?? TABLE_TONE.business
 }

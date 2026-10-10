@@ -100,16 +100,17 @@ src/sim/         仿真与不变量；被 scripts/ 与 tests/ 共用
 | --- | --- |
 | 调整版图 / 景气牌 / 牌堆数量 | `engine/config.ts`；`docs/rules.md` 表格同步；`tests/config.test.ts` / `tests/variants.test.ts` 会校验结构约束 |
 | 新增一个对局版本 | `types.ts` 的 `GameVariantId` → `config.ts` 的 `VARIANTS`（笔数、末张股价、`SpaceSpec[]`、是否含稀有牌、补充包数）与 `VARIANT_IDS`；版图格数须能排成外圈（`ringLayout`：偶数且 ≥ 8）；开局页、帮助页、提示词规则摘要都从 `VARIANT_LIST` / `getVariant` 读取，无需改动 |
-| 新增一种特殊格 | `types.ts` 的 `SpaceKind` → 规则效果放进 `rules.ts`（如 `effectiveShareValue` / `recruitCost` / `isBlackMarketDeal`）与 `gameEngine.ts` → `text/narrate.spaceKindName / spaceKindEffect`、`labels.describeSpaceKind` → `TableBoard` 的 `KIND_ICON` 与 CSS `kind-*` → `ai/heuristic.ts` 估值 → `promptTexts.buildRulesSummary` |
+| 新增一种特殊格 | `types.ts` 的 `SpaceKind` → 规则效果放进 `rules.ts`（如 `effectiveShareValue` / `recruitCost` / `isBlackMarketDeal`）与 `gameEngine.ts` → `text/narrate.spaceKindName / spaceKindEffect`、`labels.describeSpaceKind` → `TableBoard` 的 `KIND_ICON` 与 CSS `kind-*` → `ai/heuristic.ts` 估值 → `prompts/rules.ts`（`buildRulesSummary`） |
 | 新增一种稀有牌 | `types.ts` 的 `CardType` / `ReactionKind` / `PlayerAction` → `config.RARE_CARDS` → `validator.cardPlayOptions / bossCardOptions / isLegal` → `gameEngine` 的动作分支 + `resolveReaction` → `labels.describeCard / describeAction`、`narrate` → `CardHand` 的 `TYPE_LABEL / TYPE_ICON / TYPE_SHORT` 与弹层 → 启发式与提示词注释 |
-| 新增 / 调整一条桌规 | 数值在 `config.ts`（`BUY_CARDS_COST_SHARES` / `TRADE_*` / `SICK_CARDS_BASE`）；判定放 `rules.ts`（`canSwapCard` / `buyableCardCounts` / `canTradeCards` / `isSick` …）；需要"每回合一次"就加一个 `TurnFlags` 字段并在 `endTurn` 清零；需要"钱离开游戏"就走 `payBank`（`checkInvariants` 用 `bank` 兜守恒）；要在病假期间禁止的动作加进 `rules.ACTIVE_CARD_ACTIONS`；文案在 `labels` / `narrate` / `promptTexts.buildRulesSummary` 的【桌规】段与 `HelpPanel` 的桌规节；`tests/houseRules.test.ts` 补场景 |
+| 新增 / 调整一条桌规 | 数值在 `config.ts`（`BUY_CARDS_COST_SHARES` / `TRADE_*` / `SICK_CARDS_BASE`）；判定放 `rules.ts`（`canSwapCard` / `buyableCardCounts` / `canTradeCards` / `isSick` …）；需要"每回合一次"就加一个 `TurnFlags` 字段并在 `endTurn` 清零；需要"钱离开游戏"就走 `payBank`（`checkInvariants` 用 `bank` 兜守恒）；要在病假期间禁止的动作加进 `rules.ACTIVE_CARD_ACTIONS`；文案在 `labels` / `narrate` / `prompts/rules.ts` 的【桌规】段与 `HelpPanel` 的桌规节；`tests/houseRules.test.ts` 补场景 |
 | 调整谈判上限（喊话、提案、僵局） | `engine/config.ts` 常量；界面与提示词里的数字来自同一常量 |
 | 新增一种动作 | ① `types.ts` 加到 `PlayerAction` → ② `validator.ts` 的 `getLegalActions` + `isLegal` → ③ `gameEngine.ts` 的 `apply`（需要叙事则加 `GameEvent` 并 `emit`）→ ④ `text/labels.describeAction` / `text/narrate` → ⑤ 界面按钮（`ActionDock` / `CardHand`）→ ⑥ `ai/heuristic.ts` 分支 → ⑦ 跑 `npm run check`（validator 性质测试会自动覆盖新动作） |
 | 新增判定逻辑 | 放在 `engine/rules.ts`（纯函数，UI / AI / 引擎共用），不要写进组件或策略 |
 | 改日志措辞 / 换语言 | 只改 `text/narrate.ts` 与 `text/labels.ts`；引擎与测试不受影响 |
-| 改电脑玩家的人物 / 台词 | `ai/personas.ts`（角色卡与行为参数）、`engine/config.ts` 的 `AI_ROSTER`（名字）、`ai/heuristic.ts` 的 `heuristicSpeech`、`ai/promptTexts.ts` |
+| 改电脑玩家的人物 / 台词 | `prompts/persona-cards.ts`（LLM 角色卡）、`ai/personas.ts`（座位副标题与启发式参数）、`engine/config.ts` 的 `AI_ROSTER`（名字）、`ai/lines.ts`（启发式台词库） |
+| 审查 / 修改 LLM 提示词文案 | 全部静态文案在 `src/prompts/`（总览见该目录 `README.md`）；`npm run prompts:preview` 把几种典型局面下的完整提示词写到 `prompt-preview/`，改完对照着看 |
 | 改启发式策略 | `ai/heuristic.ts`（保持只依赖 `state` 与 `legal`；改完跑仿真看平均步数与流局率） |
-| 改 LLM 提示词结构 | `ai/prompts.ts`；输出协议在 `ai/llmPolicy.ts`，改协议要同步 `promptTexts.ts` 的模板与 `tests/llm.test.ts` |
+| 改 LLM 提示词结构 | `ai/prompts.ts`（随局面生成的段落）；输出协议在 `ai/llmPolicy.ts`，改协议要同步 `prompts/frame.ts` 的 `USER_FOOTER` 与 `tests/llm.test.ts` |
 | 改变 `GameState` 结构 | `gameEngine.ts` 的 `SAVE_VERSION + 1` **并**在 `utils/saveMigrations.ts` 的 `STATE_MIGRATIONS` 补一条从旧版本升上来的迁移（见下"新增存档迁移"）；否则 `tests/storage.test.ts` 会失败 |
 | 新增一种事件 | `types.ts` 的 `GameEvent` 联合 → `gameEngine.ts` `emit`（谈判进行中自动带 `dealNo`；成交 / 流局记入 `dealHistory` 之后再发的要显式传号）→ `text/narrate.ts` 的 `switch`（穷尽检查会提示遗漏）；纯"过程噪音"的事件（如 `PASSED`）在 `narrate` 里标 `minor: true` 并加进 `isMinorEvent`，日志面板默认折叠、提示词的"最近动态"跳过 |
 | 新增一个组件里的"我是谁" / 弹层 | 视角一律 `useViewerId()`（不写死座位号）；弹层关闭用 `useModalDismiss(dirty, onClose)`；组件测试用 `renderAs(ui, viewerId)`（见 2.1） |

@@ -66,7 +66,8 @@ npm run build        # 类型检查 + 产物构建（dist/）
 src/
   engine/       纯函数引擎：types / config / rules / validator / gameEngine（不含任何文案）
   text/         文案层：narrate（事件 → 文字）、labels（动作 / 卡牌 / 方案 → 文字），UI 与 LLM 提示词共用
-  ai/           电脑玩家：policy（接口）/ heuristic（启发式）/ llmPolicy + prompts + promptTexts + personas / llmClient
+  ai/           电脑玩家：policy（接口）/ heuristic（启发式）/ llmPolicy + prompts（按局面拼提示词）+ personas / llmClient
+  prompts/      LLM 提示词的全部静态文案：角色卡 / 桌风 / 框架与回复格式 / 规则摘要（见目录内 README.md；npm run prompts:preview 预览）
   game/         对局运行时（框架无关）：session（GameSession：持有状态、驱动电脑玩家、节奏停顿、动作日志）/ replay（开局参数 + 动作日志完整重放）/ createSession（依赖注入）/ autosave（节流存档）
   hooks/        useGameSession：把 GameSession 接进 React；browserEnv：装配浏览器环境（LLM + 启发式回退、localStorage、停顿）
   components/   React 界面（ActionDock、CardHand、OfferEditor、NegotiationPanel、TableBoard、GameOverCard …）；ViewerContext（视角玩家）、useModalDismiss / useDialogLayer（弹层关闭与焦点）、CueProvider + CueStage（演出层）、review/（终局统计与逐步复盘）

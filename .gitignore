@@ -1,5 +1,6 @@
 node_modules/
 dist/
+prompt-preview/
 *.local
 .DS_Store
 Thumbs.db
