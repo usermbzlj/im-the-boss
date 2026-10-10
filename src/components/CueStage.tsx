@@ -180,6 +180,7 @@ function CueView({ cue, stage }: { cue: ActiveCue; stage: RefObject<HTMLDivEleme
       return (
         <>
           <div className={`cue cue-price ${tone}`} data-cue="price" style={{ left: at.cx, top: at.cy, ...timing(cue) }}>{cue.text}</div>
+          {caption}
         </>
       )
     case 'close':

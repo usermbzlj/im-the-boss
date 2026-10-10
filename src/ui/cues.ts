@@ -180,6 +180,7 @@ export function cuesFor(state: GameState, events: readonly LoggedEvent[], viewer
           push(base({
             key: `price:${e.id}`, kind: 'price', target: { type: 'pile' }, drama: true, sfx: e.delta > 0 ? 'up' : 'down',
             text: `${e.delta > 0 ? '▲' : '▼'} ${e.delta > 0 ? '+' : '−'}$${Math.abs(e.delta)}M/份`, tone: e.delta > 0 ? 'good' : 'bad', amount: e.delta,
+            icon: e.delta > 0 ? '📈' : '📉', caption: `股价${e.delta > 0 ? '上涨' : '下跌'}：本笔总额 $${e.gross}M`,
           }))
         }
         break
