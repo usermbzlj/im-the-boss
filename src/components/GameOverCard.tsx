@@ -3,7 +3,7 @@
 //   统计与精彩时刻来自 ui/review（有录像时更完整；没有录像只用交易历史，复盘入口随之隐藏）
 // ============================================================
 
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 import type { CSSProperties } from 'react'
 import type { GameState } from '../engine/types'
 import { getVariant } from '../engine/config'
@@ -16,6 +16,7 @@ import { rankStandings } from '../ui/standings'
 import CashChart from './review/CashChart'
 import HighlightList from './review/HighlightList'
 import { useViewerId } from './ViewerContext'
+import { useModalDismiss } from './useModalDismiss'
 import '../styles/review.css'
 
 // 名次逻辑已挪到 ui/standings，这里原样再导出，旧引用（测试 / 其他组件）不受影响
@@ -60,6 +61,9 @@ function keyFacts(s: PlayerStats): Array<{ text: string; title?: string }> {
 
 export default function GameOverCard({ state, onRestart, onReview, recording = null, replayStatus, review, onOpenReplay }: GameOverCardProps) {
   const viewerId = useViewerId()
+  const cardRef = useRef<HTMLDivElement>(null)
+  // 弹层行为：打开时聚焦进来、Tab 在卡内循环、Esc = "回到牌桌"（之后可从顶栏重新打开结果）；上面叠着复盘器时由复盘器处理 Esc
+  useModalDismiss(false, onReview, cardRef)
   const data = useMemo(() => review ?? buildReview(state, recording), [review, state, recording])
   const { stats, highlights } = data
   const standings = rankStandings(state.players)
@@ -79,7 +83,7 @@ export default function GameOverCard({ state, onRestart, onReview, recording = n
 
   return (
     <div className="go-overlay">
-      <div className="go-card" role="dialog" aria-label="游戏结束">
+      <div className="go-card" role="dialog" aria-modal="true" aria-label="游戏结束" ref={cardRef}>
         <header className="go-head">
           <div className="go-eyebrow">游戏结束</div>
           <div className="go-winners">
@@ -174,7 +178,7 @@ export default function GameOverCard({ state, onRestart, onReview, recording = n
           <p className="muted go-note">这局的存档没有可重放的动作日志，无法逐步复盘；上面的统计来自交易历史。</p>
         )}
 
-        <div className="neg-actions go-actions">
+        <div className="neg-actions go-actions sheet-footer">
           {canReplay && <button className="btn-primary" onClick={() => onOpenReplay!()}>逐步复盘</button>}
           {building && <button className="btn" disabled>正在整理复盘…</button>}
           <button className={canReplay ? 'btn' : 'btn-primary'} onClick={onRestart}>再来一局</button>

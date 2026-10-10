@@ -25,6 +25,7 @@ import FamilyChip from '../FamilyChip'
 import NegotiationPanel from '../NegotiationPanel'
 import TableBoard from '../TableBoard'
 import { useViewerId } from '../ViewerContext'
+import { isTopLayer, useDialogLayer } from '../useDialogLayer'
 import '../../styles/review.css'
 
 interface ReplayViewerProps {
@@ -89,6 +90,8 @@ export default function ReplayViewer({ state, recording, highlights, initialPosi
   const [reveal, setReveal] = useState(true)
   const [tab, setTab] = useState<SideTab>('feed')
   const rootRef = useRef<HTMLDivElement>(null)
+  // 弹层行为：焦点圈 + 关闭后焦点回到触发元素；Esc 只在最上层时处理（下面可能还叠着终局卡）
+  const layer = useDialogLayer(rootRef)
 
   const after = useMemo(() => recording.stateAt(position), [recording, position])
   const before = useMemo(() => (position > 0 ? recording.stateAt(position - 1) : null), [recording, position])
@@ -111,7 +114,7 @@ export default function ReplayViewer({ state, recording, highlights, initialPosi
   // ---- 键盘：← → 单步，Shift + ← → 按交易，空格播放 / 暂停，Home / End，Esc 关闭 ----
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.preventDefault(); onClose(); return }
+      if (e.key === 'Escape') { if (layer.current && !isTopLayer(layer.current)) return; e.preventDefault(); onClose(); return }
       const el = e.target as HTMLElement | null
       const isRange = el?.tagName === 'INPUT' && (el as HTMLInputElement).type === 'range'
       // 进度条自己处理方向键 / Home / End（原生行为 + onChange）；其他输入控件不抢键
@@ -127,7 +130,7 @@ export default function ReplayViewer({ state, recording, highlights, initialPosi
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [recording, total, onClose])
+  }, [recording, total, onClose, layer])
 
   useEffect(() => { rootRef.current?.focus() }, [])
 
@@ -290,7 +293,7 @@ export default function ReplayViewer({ state, recording, highlights, initialPosi
         </div>
 
         <div className="rv-buttons">
-          <button className="btn btn-sm" onClick={() => goto(prevHighlightPosition(highlights, position))} disabled={prevHighlightPosition(highlights, position) == null} title="上一个精彩时刻">◆◀</button>
+          <button className="btn btn-sm" onClick={() => goto(prevHighlightPosition(highlights, position))} disabled={prevHighlightPosition(highlights, position) == null} title="上一个精彩时刻" aria-label="上一个精彩时刻">◆◀</button>
           <button className="btn btn-sm" onClick={() => { setPlaying(false); goto(prevDealPosition(recording, position) ?? 0) }} disabled={position === 0} title="上一笔交易（Shift + ←）">⏮ 上一笔</button>
           <button className="btn btn-sm" onClick={() => stepBy(-1)} disabled={position === 0} title="上一步（←）">◀ 上一步</button>
           <button className="btn-primary rv-play" onClick={() => { if (position >= total) setPosition(0); setPlaying(v => !v) }} title="播放 / 暂停（空格）">
@@ -298,7 +301,7 @@ export default function ReplayViewer({ state, recording, highlights, initialPosi
           </button>
           <button className="btn btn-sm" onClick={() => stepBy(1)} disabled={position >= total} title="下一步（→）">下一步 ▶</button>
           <button className="btn btn-sm" onClick={() => { setPlaying(false); goto(nextDealPosition(recording, position)) }} disabled={nextDealPosition(recording, position) == null} title="下一笔交易（Shift + →）">下一笔 ⏭</button>
-          <button className="btn btn-sm" onClick={() => goto(nextHighlightPosition(highlights, position))} disabled={nextHighlightPosition(highlights, position) == null} title="下一个精彩时刻">▶◆</button>
+          <button className="btn btn-sm" onClick={() => goto(nextHighlightPosition(highlights, position))} disabled={nextHighlightPosition(highlights, position) == null} title="下一个精彩时刻" aria-label="下一个精彩时刻">▶◆</button>
           <span className="rv-speed" role="group" aria-label="播放速度">
             <button className="btn btn-sm" onClick={() => setSpeed(-1)} disabled={speedIdx === 0} aria-label="减速">−</button>
             <span className="rv-speed-label" aria-live="polite">{SPEEDS[speedIdx]}×</span>

@@ -3,8 +3,9 @@
 // ============================================================
 
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { KeyboardEvent, ReactNode } from 'react'
 import type { GameState, BoardSpace, SpaceKind } from '../engine/types'
-import { FAMILIES, ringLayout, ringRowOptions, getVariant } from '../engine/config'
+import { FAMILIES, ringLayout, getVariant } from '../engine/config'
 import { getCurrentTile, getGrossValue, getEndProbability, isRequiredGroup, canCompleteAlone, effectiveShareValue } from '../engine/rules'
 import { getActingPlayerId } from '../engine/validator'
 import { relationsToward } from '../ai/relations'
@@ -14,6 +15,8 @@ import PlayerSeat from './PlayerSeat'
 import DieFace from './DieFace'
 import { useCuesOf } from './CueProvider'
 import { useViewerId } from './ViewerContext'
+import { useLayout } from './useLayout'
+import { MIN_COMPACT_SCALE, RING_METRICS, fitScale, ringNeed, pickRingRows, type SizeClass } from '../ui/ringFit'
 
 interface TableBoardProps {
   state: GameState
@@ -25,40 +28,19 @@ interface TableBoardProps {
 
 const KIND_ICON: Record<SpaceKind, string> = { STANDARD: '', LANDMARK: '🏛', PREMIUM: '🔥', BLACK_MARKET: '🕶', HEADHUNT: '🎯' }
 
-/** 三档格子尺寸（与 game.css 的 .ring-grid / .ring-lg / .ring-xl 对应）：最小宽、典型高（含内容撑高余量）、间距 */
-const RING_METRICS = {
-  '': { w: 112, h: 100, gap: 6 },
-  ' ring-lg': { w: 96, h: 84, gap: 5 },
-  ' ring-xl': { w: 84, h: 72, gap: 4 },
-} as const
-type SizeClass = keyof typeof RING_METRICS
-
-/**
- * 按版图区域的实际宽高挑外圈行数：越扁的区域（宽屏 / 矮窗口）用越少的行、越多的列。
- * 对每种行数估算外圈的自然尺寸，取"缩放最少"的一种；同样放得下时保留更方的（行数更多的）。
- */
-function pickRingRows(n: number, availW: number, availH: number, m: { w: number; h: number; gap: number }): number {
-  const options = ringRowOptions(n)
-  let best = options[options.length - 1]
-  let bestFit = -1
-  for (const rows of options) {
-    const cols = Math.round((n - 2 * (rows - 2)) / 2)
-    const need = { w: cols * m.w + (cols - 1) * m.gap, h: rows * m.h + (rows - 1) * m.gap }
-    const fit = Math.min(1, availW / need.w, availH / need.h)
-    if (fit >= bestFit - 1e-6) { best = rows; bestFit = fit }
-  }
-  return best
-}
-
 /**
  * 让整张版图始终完整可见：量出版图区域尺寸 → 选行数；再量外圈自然尺寸 → 放不下就整体等比缩小。
  * 之前外圈在区域内滚动，大版图 / 矮窗口下上排会被滚出视野，看起来像少了一排。
+ *
+ * 紧凑模式（手机 / 矮屏）：缩放有下限（MIN_COMPACT_SCALE），再小字就看不清了——放不下的部分让 .ring-wrap 滚动；
+ * 此时外圈放在一个按缩放后尺寸占位的 .ring-scaler 里（transform 不改变布局尺寸，不占位滚动区会多出一大片空白）。
  */
-function useRingFit(n: number, sizeClass: SizeClass) {
+function useRingFit(n: number, sizeClass: SizeClass, compact: boolean) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
   const [avail, setAvail] = useState<{ w: number; h: number } | null>(null)
   const [scale, setScale] = useState(1)
+  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null)
 
   useLayoutEffect(() => {
     const wrap = wrapRef.current
@@ -69,27 +51,34 @@ function useRingFit(n: number, sizeClass: SizeClass) {
       setAvail(prev => (prev && prev.w === w && prev.h === h ? prev : { w, h }))
       // offsetWidth / offsetHeight 不受 transform 影响：量的是未缩放的自然尺寸
       const gw = grid.offsetWidth, gh = grid.offsetHeight
-      const k = Math.min(1, gw > 0 ? w / gw : 1, gh > 0 ? h / gh : 1)
+      const k = fitScale(gw, gh, w, h, compact ? MIN_COMPACT_SCALE : 0)
       setScale(prev => (Math.abs(prev - k) < 0.005 ? prev : k))
+      if (compact) setNatural(prev => (prev && prev.w === gw && prev.h === gh ? prev : { w: gw, h: gh }))
     }
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(wrap)
     ro.observe(grid)
     return () => ro.disconnect()
-  }, [])
+  }, [compact])
 
   const rows = avail ? pickRingRows(n, avail.w, avail.h, RING_METRICS[sizeClass]) : undefined
-  return { wrapRef, gridRef, rows, scale }
+  return { wrapRef, gridRef, rows, scale, natural }
 }
 
-function spaceTooltip(state: GameState, space: BoardSpace): string {
+/** 一格的说明行（title / 触屏点按提示共用）：编号 / 需求 / 分红 / 特殊格效果 / 地标主人 */
+function spaceLines(state: GameState, space: BoardSpace): string[] {
   const parts = space.groups.map(g => isRequiredGroup(g)
     ? `必需：${g.families.map(f => `${f}·${FAMILIES[f].name}`).join('、')}`
     : `${g.families.map(f => `${f}·${FAMILIES[f].name}`).join('/')} 中选 ${g.need}`)
-  const kind = space.kind !== 'STANDARD' ? `｜${spaceKindName(space.kind)}：${spaceKindEffect(space.kind)}` : ''
-  const landlord = space.landlordId != null ? `｜主人：${state.players[space.landlordId]?.name}` : ''
-  return `#${space.id}｜${parts.join('｜')}｜${space.dividends} 份分红${kind}${landlord}`
+  const lines = [`#${space.id}`, ...parts, `${space.dividends} 份分红`]
+  if (space.kind !== 'STANDARD') lines.push(`${spaceKindName(space.kind)}：${spaceKindEffect(space.kind)}`)
+  if (space.landlordId != null) lines.push(`主人：${state.players[space.landlordId]?.name}`)
+  return lines
+}
+
+function spaceTooltip(state: GameState, space: BoardSpace): string {
+  return spaceLines(state, space).join('｜')
 }
 
 export default function TableBoard({ state, thinkingId, onPlaceMarker, readOnly = false }: TableBoardProps) {
@@ -97,8 +86,11 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker, readOnly 
   const tile = getCurrentTile(state)
   const nextTile = state.dealTiles[state.dealTileIndex + 1]
   const gross = getGrossValue(state)
-  const sizeClass: SizeClass = state.board.length > 24 ? ' ring-xl' : state.board.length > 16 ? ' ring-lg' : ''
-  const fit = useRingFit(state.board.length, sizeClass)
+  const env = useLayout()
+  /** 手机 / 矮屏：用紧凑格子（见 game.css 的 .ring-compact），缩放有下限，放不下就滚动 */
+  const compact = env.compactBoard
+  const sizeClass: SizeClass = compact ? ' ring-compact' : state.board.length > 24 ? ' ring-xl' : state.board.length > 16 ? ' ring-lg' : ''
+  const fit = useRingFit(state.board.length, sizeClass, compact)
   const layout = ringLayout(state.board.length, fit.rows)
   const currentSpace = state.board.find(b => b.id === state.markerPos)
   const shareNow = currentSpace ? effectiveShareValue(state, currentSpace) : (tile?.shareValue ?? 0)
@@ -128,13 +120,15 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker, readOnly 
         ))}
       </div>
 
-      <div className="ring-wrap" ref={fit.wrapRef}>
+      <div className={`ring-wrap${compact ? ' ring-wrap-compact' : ''}`} ref={fit.wrapRef} role="group" aria-label="版图">
+        <RingScaler compact={compact} scale={fit.scale} natural={fit.natural}>
         <div
           className={`ring-grid${sizeClass}`}
           ref={fit.gridRef}
           style={{
             gridTemplateColumns: `repeat(${layout.cols}, minmax(var(--cell-min), 1fr))`,
             gridTemplateRows: `repeat(${layout.rows}, minmax(var(--cell-min-h), auto))`,
+            ...(compact ? { width: ringNeed(state.board.length, layout.rows, RING_METRICS[' ring-compact']).w, maxWidth: 'none', transformOrigin: '0 0' } : null),
             transform: fit.scale < 1 ? `scale(${fit.scale})` : undefined,
           }}
         >
@@ -147,22 +141,29 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker, readOnly 
             const special = space.kind !== 'STANDARD'
             const closing = closeCues.some(cue => cue.target.type === 'cell' && cue.target.spaceId === space.id)
             const markerIncoming = markerCues.some(cue => cue.target.type === 'cell' && cue.target.spaceId === space.id)
+            // 可放置标记的格子是真正的按钮（可聚焦、Enter / 空格放置）；其余格子是只读分组，说明写在 aria-label 里
+            const place = () => { if (clickable) onPlaceMarker?.(space.id) }
+            const a11y = clickable
+              ? { role: 'button', tabIndex: 0, 'aria-label': `把金钱标记放在 #${space.id}（${spaceTooltip(state, space)}）`,
+                onKeyDown: (e: KeyboardEvent<HTMLElement>) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); place() } } }
+              : { role: 'group', 'aria-label': `${spaceTooltip(state, space)}${isCurrent ? '｜金钱标记在这里' : ''}${closed ? '｜已成交' : ''}` }
             return (
               <div
                 key={space.id}
                 className={`ring-cell${isCurrent ? ' current' : ''}${closed ? ' closed' : ''}${closing ? ' cue-closing' : ''}${clickable ? ' selectable' : ''}${state.negotiation?.spaceId === space.id ? ' negotiating' : ''}${special ? ` kind-${space.kind.toLowerCase()}` : ''}`}
                 data-space-id={space.id}
                 style={{ gridRow: pos.row, gridColumn: pos.col }}
-                onClick={() => clickable && onPlaceMarker?.(space.id)}
+                onClick={place}
                 title={clickable ? `点击把金钱标记放在 #${space.id}` : spaceTooltip(state, space)}
+                {...a11y}
               >
                 {isCurrent && <span className={`marker-icon${markerIncoming ? ' incoming' : ''}`} title="金钱标记">💰</span>}
                 <div className="cell-top">
                   <span className="cell-id">#{space.id}</span>
                   <span className="cell-div">{space.dividends}份</span>
-                  {special && <span className="cell-kind" title={spaceKindEffect(space.kind)}>{KIND_ICON[space.kind]}{spaceKindName(space.kind)}</span>}
+                  {special && <span className="cell-kind" title={spaceKindEffect(space.kind)}>{KIND_ICON[space.kind]}<span className="cell-kind-name">{spaceKindName(space.kind)}</span></span>}
                   {isCurrent && !closed && <span className="cell-total">${gross}M</span>}
-                  {soloOk && !isCurrent && <span className="cell-solo" title="仅凭你的投资者 + 手中家族卡即可凑齐">✓自足</span>}
+                  {soloOk && !isCurrent && <span className="cell-solo" title="仅凭你的投资者 + 手中家族卡即可凑齐">✓<span className="cell-solo-text">自足</span></span>}
                 </div>
                 {closed ? (
                   <div className="cell-closed">
@@ -211,7 +212,15 @@ export default function TableBoard({ state, thinkingId, onPlaceMarker, readOnly 
             )}
           </div>
         </div>
+        </RingScaler>
       </div>
     </div>
   )
+}
+
+/** 紧凑模式：按缩放后的尺寸占位（transform 不改变布局尺寸），让 .ring-wrap 的滚动范围正好；其余模式原样返回 */
+function RingScaler({ compact, scale, natural, children }: { compact: boolean; scale: number; natural: { w: number; h: number } | null; children: ReactNode }) {
+  if (!compact) return <>{children}</>
+  const style = natural ? { width: Math.ceil(natural.w * scale), height: Math.ceil(natural.h * scale) } : undefined
+  return <div className="ring-scaler" style={style}>{children}</div>
 }

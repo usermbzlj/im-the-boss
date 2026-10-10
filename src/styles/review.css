@@ -17,7 +17,7 @@
 @keyframes go-in { from { opacity: 0; transform: translateY(12px) scale(0.985); } to { opacity: 1; transform: none; } }
 
 .go-head { text-align: center; margin-bottom: 16px; }
-.go-eyebrow { font-size: 11px; letter-spacing: 6px; text-indent: 6px; color: var(--muted); margin-bottom: 10px; }
+.go-eyebrow { font-size: 12px; letter-spacing: 6px; text-indent: 6px; color: var(--muted); margin-bottom: 10px; }
 .go-winners { display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap; text-align: left; }
 .go-crest {
   flex: none; width: 54px; height: 54px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
@@ -55,11 +55,11 @@
 .standing-bar .seg-boss { background: var(--gold); }
 .standing-bar .seg-share { background: var(--blue); }
 .standing-bar .seg-rent { background: var(--green); }
-.standing-flow { font-size: 11px; color: var(--muted); }
+.standing-flow { font-size: 12px; color: var(--muted); }
 .standing-facts { display: flex; flex-wrap: wrap; gap: 4px; }
-.fact { font-size: 11px; padding: 1px 7px; border-radius: 10px; background: rgba(255, 255, 255, 0.05); color: #c3ccd5; border: 1px solid rgba(255, 255, 255, 0.06); }
+.fact { font-size: 12px; padding: 1px 7px; border-radius: 10px; background: rgba(255, 255, 255, 0.05); color: #c3ccd5; border: 1px solid rgba(255, 255, 255, 0.06); }
 
-.go-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0 0; padding: 0; font-size: 11px; color: var(--muted); }
+.go-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0 0; padding: 0; font-size: 12px; color: var(--muted); }
 .go-legend li { display: inline-flex; align-items: center; gap: 5px; }
 .go-legend i { width: 14px; height: 3px; border-radius: 2px; background: var(--seat-accent); }
 
@@ -73,7 +73,7 @@
 .cash-chart { margin: 0; }
 .cash-chart svg { width: 100%; height: auto; display: block; overflow: visible; }
 .cc-grid { stroke: rgba(255, 255, 255, 0.07); stroke-width: 1; }
-.cc-axis { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.cc-axis { fill: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .cc-line { fill: none; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1; stroke-dashoffset: 0; animation: cc-draw 1.1s ease-out both; }
 @keyframes cc-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
 .cc-series.dim { opacity: 0.18; }
@@ -81,7 +81,7 @@
 .cc-marker { fill: var(--gold); opacity: 0.85; }
 .cc-hit { fill: transparent; cursor: pointer; }
 .cc-hit:hover { fill: rgba(255, 255, 255, 0.05); }
-.cc-caption { font-size: 10px; margin-top: 2px; }
+.cc-caption { font-size: 12px; margin-top: 2px; }
 .rv-empty { font-size: 12px; padding: 8px 0; }
 
 /* ---------- 精彩时刻 ---------- */
@@ -96,10 +96,10 @@
 .hl-title { font-size: 12px; font-weight: 700; color: var(--gold); }
 .hl-text { font-size: 12px; line-height: 1.5; color: #c3ccd5; margin-top: 1px; }
 .hl-go { flex: none; align-self: center; }
-.hl-deal { flex: none; align-self: center; font-size: 10px; white-space: nowrap; }
-.hl-list.compact .hl-text { font-size: 11.5px; }
+.hl-deal { flex: none; align-self: center; font-size: 12px; white-space: nowrap; }
+.hl-list.compact .hl-text { font-size: 12px; }
 .hl-tag {
-  font-size: 11px; padding: 1px 8px; border-radius: 10px; cursor: pointer; font-family: inherit;
+  font-size: 12px; padding: 1px 8px; border-radius: 10px; cursor: pointer; font-family: inherit;
   color: var(--gold); background: rgba(240, 180, 41, 0.1); border: 1px solid rgba(240, 180, 41, 0.35);
 }
 .hl-tag:hover:not(.static) { background: rgba(240, 180, 41, 0.2); }
@@ -115,9 +115,9 @@
 .rv-head { display: flex; align-items: center; gap: 16px; padding: 8px 16px; background: var(--bg-panel); border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .rv-title { display: flex; align-items: baseline; gap: 12px; flex: 1; min-width: 0; }
 .rv-title b { color: var(--gold); font-size: 15px; }
-.rv-readonly { font-size: 11px; }
+.rv-readonly { font-size: 12px; }
 .rv-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; user-select: none; }
-.rv-toggle.small { font-size: 11px; color: var(--muted); }
+.rv-toggle.small { font-size: 12px; color: var(--muted); }
 .rv-toggle input { accent-color: var(--gold); }
 
 .rv-body { flex: 1; min-height: 0; display: flex; }
@@ -134,12 +134,12 @@
 .rv-hand-head { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .rv-avatar {
   flex: none; width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: bold; color: var(--seat-accent, var(--gold)); background: var(--seat-soft); border: 1px solid var(--seat-accent, var(--gold));
+  font-size: 12px; font-weight: bold; color: var(--seat-accent, var(--gold)); background: var(--seat-soft); border: 1px solid var(--seat-accent, var(--gold));
 }
 .rv-hand-name { flex: 1; min-width: 0; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-hand-cash { color: var(--gold); font-weight: 700; font-variant-numeric: tabular-nums; }
-.rv-hand-cards { display: flex; flex-wrap: wrap; gap: 3px; min-height: 22px; max-height: 64px; overflow-y: auto; font-size: 11px; }
-.rv-card { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; border-radius: 5px; background: var(--bg-dark); border: 1px solid var(--border); font-size: 11px; }
+.rv-hand-cards { display: flex; flex-wrap: wrap; gap: 3px; min-height: 22px; max-height: 64px; overflow-y: auto; font-size: 12px; }
+.rv-card { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; border-radius: 5px; background: var(--bg-dark); border: 1px solid var(--border); font-size: 12px; }
 .rv-card b { color: var(--gold); }
 .rv-card.type-recruitment { border-color: rgba(240, 180, 41, 0.5); }
 .rv-card.type-boss { border-color: rgba(248, 81, 73, 0.6); color: #ff9b95; }
@@ -150,21 +150,21 @@
 .rv-step { padding: 10px 14px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; max-height: 46%; overflow-y: auto; }
 .rv-step-top { display: flex; align-items: center; gap: 8px; }
 .rv-actor { font-size: 14px; color: var(--seat-accent, var(--text)); }
-.rv-source { font-size: 10px; }
-.rv-step-no { margin-left: auto; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.rv-source { font-size: 12px; }
+.rv-step-no { margin-left: auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .rv-action { margin: 6px 0 0; font-size: 13px; line-height: 1.55; }
-.rv-hint { font-size: 11px; margin-top: 6px; }
+.rv-hint { font-size: 12px; margin-top: 6px; }
 .rv-say { margin: 8px 0 0; padding: 6px 10px; font-size: 13px; line-height: 1.5; border-left: 3px solid var(--seat-accent, var(--gold)); background: var(--seat-soft, rgba(255, 255, 255, 0.04)); border-radius: 0 8px 8px 0; }
 .rv-thought, .rv-note { margin-top: 7px; padding: 6px 10px; font-size: 12px; line-height: 1.55; border-radius: 8px; color: #b6c2cf; font-style: italic; }
 .rv-thought { background: rgba(88, 166, 255, 0.08); border: 1px dashed rgba(88, 166, 255, 0.4); }
 .rv-note { background: rgba(240, 180, 41, 0.07); border: 1px dashed rgba(240, 180, 41, 0.35); }
 .rv-events { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
-.rv-events li { font-size: 11.5px; line-height: 1.45; padding: 2px 7px; border-left: 3px solid transparent; border-radius: 4px; color: var(--muted); }
+.rv-events li { font-size: 12px; line-height: 1.45; padding: 2px 7px; border-left: 3px solid transparent; border-radius: 4px; color: var(--muted); }
 .rv-events li.tone-deal { color: var(--green); border-left-color: var(--green); background: rgba(63, 185, 80, 0.08); }
 .rv-events li.tone-fail { color: #ff9b95; border-left-color: var(--red); background: rgba(248, 81, 73, 0.08); }
 .rv-events li.tone-card { color: var(--blue); border-left-color: rgba(88, 166, 255, 0.6); }
 .rv-events li.tone-end { color: var(--gold); border-left-color: var(--gold); }
-.rv-events li.minor { opacity: 0.6; }
+.rv-events li.minor { opacity: 0.85; border-left-style: dashed; }
 .rv-hl-flag { margin-top: 8px; padding: 6px 10px; font-size: 12px; line-height: 1.5; border-radius: 8px; color: var(--gold); background: rgba(240, 180, 41, 0.1); border: 1px solid rgba(240, 180, 41, 0.4); }
 
 .rv-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
@@ -177,7 +177,7 @@
 .rv-controls { flex-shrink: 0; padding: 8px 16px 12px; background: var(--bg-panel); border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 7px; }
 .rv-deals { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 2px; }
 .rv-deal-chip {
-  flex: none; font-size: 11px; padding: 2px 8px; border-radius: 12px; cursor: pointer; font-family: inherit;
+  flex: none; font-size: 12px; padding: 2px 8px; border-radius: 12px; cursor: pointer; font-family: inherit;
   color: var(--muted); background: var(--bg-card); border: 1px solid var(--border);
 }
 .rv-deal-chip:hover { color: var(--text); border-color: #4b5563; }
@@ -191,7 +191,7 @@
 .rv-seg { position: absolute; top: 3px; height: 6px; border-radius: 3px; background: rgba(63, 185, 80, 0.45); }
 .rv-seg.fail { background: rgba(248, 81, 73, 0.4); }
 .rv-seg.active { background: var(--gold); }
-.rv-star { position: absolute; top: -3px; transform: translateX(-50%); font-size: 11px; line-height: 12px; color: var(--gold); pointer-events: none; }
+.rv-star { position: absolute; top: -3px; transform: translateX(-50%); font-size: 12px; line-height: 12px; color: var(--gold); pointer-events: none; }
 .rv-slider { width: 100%; accent-color: var(--gold); margin: 0; padding: 0; cursor: pointer; background: none; border: none; }
 
 .rv-buttons { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -206,4 +206,63 @@
 @media (prefers-reduced-motion: reduce) {
   .go-card, .rv-root { animation: none; }
   .cc-line { animation: none; }
+}
+
+/* ============================================================
+   终局卡 / 复盘器的窄屏适配（断点与 game.css 末尾「第 3 阶段」一致）
+   - 平板 ≤1023：复盘侧栏收窄（≤1100 已有 330px）
+   - 手机竖屏（≤767）：复盘器改单列纵向滚动（版图 → 手牌 → 这一步 / 标签页），控制条固定在底部（拇指区）
+   - 终局卡 / 弹层的全屏 sheet 样式在 game.css（.go-card 与 .help-panel 等同组）
+   ============================================================ */
+@media (max-width: 767px) {
+  .go-head { margin-bottom: 12px; }
+  .go-card .winner-name { font-size: 22px; }
+  .go-grid { gap: 14px; }
+  .go-actions { gap: 8px; }
+  .go-actions .btn, .go-actions .btn-primary { flex: 1 1 auto; }
+  .cash-chart figcaption, .cc-caption { font-size: 12px; }
+
+  .rv-head { flex-wrap: wrap; gap: 6px 10px; padding: calc(6px + var(--safe-t)) calc(10px + var(--safe-r)) 6px calc(10px + var(--safe-l)); }
+  .rv-title { flex: 1 1 100%; flex-wrap: wrap; gap: 2px 10px; order: 0; }
+  .rv-title b { font-size: 16px; }
+  .rv-readonly { display: none; }
+  .rv-head .btn { min-height: 44px; margin-left: auto; }
+  .rv-toggle { min-height: 44px; font-size: 13px; }
+  .rv-toggle.small { font-size: 13px; }
+
+  /* 主体纵向滚动：版图 → 各家手牌 → 这一步 + 标签页 */
+  .rv-body { flex-direction: column; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .rv-main { flex: none; min-width: 0; }
+  .rv-board { flex: none; }
+  .rv-board .table-board { flex: none; overflow: visible; }
+  /* 复盘里版图区的外层高度是内容撑开的，紧凑版图（flex 分配高度）需要一个明确的高度；放不下时区内滚动 */
+  .rv-board .ring-wrap-compact { flex: none; height: min(56vh, 380px); }
+  .rv-hand { flex-basis: 190px; min-width: 190px; }
+  .rv-side { width: 100%; flex: none; border-left: 0; border-top: 1px solid var(--border); min-height: 0; }
+  .rv-step { max-height: none; overflow: visible; }
+  .rv-action, .rv-say { font-size: 14px; }
+  .rv-thought, .rv-note, .rv-events li, .rv-hl-flag { font-size: 13px; }
+  .rv-tabs .side-tab { min-height: 44px; font-size: 14px; }
+  .rv-tabbody { overflow: visible; min-height: 260px; }
+  .rv-scroll { overflow: visible; }
+  .rv-feed-wrap { max-height: 56vh; max-height: 56dvh; }
+  .rv-feed-wrap .neg-feed { overflow-y: auto; }
+
+  /* 控制条：吸底；章节按钮 / 播放控制放大到触控尺寸 */
+  .rv-controls { padding: 6px calc(10px + var(--safe-r)) calc(8px + var(--safe-b)) calc(10px + var(--safe-l)); gap: 6px; box-shadow: 0 -8px 20px rgba(0, 0, 0, 0.35); }
+  .rv-deal-chip { min-height: 36px; padding: 2px 12px; font-size: 13px; }
+  .rv-slider { min-height: 28px; }
+  .rv-buttons { gap: 6px; }
+  .rv-buttons .btn { min-height: 44px; padding: 6px 10px; font-size: 13px; }
+  .rv-play { flex: 1 1 auto; min-width: 96px; min-height: 48px; }
+  .rv-speed { margin-left: 0; }
+}
+@media (max-height: 500px) {
+  /* 横屏手机：复盘器左右分栏（版图 + 手牌 | 这一步），控制条仍在底部，但压缩高度 */
+  .rv-head { padding-top: calc(3px + var(--safe-t)); padding-bottom: 3px; gap: 8px; }
+  .rv-readonly { display: none; }
+  .rv-controls { padding-top: 4px; padding-bottom: calc(4px + var(--safe-b)); gap: 4px; }
+  .rv-deals { display: none; }
+  .rv-hands { padding: 4px 12px; }
+  .rv-side { width: min(330px, 42%); }
 }

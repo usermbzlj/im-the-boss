@@ -428,6 +428,40 @@ state.events（已落地的事件）
 
 测试：`stats` / `highlights` 用 sim harness 跑出的真实对局（`tests/ui/played.ts`）断言对账与引用的步骤存在；`review.ui` 覆盖结果卡、复盘器（步进、跳转、揭晓开关、自动播放、不可回放时无入口）、交易记录入口、`useRecording` 与 App 全链路。
 
+### 7.5 布局与可访问性（`ui/layout` `ui/ringFit` `ui/unread` `ui/announce` + 对应组件 + `styles/game.css` 末尾"第 3 阶段"）
+
+**布局档位**。JS 与 CSS 两处断点必须一致：`ui/layout.ts` 的 `BREAKPOINTS` / `MEDIA` 是唯一数值来源，`tests/ui/layout.test.ts` 会去 `game.css` 里核对对应的 `@media`。`useLayout`（`LayoutProvider`）读 `innerWidth/innerHeight` 算出 `LayoutInfo`，只用于结构差异（抽屉 / 顶栏"更多"菜单 / 紧凑版图）；纯尺寸差异一律交给 CSS。
+
+| 档位 | 宽度 | 侧栏 | 顶栏 | 版图 / 座位 | 行动区 |
+| --- | --- | --- | --- | --- | --- |
+| desktop | ≥ 1280 | 常驻 | 平铺 | 与第 2 阶段一致（不改） | 版图下方 |
+| narrow | 1024–1279 | 常驻 330px | 平铺 | 座位单行横滚 | 同上 |
+| tablet | 768–1023 | 右侧抽屉 | 平铺 | 座位单行横滚 | 同上 |
+| phone | ≤ 767 | 底部抽屉（bottom sheet） | 窄顶栏 + "更多"菜单 | 紧凑版图（6×4）+ 紧凑座位卡 | 固定底部（`.table-bottom`），安全区留白 |
+| short | 高 ≤ 500（横屏手机） | 抽屉 | 同 phone | 版图在左、底部区在右（grid 两列） | 右列 |
+
+> 抽屉阈值是 ≤ 1023（而不是常见的 768–1279）：768–1023 的屏放不下 330px 侧栏 + 版图，故与手机同走抽屉；1024–1279 仍常驻。
+
+**紧凑版图**（phone / short）：`ui/ringFit.ts` 的 `fitScale` 按可用宽高算缩放，下限 `MIN_COMPACT_SCALE = 0.8`，再小就在 `.ring-wrap-compact` 内部滚动，不隐藏内容；`.ring-scaler` 尺寸取缩放后的值，不留空白。
+
+**手机底部区**：`.table-bottom`（`role=region` 名为"行动区与手牌"）= 抽屉手柄 + `ActionDock` + `CardHand`。最高 52dvh（高 ≤ 780 时 47dvh），`dock` 内部滚动、手牌固定、`.dock-actions` sticky 吸底，所以"主按钮永远可见"。手牌横向滚动，点击 / 长按卡片出卡面放大（popover 与 zoom 在手机和矮屏用 `position: fixed` 居中，不被滚动容器裁掉）。
+
+**抽屉**：`DrawerHandle` 在收起时显示未读数（`ui/unread.ts`，只数值得提示的新事件，打开即清零）；抽屉是 `role=dialog aria-modal`，收起时 `aria-hidden`。
+
+**弹层栈**（`components/useDialogLayer.ts`，被 `useModalDismiss` 包装）：最上层才处理 Tab 陷阱 / Esc；打开时焦点进入弹层，关闭时回到触发元素；会自动认领"最后一个未认领的 `[role=dialog]`"，所以 `SettingsPanel` 无需改 TSX 也有同样行为。`HelpPanel` / `OfferEditor` / `GameOverCard` / `ReplayViewer` 在手机上是全屏 sheet。
+
+**触屏提示**（`TouchHints`，仅 `hover: none` 时启用）：点击带 `title` 的静态元素弹出提示气泡，长按（500 ms）任意 `[title]` 元素也弹出且吞掉随后的 click；气泡是 `role=status`。
+
+**无障碍清单**
+- 语义与键盘：卡牌 / 座位 / 格子是 `button`（或 `role=button` + Enter/Space）；侧栏是带标签的 region + `tablist`；只有图标的按钮都有 `aria-label`；`#action-area` 有"跳到行动区"链接。
+- 播报：`ToastLayer`（已有过滤）+ `LiveAnnouncer`——仅在 `attention` / `phase` / `viewerId` 变化时用 `aria-live=polite` 播一次"轮到你了……"，避免刷屏。
+- 对比度与字号：`--muted: #9ba5b0`（在 `#161b22 / #21262d / #2a3039` 上 ≥ 4.5:1），红色文字 `#ff7b72`；全局最小字号 12px，手机正文 ≥ 14px；`@media (pointer: coarse)` 下按钮 ≥ 44px、输入框 16px（防 iOS 聚焦放大）；`touch-action: manipulation` 防双击缩放。
+- 动效：全局 `prefers-reduced-motion` 兜底；`@media (hover: none)` 重置粘滞 hover；统一 `:focus-visible`；`forced-colors` 有兜底。
+
+**测试**：`tests/ui/layout.test.ts`（档位判定、CSS 同步、版图缩放、未读、播报文案纯函数）、`tests/ui/a11y.ui.test.tsx`（弹层焦点 / Esc / Tab 陷阱、键盘操作、菜单、抽屉、播报、触屏提示、样式约定）、`tests/ui/appLayout.ui.test.tsx`（App 在 1440 / 820 / 390 视口下的顶栏 / 抽屉 / 弹层语义）。jsdom 不渲染 CSS，视觉靠下面的浏览器清单人工核对。
+
+**浏览器验证清单**：390×844（开始页 / 自己行动 / 谈判中 / 抽屉打开 / "更多"菜单 / OfferEditor / 终局卡 / 复盘）、360×740（无横向滚动）、844×390 横屏、820×1180 平板、~1100×700 窄桌面、1440×900 桌面（对照第 2 阶段无回归）。
+
 ---
 
 ## 8. 存档（`utils/storage.ts` + `utils/saveMigrations.ts`）

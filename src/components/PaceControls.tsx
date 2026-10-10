@@ -33,7 +33,7 @@ export default function PaceControls({ canSkip, onSkip, syncKey }: PaceControlsP
   return (
     <div className="pace-controls">
       <div className="pace-speed" role="group" aria-label="电脑速度">
-        <span className="pace-label">电脑速度</span>
+        <span className="pace-label" aria-hidden="true">电脑速度</span>
         {SPEEDS.map(s => (
           <button key={s.id} type="button" className={`pace-btn${speed === s.id ? ' active' : ''}`} aria-pressed={speed === s.id} title={s.title} onClick={() => pick(s.id)}>
             {s.label}
@@ -42,7 +42,7 @@ export default function PaceControls({ canSkip, onSkip, syncKey }: PaceControlsP
       </div>
       <button type="button" className="btn btn-sm pace-skip" disabled={!canSkip} onClick={onSkip}
         title={canSkip ? '跳过电脑行动前的停顿' : '现在轮到你（或没有可跳过的等待）'}>
-        快进 ⏩
+        <span className="pace-skip-text">快进 </span><span aria-hidden="true">⏩</span>
       </button>
     </div>
   )
