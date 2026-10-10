@@ -10,7 +10,7 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { FAMILIES } from '../engine/config'
-import type { ActiveCue, CueTarget } from '../ui/cues'
+import { CUE_MS, type ActiveCue, type CueTarget } from '../ui/cues'
 import DieFace from './DieFace'
 import { useActiveCues } from './CueProvider'
 
@@ -62,6 +62,7 @@ const CONFETTI_COLORS = ['#f0b429', '#3fb950', '#58a6ff', '#f85149', '#bc8cff', 
 function WinLayer({ cue }: { cue: ActiveCue }) {
   const good = cue.tone === 'good'
   const pieces = good ? 36 : 14
+  const k = cue.ms / CUE_MS.win
   return createPortal(
     <div className={`cue-win ${good ? 'tone-good' : 'tone-neutral'}`} aria-hidden="true">
       {Array.from({ length: pieces }, (_, i) => (
@@ -71,8 +72,8 @@ function WinLayer({ cue }: { cue: ActiveCue }) {
           style={{
             left: `${6 + rnd(i, 1) * 88}%`,
             background: good ? CONFETTI_COLORS[i % CONFETTI_COLORS.length] : '#ffd966',
-            animationDuration: `${2300 + rnd(i, 2) * 1500}ms`,
-            animationDelay: `${rnd(i, 3) * 500}ms`,
+            animationDuration: `${(2300 + rnd(i, 2) * 1500) * k}ms`,
+            animationDelay: `${rnd(i, 3) * 500 * k}ms`,
             '--drift': `${(rnd(i, 4) - 0.5) * 160}px`,
             '--spin': `${360 + rnd(i, 5) * 540}deg`,
           } as CSSProperties}

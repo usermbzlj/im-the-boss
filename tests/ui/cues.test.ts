@@ -3,10 +3,12 @@
 import { describe, it, expect } from 'vitest'
 import type { GameEvent, LoggedEvent } from '../../src/engine/types'
 import {
-  CUE_MS, SHOT_MAX_MS, MERGE_WINDOW_MS, MAX_ACTIVE_CUES, STAGGER_MAX_MS, cueLifetime, mergeActive, mergeCues, motionFilter, pickSounds, planCues, staggerCues,
+  CUE_MS, SHOT_MAX_MS, MERGE_WINDOW_MS, MAX_ACTIVE_CUES, STAGGER_MAX_MS, cueLifetime, mergeActive, mergeCues, motionFilter, pickSounds, planCues, scaleCues, staggerCues,
   type ActiveCue, type Cue,
 } from '../../src/ui/cues'
-import { FULL_MOTION, markFastForward, motionBlocked, readMotionEnv, resetFastForward, rollValue, isFastForward } from '../../src/ui/motion'
+import {
+  ANIM_SCALE, FULL_MOTION, loadAnimSpeed, markFastForward, motionBlocked, readMotionEnv, resetFastForward, rollValue, isFastForward, scaleMs,
+} from '../../src/ui/motion'
 import { closedDealState, placeMarkerState } from './fixtures'
 
 let seq = 500
@@ -204,6 +206,22 @@ describe('跳过策略与动效环境', () => {
       expect(motionBlocked({ ...FULL_MOTION, ...patch })).toBe(true)
     }
     expect(motionBlocked(FULL_MOTION)).toBe(false)
+  })
+
+  it('动画速度：关闭档挡住视觉演出；倍率缩放时长与延迟；存储里的非法值回退标准', () => {
+    expect(motionBlocked({ ...FULL_MOTION, animOff: true })).toBe(true)
+    const scaled = scaleCues(cues, ANIM_SCALE.slow)
+    scaled.forEach((c, i) => {
+      expect(c.ms).toBe(Math.round(cues[i].ms * ANIM_SCALE.slow))
+      expect(c.delay).toBe(Math.round(cues[i].delay * ANIM_SCALE.slow))
+    })
+    expect(scaleCues(cues, 1)).toEqual(cues)
+    expect(scaleMs(1000, 'fast')).toBe(600)
+    expect(scaleMs(1000, 'off')).toBe(1000)
+    const mem = (v: string | null) => ({ getItem: () => v, setItem: () => {} })
+    expect(loadAnimSpeed(mem('slow'))).toBe('slow')
+    expect(loadAnimSpeed(mem('warp'))).toBe('normal')
+    expect(loadAnimSpeed(null)).toBe('normal')
   })
 
   it('快进标记：按下后一小段时间内为真，之后恢复', () => {

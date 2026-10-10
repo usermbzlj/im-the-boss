@@ -359,7 +359,8 @@ flushAutosave(session)                                  // 立即落盘（pagehi
 - **`EventFeed`**：谈判桌底部，按 `dealNo` 取本笔交易的事件；喊话是带人物色的头像气泡，新条目一次性入场高亮（以挂载时最后的事件 id 为基线，不会因重渲染重复闪）。
 - **`RecentStrip`**：PhaseGuide 下方固定高度的一行"刚刚"，谈判之外也能看到最近发生了什么。
 - **`ToastLayer`**：贴在版图下沿、行动区上方（不挡座位行），不挡操作的提示（`pointer-events` 只给提示本身），自动消失、点击关闭；挂载与换局时以当前最后事件为基线，**载入存档不会补弹**。尊重 `prefers-reduced-motion`。
-- **`DealResultCard`**：成交 / 流局后在桌面中央显示约 7 秒（可收起、可跳转到"交易记录"）；终局那一笔不弹。
+- **`DealResultCard`**：成交 / 流局后显示约 7 秒（可收起、可跳转到"交易记录"）；终局那一笔不弹。与提示同在版图下沿的浮层栈里，但排在栈底钉住不动，提示在它上方增减。
+- **浮层优先级**：带按钮的弹层（结算卡、出牌弹层，z 60）高于信息类浮层（卡牌放大预览 48、提示 47、演出层 46），信息类永远不盖住可点的按钮；浮层栈本身不建层叠上下文，各自的层级才能互相比较。出牌弹层固定在手牌区左上角，不随所点的牌移动（手机上是底部抽屉）。
 - **`PaceControls`**：电脑速度 快 / 中 / 慢读写 `LLMConfig.aiSpeed`（`session` 每次实时读取），"快进"调用 `GameSession.skipWait`；**`AiStatusBadge`** 读 `snapshot.ai`（未启用 LLM 显示"启发式"，降级黄、熔断红，回退原因进 title）。
 - **`useTurnAlert`**：轮到你且页面在后台时 `document.title` 交替闪烁，回到前台恢复。
 - **桌风**：`StartScreen` 写 `LLMConfig.tableStyle`（友好 / 商战 / 冷血），由 AI 线决定其对电脑玩家的影响。
@@ -387,7 +388,9 @@ state.events（已落地的事件）
 - **Cue 种类**：`money`（收付款飘字，座位现金数字同时滚动）、`play` / `boss` / `travel` / `recruit` / `stop` / `price`（关键牌 ≤ 0.8 秒镜头：Boss 徽章飞到座位、代表被送走、代表换主、阻止牌被划掉、涨跌股价）、`close`（成交格圈光 + "成交"印章）、`fail`、`dice`（掷骰翻滚）、`marker`（金钱标记沿版图移动）、`draw`（自己抽牌：牌背飞入手牌；别人抽牌只显示"+N 张"）、`win`（终局赢家庆祝，只在桌面层，不改 `GameOverCard`）。
 - **锚点**：不通过 props 穿透组件，而是 `CueStage` 用 `[data-seat-id]` / `[data-space-id]` / `[data-family]` / `.hand-cards` 等 DOM 属性在渲染时测位置。`PlayerSeat`、`TableBoard`、`FamilyChip` 只多出这些属性与少量 class（`cue-closing`、`incoming`、`flash-up/down`）。
 - **`CueProvider`**（App 里包住牌桌）监听 `state`：挂载与换局（事件 id 倒退）时以当前最后事件为基线，**载入存档不补演**；其余新事件走上面的管线。`useCuesOf(kind)` 给 `TableBoard` 取格 / 标记 / 股价的演出。
-- **跳过规则**（`motionBlocked`）：`prefers-reduced-motion`、页面在后台、快进中（`PaceControls` 的"快进"调用 `markFastForward()`，之后 2 秒内）、环境无 `matchMedia`（jsdom 等）→ 视觉演出全部丢弃。音效另算（`pickSounds`）：后台不出声；快进中只保留成交 / 失败 / 终局；成交音会盖掉同批的入账 / 出牌 / 抽牌音；一批最多 2 个，第二个延后 170ms。
+- **跳过规则**（`motionBlocked`）：`prefers-reduced-motion`、页面在后台、快进中（`PaceControls` 的"快进"调用 `markFastForward()`，之后 2 秒内）、环境无 `matchMedia`（jsdom 等）、设置里动画速度为"关" → 视觉演出全部丢弃。
+- **动画速度**（`ui/motion.ts`，存 `im-the-boss:anim-speed`）：关 / 快 0.6× / 标准 / 慢 1.6×。`CueProvider` 用 `scaleCues` 缩放每条演出的时长与延迟（到期时间随之变），`AnimatedNumber` 用 `scaleMs` 缩放数字滚动；CSS 侧 `<html>` 上的 `--anim-k` 缩放与演出挂钩的 class 动画（成交格、标记落地、股价闪动、骰子落定、提示与结算卡入场），`data-anim="off"` 与减少动画同口径关掉所有动画。只影响画面，不影响电脑的行动节奏（`aiSpeed`）。
+- 音效另算（`pickSounds`）：后台不出声；快进中只保留成交 / 失败 / 终局；成交音会盖掉同批的入账 / 出牌 / 抽牌音；一批最多 2 个，第二个延后 170ms。
 - **信息隐藏（7.1）**：只对已落地事件出 Cue；`PASSED` / 喊话 / 报价过程没有演出；REACTION / CLOSING 不出现"谁在考虑"；他人抽牌只出张数，不出牌面、不出声。
 
 **音效模块 `src/audio/`**（Web Audio 实时合成，无任何音频资源文件）
