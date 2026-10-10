@@ -23,7 +23,12 @@ import ToastLayer from './components/ToastLayer'
 import DealResultCard from './components/DealResultCard'
 import PaceControls from './components/PaceControls'
 import AiStatusBadge from './components/AiStatusBadge'
+import CueProvider from './components/CueProvider'
+import CueStage from './components/CueStage'
+import SoundControl from './components/SoundControl'
 import { useTurnAlert } from './components/useTurnAlert'
+import { useTurnChime } from './components/useTurnChime'
+import { markFastForward } from './ui/motion'
 import { ViewerProvider } from './components/ViewerContext'
 import { useSideTab } from './components/useSideTab'
 import { getCurrentTile, getEndProbability } from './engine/rules'
@@ -55,6 +60,7 @@ export default function App() {
   // 轮到你且需要你做决定：行动区高亮；页面在后台时标题闪烁
   const attention = !!state && needsAttention(state, legal)
   useTurnAlert(attention)
+  useTurnChime(attention)
 
   // 谈判开始自动切到谈判页（用户手动选过标签就不抢），结束时若停在谈判页则退回日志
   const { sideTab, pickTab } = useSideTab(hasNeg, !!state)
@@ -95,20 +101,22 @@ export default function App() {
 
   return (
     <ViewerProvider viewerId={VIEWER_ID}>
+    <CueProvider state={state} viewerId={VIEWER_ID}>
     <div className="app">
       <header className="app-header">
         <h1>I'm the Boss!</h1>
         <div className="header-info">
           <span className="variant-tag" title={getVariant(state.variantId).blurb}>{getVariant(state.variantId).name}</span>
           {state.houseRules && <span className="variant-tag house-tag" title="桌规已开启：换牌 / 买牌 / 兑换招募牌 / 病假牌">桌规</span>}
-          <span>成交 {state.completedDeals}/{state.dealTiles.length}</span>
-          <span>股价 ${tile?.shareValue ?? 0}M</span>
-          {tile && tile.endFaces.length > 0 && <span className="endgame-tag">终局 {getEndProbability(tile)}%</span>}
-          <span className="muted">牌堆 {state.drawPile.length}</span>
+          <span className="stat-chip">成交 <b>{state.completedDeals}/{state.dealTiles.length}</b></span>
+          <span className="stat-chip">股价 <b>${tile?.shareValue ?? 0}M</b></span>
+          {tile && tile.endFaces.length > 0 && <span className="stat-chip endgame-tag">终局 {getEndProbability(tile)}%</span>}
+          <span className="stat-chip muted">牌堆 {state.drawPile.length}</span>
         </div>
         <div className="header-actions">
           <AiStatusBadge status={snapshot!.ai} />
-          <PaceControls canSkip={canSkipWait(state, legal)} onSkip={skipWait} syncKey={showSettings} />
+          <PaceControls canSkip={canSkipWait(state, legal)} onSkip={() => { markFastForward(); skipWait() }} syncKey={showSettings} />
+          <SoundControl />
           {gameOver && resultDismissed && (
             <button className="btn btn-sm result-fab" onClick={() => setResultDismissed(false)}>查看最终结果</button>
           )}
@@ -124,6 +132,7 @@ export default function App() {
       <div className="app-body">
         <div className="table-area">
           <ToastLayer state={state} />
+          <CueStage />
           <DealResultCard state={state} onDetails={() => pickTab('history')} />
           <TableBoard state={state} thinkingId={thinkingId} onPlaceMarker={id => act({ type: 'PLACE_MARKER', playerId: VIEWER_ID, spaceId: id })} />
           <ActionDock
@@ -172,6 +181,7 @@ export default function App() {
       <HelpPanel open={showHelp} onClose={() => setShowHelp(false)} variantId={state.variantId} houseRules={state.houseRules} />
       <SettingsPanel open={showSettings} onClose={() => setShowSettings(false)} />
     </div>
+    </CueProvider>
     </ViewerProvider>
   )
 }

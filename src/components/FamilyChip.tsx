@@ -21,6 +21,7 @@ export default function FamilyChip({ familyId, size = 'md', kind = 'plain', met,
       className={`family-chip size-${size} kind-${kind}${travelled ? ' travelled' : ''}${met === false ? ' unmet' : ''}`}
       style={{ background: f.color, color: f.textColor, opacity }}
       title={f.name}
+      data-family={familyId}
     >
       <span className="chip-letter">{familyId}</span>
       <span className="chip-name">{f.name}</span>
