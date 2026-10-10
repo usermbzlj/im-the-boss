@@ -10,6 +10,15 @@ export type AISpeed = 'fast' | 'normal' | 'slow'
 export type TableStyle = 'friendly' | 'business' | 'ruthless'
 export const TABLE_STYLES: readonly TableStyle[] = ['friendly', 'business', 'ruthless']
 
+/**
+ * LLM 决策范围：
+ *   critical（默认）——只有关键决策（报价 / 喊话、Boss 提案、应答方案、出影响牌、封口费）才请求 LLM，
+ *                      琐碎决策与"与我无关的这一笔"直接用内置启发式（同样带人物台词）；
+ *   all            ——凡有选择的决策都请求 LLM（最慢、最费调用）。
+ */
+export type DecisionScope = 'critical' | 'all'
+export const DECISION_SCOPES: readonly DecisionScope[] = ['critical', 'all']
+
 export interface LLMConfig {
   baseUrl: string
   apiKey: string
@@ -20,6 +29,8 @@ export interface LLMConfig {
   aiSpeed: AISpeed
   /** 桌风（默认商战） */
   tableStyle: TableStyle
+  /** LLM 决策范围（默认只管关键决策） */
+  decisionScope: DecisionScope
   /** 请求超时（秒）。thinking/reasoning 类模型响应慢，需要更长的窗口 */
   timeoutSecs: number
   /**
@@ -31,11 +42,16 @@ export interface LLMConfig {
   extraBodyJson: string
 }
 
-/** 不同速度档位对应的思考停顿（毫秒），谈判发言 vs 反应窗口分别配置 */
-export const AI_SPEED_DELAYS_MS: Record<AISpeed, { negotiation: number; reaction: number }> = {
-  fast: { negotiation: 200, reaction: 120 },
-  normal: { negotiation: 600, reaction: 400 },
-  slow: { negotiation: 1500, reaction: 1000 },
+/**
+ * 不同速度档位对应的停顿（毫秒）：
+ *   negotiation 自己回合 / 谈判发言 / 应答；
+ *   reaction    反应窗口与成交倒计时里"第一位"的停顿（之后逐位缩短，见 ai/pacing.ts），与手牌无关；
+ *   quiet       无信息量的行动（唯一合法动作、与这一笔无关的旁观者）。
+ */
+export const AI_SPEED_DELAYS_MS: Record<AISpeed, { negotiation: number; reaction: number; quiet: number }> = {
+  fast: { negotiation: 200, reaction: 60, quiet: 30 },
+  normal: { negotiation: 600, reaction: 200, quiet: 100 },
+  slow: { negotiation: 1500, reaction: 500, quiet: 300 },
 }
 
 const STORAGE_KEY = 'im-the-boss-llm-config'
@@ -50,7 +66,10 @@ export const DEFAULT_LLM_CONFIG: LLMConfig = {
   enabled: false,
   aiSpeed: 'normal',
   tableStyle: 'business',
-  timeoutSecs: 60,
+  decisionScope: 'critical',
+  // 关键决策才请求模型，普通模型 2~6 秒即回；30 秒还没回就当它卡住，该座位本次改用内置策略。
+  // thinking / reasoning 类模型请在设置里调大（并最好用自定义请求体关掉思考）。
+  timeoutSecs: 30,
   extraBodyJson: '',
 }
 
@@ -87,7 +106,11 @@ export function loadLLMConfig(): LLMConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return { ...DEFAULT_LLM_CONFIG }
-    return { ...DEFAULT_LLM_CONFIG, ...JSON.parse(raw) }
+    const cfg: LLMConfig = { ...DEFAULT_LLM_CONFIG, ...JSON.parse(raw) }
+    // 存量 / 手改的坏值回到默认，免得下游 switch 落空
+    if (!TABLE_STYLES.includes(cfg.tableStyle)) cfg.tableStyle = DEFAULT_LLM_CONFIG.tableStyle
+    if (!DECISION_SCOPES.includes(cfg.decisionScope)) cfg.decisionScope = DEFAULT_LLM_CONFIG.decisionScope
+    return cfg
   } catch {
     return { ...DEFAULT_LLM_CONFIG }
   }
@@ -140,9 +163,11 @@ export interface LLMCallLogEntry {
   ok: boolean
   requestPreview: string
   responsePreview: string
+  /** 不是一次真实请求，而是策略层的事件：fallback = 本次改用内置策略；breaker = 熔断（暂停调用）；recover = 已恢复 */
+  tag?: 'fallback' | 'breaker' | 'recover'
 }
 
-const MAX_LOG_ENTRIES = 20
+const MAX_LOG_ENTRIES = 40
 let callLog: LLMCallLogEntry[] = []
 let logIdCounter = 1
 
@@ -156,6 +181,25 @@ export function getLLMCallLog(): LLMCallLogEntry[] {
 
 export function clearLLMCallLog() {
   callLog = []
+}
+
+/** 把"回退 / 熔断 / 恢复"这类策略层事件写进调用日志（设置面板里用标签标出来） */
+export function recordLLMEvent(tag: NonNullable<LLMCallLogEntry['tag']>, text: string, model = '') {
+  pushLog({
+    timestamp: Date.now(), purpose: tag === 'breaker' ? '熔断' : tag === 'recover' ? '恢复' : '回退',
+    model, latencyMs: 0, ok: tag === 'recover', requestPreview: '', responsePreview: text, tag,
+  })
+}
+
+/**
+ * 把请求异常归类，供熔断统计：
+ *   aborted —— 外部信号取消（局面已推进 / 会话销毁），不算失败；
+ *   timeout —— 自己的超时；network —— 网络错误 / HTTP 错误。
+ */
+export function classifyLLMError(e: unknown, externalSignal?: AbortSignal): 'aborted' | 'timeout' | 'network' {
+  if (externalSignal?.aborted) return 'aborted'
+  if (e instanceof Error && e.name === 'AbortError') return 'timeout'
+  return 'network'
 }
 
 export async function chatCompletion(

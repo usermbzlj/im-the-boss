@@ -9,6 +9,7 @@
 
 import type { GameState } from '../engine/types'
 import type { Policy } from '../ai/policy'
+import type { AiStatusSource } from '../ai/aiStatus'
 import { GameSession, type DelayFor } from './session'
 import { Autosaver, type SaveSink } from './autosave'
 import { createGame, type SavedGame, type StartInput } from './replay'
@@ -22,6 +23,8 @@ export interface SessionEnv {
   delayFor?: DelayFor
   /** 人类只能放行的窗口自动放行（默认开） */
   autoPassHuman?: boolean
+  /** 电脑玩家运行状况的来源（LLM 熔断监视，由会话订阅并写入 snapshot.ai）；省略 = 不显示 */
+  aiStatus?: AiStatusSource
   /** 存档位置；省略或 null = 不存档 */
   store?: SaveSink | null
   /** 读取存档（"继续上一局"用）；省略 = 没有存档可读 */
@@ -48,6 +51,7 @@ export function resumeGameSession(saved: SavedGame | GameState, env: SessionEnv)
     fallback: env.fallback,
     delayFor: env.delayFor,
     autoPassHuman: env.autoPassHuman,
+    aiStatus: env.aiStatus,
     replay: full.replayable && full.origin ? { origin: full.origin, log: full.log } : undefined,
     onChange: state => { env.onChange?.(state); saver?.touch(state) },
     onDestroy: () => saver?.flush(),

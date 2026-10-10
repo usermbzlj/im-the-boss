@@ -80,7 +80,7 @@ export function heuristicAction(state: GameState, opts: HeuristicOptions = {}): 
   if (id < 0) return null
   const legal = getLegalActions(state, id)
   if (legal.length === 0) return null
-  ctx.style = STYLE_PARAMS[opts.style ?? 'business']
+  ctx.style = STYLE_PARAMS[opts.style ?? defaultStyle]
   ctx.state = state; ctx.rels = new Map()
   const decided = decide(state, id, legal)
   const action = decided && isLegal(state, decided) ? decided : legal[0]
@@ -88,12 +88,19 @@ export function heuristicAction(state: GameState, opts: HeuristicOptions = {}): 
 }
 
 /** 启发式策略。getStyle 每次决策时读取（桌风来自设置，开局时读一次即可，也可以随时换） */
-export function createHeuristicPolicy(getStyle: () => TableStyle = () => 'business'): Policy {
+export function createHeuristicPolicy(getStyle?: () => TableStyle | undefined): Policy {
   return {
     name: 'heuristic',
-    decide: async state => heuristicAction(state, { style: getStyle() }),
+    decide: async state => heuristicAction(state, { style: getStyle?.() }),
   }
 }
+
+/**
+ * 脚本 / 仿真用的默认桌风（SIM_STYLE）。游戏本身不用它——会话里的策略显式传桌风。
+ * 只是让不方便传参的入口（sim/harness.ts 的 heuristicAction(state)）也能跑不同桌风。
+ */
+let defaultStyle: TableStyle = 'business'
+export function setDefaultHeuristicStyle(style: TableStyle) { defaultStyle = style }
 
 export const heuristicPolicy: Policy = createHeuristicPolicy()
 
@@ -548,7 +555,6 @@ function shareWithFriend(
  *   2. 本轮先放话 PASS，让要价的人掂量（每轮一次）；
  *   3. 务实者（flex 高）在最后几次提案里咬牙付；其余人宁可放弃。
  */
-const __dbg = (k: string) => { const g = globalThis as any; g.__ho = g.__ho ?? {}; g.__ho[k] = (g.__ho[k] ?? 0) + 1 }
 function holdOut(
   state: GameState, id: number, scored: { c: OfferCandidate; okAll: boolean; keep: number; value: number }[],
   floor: number, p: PersonaParams,
@@ -580,7 +586,7 @@ function holdOut(
         }, 0)),
       }))
       const action: PlayerAction = { type: 'PROPOSE_OFFER', playerId: id, repKeys: alt.repKeys, payouts }
-      if (gross - payoutTotal(payouts) >= floor && isLegal(state, action)) { __dbg('alt'); return action }
+      if (gross - payoutTotal(payouts) >= floor && isLegal(state, action)) return action
     }
   }
 
@@ -588,17 +594,14 @@ function holdOut(
   const flex = p.flex * ctx.style.flex
   const gname = greedy != null ? getPlayer(state, greedy)?.name ?? '' : ''
   if (neg.stalemateRounds === 0 && neg.passStreak < state.players.length - 1 && rand(state, 151) < clamp(0.85 - 0.5 * flex, 0.25, 0.9)) {
-    __dbg('threat')
     return { type: 'PASS', playerId: id, say: L(state, id, 'boss_threat', { name: gname }, 153) }
   }
 
   // 3. 最后几次提案：务实者咬牙付（自留至少 1），其余人宁可不做
   const swallow = scored.filter(x => x.okAll && x.keep >= 1).sort((a, b) => b.value - a.value)[0]
   if (swallow && (flex >= 0.45 || swallow.keep >= Math.ceil(floor * 0.5))) {
-    __dbg('swallow')
     return { type: 'PROPOSE_OFFER', playerId: id, repKeys: swallow.c.repKeys, payouts: swallow.c.payouts }
   }
-  __dbg('abandon_' + (swallow ? 'hadswallow g' + gross + ' f' + floor + ' k' + swallow.keep + ' fl' + flex.toFixed(1) + ' om' + neg.offersMade : 'noswallow'))
   return { type: 'ABANDON_DEAL', playerId: id, say: L(state, id, 'abandon', {}, 155) }
 }
 
@@ -845,12 +848,12 @@ function bestTravel(state: GameState, id: number, legal: PlayerAction[]): Player
 
 // ---------- 应答 / 反应 / 倒计时 ----------
 
-function respond(state: GameState, id: number): PlayerAction {
+/** 应答方案的条件：我的出借价、点头线（含让步 / 终局因素）、最后一轮的低线 */
+function responseTerms(state: GameState, id: number) {
   const neg = state.negotiation!
   const p = persona(state, id)
   const st = stance(state, id)
   const share = oneShareOf(state)
-  const myShare = offerShareOf(neg.offer, id)
   const used = Math.max(1, repsUsedOf(neg, neg.offer!, id))
   // 我对这份方案的承诺价（各家族报价累计）；没报过就按人物心理价
   const committed = commitmentPrice(neg, neg.offer!, id)
@@ -864,17 +867,66 @@ function respond(state: GameState, id: number): PlayerAction {
   let threshold = Math.max(1, Math.round(myAsk * p.acceptMult * ctx.style.accept * Math.max(0.55, relief))) * used
   if (st.blockLeader) threshold = Math.round(threshold * (1 + st.end))
   if (st.iAmLeader && st.end > 0 && !st.wouldOvertake) threshold = 1 // 成交就可能赢：给钱就点头
-  if (myShare >= threshold) return { type: 'ACCEPT_OFFER', playerId: id }
   // 最后一次提案：怕一拍流局，接受"自己报价的一部分"——部分多少看弹性（沈 / 周几乎不让；陆 / 程肯让到约一半），
   // 相对自己的报价而不是相对一份分红，所以拿小钱的人不会被白嫖（旧版"只要有半份就接"可被唯一代表的 Boss 利用）
-  if (neg.offersMade >= MAX_OFFERS_PER_BOSS - 1) {
-    const last = Math.max(1, Math.round(myAsk * (1 - 0.5 * flex) * (1 + 0.05 * Math.max(0, -rel)))) * used
-    if (myShare >= last) return { type: 'ACCEPT_OFFER', playerId: id }
-  }
+  const last = Math.max(1, Math.round(myAsk * (1 - 0.5 * flex) * (1 + 0.05 * Math.max(0, -rel)))) * used
+  return { neg, used, myAsk, rel, flex, threshold, last }
+}
+
+function respond(state: GameState, id: number): PlayerAction {
+  const { neg, used, myAsk, flex, threshold, last } = responseTerms(state, id)
+  const myShare = offerShareOf(neg.offer, id)
+  if (myShare >= threshold) return { type: 'ACCEPT_OFFER', playerId: id }
+  if (neg.offersMade >= MAX_OFFERS_PER_BOSS - 1 && myShare >= last) return { type: 'ACCEPT_OFFER', playerId: id }
   // 反报价是每个代表的出借价（通用价：方案所用的我的每个家族同价）；每轮略降，但不低于当前方案之上 1 块
   const counterAsk = Math.max(1, Math.round(myAsk * Math.max(0.6, 1 - flex * 0.08 * neg.offersMade)))
   const counter = Math.max(counterAsk, Math.floor(myShare / used) + 1)
   return { type: 'DECLINE_OFFER', playerId: id, quotes: [{ amount: Math.min(counter, Math.max(1, Math.floor((getGrossValue(state) - 1) / used))) }] }
+}
+
+// ---------- 给 LLM 的"性格参考价位" ----------
+
+/** 由人物参数 / 桌风 / 关系推导出的数字参考；LLM 看到它，但保留偏离的自由 */
+export interface DecisionHints {
+  /** 报价参考：每个相关家族的性格价（已含唯一代表加价、竞争压价） */
+  asks?: { familyId: FamilyId; amount: number }[]
+  /** 报价的"白送线"：低于它基本等于送钱 */
+  askFloor?: number
+  /** Boss：自留底线（低于它宁可压价 / 换代表 / 放弃） */
+  keepFloor?: number
+  /** Boss：舒服的自留额 */
+  keepGood?: number
+  /** 应答：每个代表的心理价、点头线（本方案合计）、当前方案分给我的钱 */
+  accept?: { perRep: number; threshold: number; offered: number }
+}
+
+export function decisionHints(state: GameState, id: number, style: TableStyle = 'business'): DecisionHints {
+  const neg = state.negotiation
+  if (!neg || getActingPlayerId(state) !== id) return {}
+  ctx.style = STYLE_PARAMS[style]
+  ctx.state = state; ctx.rels = new Map()
+  const share = oneShareOf(state)
+  const gross = getGrossValue(state)
+  if (state.phase === 'OFFER_RESPONSE' && neg.offer) {
+    const t = responseTerms(state, id)
+    return { accept: { perRep: Math.round(t.myAsk), threshold: t.threshold, offered: offerShareOf(neg.offer, id) } }
+  }
+  if (state.phase !== 'NEGOTIATION') return {}
+  if (neg.bossId === id) {
+    const p = persona(state, id)
+    const st = stance(state, id)
+    const floor = bossFloor(gross, st, p)
+    const minKeep = st.iAmLeader && st.end > 0 ? Math.max(1, Math.round(share * (1 - st.end))) : Math.max(share, Math.round(gross * 0.3))
+    return { keepFloor: floor, keepGood: Math.min(gross - 1, Math.max(minKeep, floor)) }
+  }
+  const space = getCurrentSpace(state)
+  if (!space) return {}
+  const mine = [...playerActiveFamilies(neg, id)].filter(f => groupOfFamily(space, f))
+  if (mine.length === 0) return {}
+  return {
+    asks: mine.map(f => ({ familyId: f, amount: askPrice(state, id, f) })),
+    askFloor: Math.max(1, Math.round(share * 0.7)),
+  }
 }
 
 function reaction(state: GameState, id: number, legal: PlayerAction[]): PlayerAction {
