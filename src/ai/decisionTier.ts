@@ -15,6 +15,8 @@
 // ============================================================
 
 import type { GameState, PlayerAction } from '../engine/types'
+import { getCurrentSpace } from '../engine/rules'
+import { estimateDeal } from './heuristic'
 
 export type DecisionTier = 'trivial' | 'critical'
 
@@ -22,6 +24,12 @@ export function decisionTier(state: GameState, actorId: number, legal: readonly 
   if (legal.length <= 1) return 'trivial'
   const wantsToAct = !!heuristic && heuristic.type !== 'PASS' && heuristic.type !== 'PASS_CLOSING'
   switch (state.phase) {
+    case 'TURN': case 'AFTER_MOVE': {
+      // 开单与补牌/移动是交易入口的真实取舍。只在公开代表和自己的牌可凑齐时请教模型。
+      const space = getCurrentSpace(state)
+      const estimate = space ? estimateDeal(state, actorId, space) : null
+      return legal.some(a => a.type === 'OPEN_DEAL') && estimate?.feasible && estimate.buyCount > 0 ? 'critical' : 'trivial'
+    }
     case 'OFFER_RESPONSE':
       return 'critical'
     case 'NEGOTIATION':
@@ -32,7 +40,7 @@ export function decisionTier(state: GameState, actorId: number, legal: readonly 
     case 'CLOSING':
       return wantsToAct ? 'critical' : 'trivial'
     default:
-      // 放置标记 / 自己回合开单 / 手牌超限 / 反应窗口 / 终局掷骰
+      // 放置标记 / 手牌超限 / 反应窗口 / 终局掷骰
       return 'trivial'
   }
 }

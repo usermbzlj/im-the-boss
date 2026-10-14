@@ -75,8 +75,8 @@ export default function PhaseGuide({ state }: { state: GameState }) {
       {neg && (
         <span className="guide-right">
           交易 #{neg.spaceId} · ${gross}M · 方案 {neg.offersMade}/{MAX_OFFERS_PER_BOSS}
-          {neg.stalemateRounds > 0 && <b className="red"> · 再一轮无人行动将流局</b>}
-          {neg.stalemateRounds === 0 && state.phase === 'NEGOTIATION' && !tableCanComplete(state) && <b className="muted"> · 缺代表：全员跳过一轮即流局</b>}
+          {neg.stalemateRounds > 0 && <b className="red"> · 再一轮无实质进展将流局</b>}
+          {neg.stalemateRounds === 0 && state.phase === 'NEGOTIATION' && !tableCanComplete(state) && <b className="muted"> · 缺代表：全员一轮无实质进展即流局</b>}
         </span>
       )}
     </div>

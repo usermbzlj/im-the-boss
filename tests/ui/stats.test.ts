@@ -4,6 +4,9 @@ import { computeStats, computeExclusions, perDealGains } from '../../src/ui/stat
 import { rankStandings } from '../../src/ui/standings'
 import { tryBuildRecording, logFitsState } from '../../src/ui/recording'
 import type { DealRecord, GameState } from '../../src/engine/types'
+import { investorRepKey } from '../../src/engine/rules'
+import { checkInvariants } from '../../src/sim/harness'
+import { baseState, clearHand, giveCards, openDealAt, setInvestors, step, toBoss } from '../helpers'
 import { gameOverState } from './fixtures'
 import { playedGame, SAMPLE_GAMES } from './played'
 
@@ -101,11 +104,31 @@ describe('computeStats × 真实对局（对账）', () => {
     }
   })
 
-  it('开了桌规的局有买牌 / 兑换支出，且被逐笔核算到人', () => {
-    const { state, recording } = playedGame(5, 8, 'expansion', true)
-    const stats = computeStats(state, recording)
-    expect(state.bank).toBeGreaterThan(0)
+  it('真实买牌 / 兑换动作产生支出，且逐笔核算到付款人', () => {
+    let state = baseState(4, 8, 'full', true)
+    setInvestors(state, { A: 0, B: 1, C: 2, D: 3 })
+    for (const p of state.players) clearHand(state, p.id)
+    const cards = giveCards(state, 1, [{ type: 'STOP' }, { type: 'BOSS' }])
+    // 先实际成交：$6M 中给 1 号 $4M，供下一回合支付买牌和兑换各 $2M。
+    state = toBoss(openDealAt(state, 1, 0))
+    state = step(state, { type: 'PROPOSE_OFFER', playerId: 0, repKeys: [investorRepKey('A'), investorRepKey('B')], payouts: [{ playerId: 1, amount: 4 }] })
+    state = step(state, { type: 'ACCEPT_OFFER', playerId: 1 })
+    state = step(state, { type: 'CLOSE_DEAL', playerId: 0 })
+    for (const playerId of [1, 2, 3]) state = step(state, { type: 'PASS_CLOSING', playerId })
+    expect(state.players[1].cash).toBe(4)
+    expect(checkInvariants(state)).toBeNull()
+    state = step(state, { type: 'BUY_CARDS', playerId: 1, count: 1 })
+    expect(checkInvariants(state)).toBeNull()
+    state = step(state, { type: 'TRADE_CARDS', playerId: 1, cardIds: cards.map(c => c.id) })
+    expect(checkInvariants(state)).toBeNull()
+    expect(state.events.filter(e => e.kind === 'CARDS_BOUGHT')).toHaveLength(1)
+    expect(state.events.filter(e => e.kind === 'CARDS_TRADED')).toHaveLength(1)
+    const stats = computeStats(state, null)
+    expect(state.bank).toBe(4)
+    expect(stats.players[1].spend).toEqual({ buy: 2, trade: 2, total: 4, source: 'events' })
+    expect(stats.players.filter(p => p.playerId !== 1).every(p => p.spend.total === 0)).toBe(true)
     expect(sum(stats.players.map(p => (p.spend.buy ?? 0) + (p.spend.trade ?? 0)))).toBe(state.bank)
+    expect(stats.reconciliation.ok).toBe(true)
     expect(stats.reconciliation.notes.join()).toContain('银行收入')
   })
 })

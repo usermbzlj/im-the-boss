@@ -19,6 +19,7 @@ import type { TableStyle } from './tableStyle'
 import { getActingPlayerId, getLegalActions, isLegal } from '../engine/validator'
 import { getGrossValue, offerOwners, hasDemand, playerRelevantFamilies, usedFamiliesOf } from '../engine/rules'
 import { heuristicSpeech } from './heuristic'
+import { actionSpeech } from './speechGuard'
 import type { Policy } from './policy'
 
 /**
@@ -89,6 +90,8 @@ interface ChoiceResponse {
   note?: string
   /** 内心盘算（不公开；保留到动作负载供复盘） */
   thought?: string
+  /** 覆盖字段无法解析时，台词必须随实际候选动作重新生成。 */
+  correctedFields?: boolean
 }
 
 const GENERAL_KEYS = new Set(['*', 'all', 'default', 'other', 'others', 'rest', '其他', '其余', '全部', '默认'])
@@ -121,18 +124,24 @@ export function parseQuotes(demand: unknown, demandFamily?: unknown): Quote[] | 
       }
     }
   }
+  const fromAmount = (amount: unknown, family: unknown) => {
+    // 缺省家族是通用价；显式写错家族不能退化成给所有代表报价。
+    const fam = toFamilyId(family)
+    if (family != null && !fam && !(typeof family === 'string' && GENERAL_KEYS.has(family.trim().toLowerCase()))) return
+    push(fam, toInt(amount))
+  }
   const single = toInt(demand)
-  if (single != null) push(toFamilyId(demandFamily), single)
+  if (single != null) fromAmount(single, demandFamily)
   else if (Array.isArray(demand)) {
     for (const item of demand) {
       if (!item || typeof item !== 'object') continue
       const rec = item as Record<string, unknown>
-      if ('amount' in rec) push(toFamilyId(rec.family ?? rec.familyId), toInt(rec.amount))
+      if ('amount' in rec) fromAmount(rec.amount, rec.family ?? rec.familyId)
       else fromMap(rec)
     }
   } else if (demand && typeof demand === 'object') {
     const rec = demand as Record<string, unknown>
-    if ('amount' in rec) push(toFamilyId(rec.family ?? rec.familyId ?? demandFamily), toInt(rec.amount))
+    if ('amount' in rec) fromAmount(rec.amount, rec.family ?? rec.familyId ?? demandFamily)
     else fromMap(rec)
   }
   return out.length ? out : undefined
@@ -160,14 +169,16 @@ export function extractJsonObject(raw: string): string | null {
 }
 
 function toInt(v: unknown): number | undefined {
+  if (typeof v === 'string' && !v.trim()) return undefined
   const n = typeof v === 'string' ? Number(v) : v
-  return typeof n === 'number' && Number.isFinite(n) ? Math.floor(n) : undefined
+  return typeof n === 'number' && Number.isSafeInteger(n) ? n : undefined
 }
 
 /** 收款人：数字（或数字串）当 ID，其余非空字符串当玩家名 */
 function toPayee(v: unknown): number | string | undefined {
   const n = toInt(v)
   if (n != null) return n
+  if (typeof v === 'number' || (typeof v === 'string' && v.trim() && Number.isFinite(Number(v)))) return undefined
   return typeof v === 'string' && v.trim() ? v.trim() : undefined
 }
 
@@ -178,7 +189,8 @@ export function parseChoiceResponse(raw: string): ChoiceResponse | null {
     const obj = JSON.parse(text)
     const choice = toInt(obj.choice)
     if (choice == null || choice < 1) return null
-    const quotes = parseQuotes(obj.demand ?? obj.quotes ?? obj.counter, obj.demandFamily ?? obj.family)
+    const rawQuotes = obj.demand ?? obj.quotes ?? obj.counter
+    const quotes = parseQuotes(rawQuotes, obj.demandFamily ?? obj.family)
     // 分成条目任一残缺则整组作废：宁可沿用候选方案，也不能把"给某人 $2M"悄悄变成"谁都不给"
     // （空数组同样视为"不覆盖"——"独吞"本身就是一个独立的编号选项）
     const rawPayouts = obj.payouts ?? obj.payout
@@ -190,10 +202,13 @@ export function parseChoiceResponse(raw: string): ChoiceResponse | null {
       }))
       payouts = list.every((p): p is RawPayout => p.playerId != null && p.amount != null) ? list : undefined
     }
-    const cardIds = Array.isArray(obj.cardIds) ? obj.cardIds.map(toInt).filter((n: number | undefined): n is number => n != null) : undefined
+    const rawCardIds = obj.cardIds
+    const ids = Array.isArray(rawCardIds) ? rawCardIds.map(toInt) : undefined
+    const cardIds = ids?.every((n): n is number => n != null) ? ids as number[] : undefined
     const note = typeof obj.note === 'string' && obj.note.trim() ? obj.note.trim() : undefined
     const thought = typeof obj.thought === 'string' && obj.thought.trim() ? obj.thought.trim() : undefined
-    return { choice, speech: typeof obj.speech === 'string' ? obj.speech : undefined, quotes, payouts, cardIds, note, thought }
+    const correctedFields = (rawQuotes != null && !quotes) || (rawPayouts != null && !payouts) || (rawCardIds != null && !cardIds)
+    return { choice, speech: typeof obj.speech === 'string' ? obj.speech : undefined, quotes, payouts, cardIds, note, thought, ...(correctedFields ? { correctedFields: true } : {}) }
   } catch {
     return null
   }
@@ -218,13 +233,13 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
     return kept.length ? kept : undefined
   }
   let action: PlayerAction = structuredClone(option)
+  let corrected = !!parsed.correctedFields
 
   switch (action.type) {
     case 'SPEAK': {
       const quotes = scoped(playerRelevantFamilies(state, action.playerId))
       if (quotes) action.quotes = quotes
-      // 模型没给台词：用该人物的台词库按最终报价说一句，不再显示"…"
-      action.say = speech || heuristicSpeech(state, action) || undefined
+      corrected ||= JSON.stringify(quotes) !== JSON.stringify(parsed.quotes)
       break
     }
     case 'PLAY_CLAN': {
@@ -233,12 +248,14 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
       const fam = state.players[playerId]?.hand.find(c => c.id === cardId)?.familyId
       const q = parsed.quotes?.find(x => x.familyId === fam) ?? parsed.quotes?.find(x => x.familyId == null)
       if (q) action.demand = clamp(q.amount)
+      corrected ||= !!parsed.quotes?.some(x => (x.familyId != null && x.familyId !== fam) || x.amount !== clamp(x.amount))
       break
     }
     case 'DECLINE_OFFER': {
       const neg = state.negotiation
       const quotes = neg?.offer ? scoped(usedFamiliesOf(neg, neg.offer, action.playerId)) : undefined
       if (quotes) action.quotes = quotes
+      corrected ||= JSON.stringify(quotes) !== JSON.stringify(parsed.quotes)
       break
     }
     case 'PROPOSE_OFFER': {
@@ -247,7 +264,9 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
       if (payouts && neg) {
         const candidate = { ...action, payouts: payouts.filter(p => p.playerId !== neg.bossId && p.amount >= 0) }
         if (payoutsPlausible(neg, candidate) && isLegal(state, candidate)) action = candidate
+        corrected ||= JSON.stringify(candidate.payouts) !== JSON.stringify(payouts) || action !== candidate
       }
+      if (parsed.payouts && !payouts) corrected = true
       break
     }
     case 'DISCARD':
@@ -256,13 +275,15 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
       if (parsed.cardIds) {
         const candidate: PlayerAction = { ...action, cardIds: parsed.cardIds }
         if (isLegal(state, candidate)) action = candidate
+        else corrected = true
       }
       break
     }
   }
 
-  if (action.type !== 'SPEAK') action.say = speech || heuristicSpeech(state, action) || undefined
-  if (parsed.note) action.note = [...parsed.note.replace(/\s+/g, ' ')].slice(0, NOTE_MAX_LEN).join('')
+  action.say = actionSpeech(state, action, speech, corrected)
+  // 修正过的承诺不能再通过笔记回流为“我上次定的价”。原始盘算仍保留在 thought 供复盘。
+  if (parsed.note && !corrected) action.note = [...parsed.note.replace(/\s+/g, ' ')].slice(0, NOTE_MAX_LEN).join('')
   if (parsed.thought) action.thought = [...parsed.thought.replace(/\s+/g, ' ')].slice(0, THOUGHT_MAX_LEN * 2).join('')
   return isLegal(state, action) ? action : null
 }

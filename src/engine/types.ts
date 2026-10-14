@@ -78,6 +78,14 @@ export interface InvestorPlacard {
   ownerId: number | null
 }
 
+/** 私人笔记的局面快照；旧存档迁移的笔记没有可确认的作用域，三个字段为 null。 */
+export interface PlayerNote {
+  text: string
+  dealNo: number | null
+  spaceId: number | null
+  phase: GamePhase | null
+}
+
 export interface Player {
   id: number
   name: string
@@ -89,9 +97,10 @@ export interface Player {
   lastSpeech?: string
   /**
    * 私人笔记：电脑玩家自己写给自己的备忘（谁坑过我、谁欠我、下一步打算），
-   * 只回灌到它自己的提示词里，界面与其他玩家都看不到。保留最近若干条。
+   * 只回灌到它自己的提示词里，界面与其他玩家都看不到。保留最近若干条并注明所属交易 / 格子，
+   * 历史笔记不能被当成当前交易的报价或行动计划。
    */
-  notes: string[]
+  notes: PlayerNote[]
   /**
    * 夺回权：最后一位常驻投资者被招募夺走时获得，只需 1 张招募牌即可把该家族的投资者抢回
    * （无论现在在谁手里）。重新拥有任何投资者后失效。
@@ -197,9 +206,9 @@ export interface Negotiation {
   offersMade: number
   /** NEGOTIATION 阶段轮到谁行动。开局从 Boss 左手边起叫价，Boss 在第一轮末位行动 */
   turnId: number
-  /** 连续跳过计数（任何实质行动清零） */
+  /** 连续无进展行动计数（跳过、重复原价与后续纯喊话）；实质行动清零 */
   passStreak: number
-  /** 全员连续跳过的完整轮数，达到上限判僵局流局；任何非跳过的实质行动（喊话 / 出牌 / 提案 / 应答 / 宣布成交）都清零，所以是真正"连续" */
+  /** 连续无进展的完整轮数；首次无报价喊话、真实改价、出牌 / 提案 / 应答 / 成交都清零 */
   stalemateRounds: number
   speeches: Speech[]
   demands: Demand[]
@@ -238,7 +247,7 @@ export interface PendingReaction {
   returnPhase: 'NEGOTIATION' | 'CLOSING' | 'HAND_LIMIT' | 'TURN' | 'AFTER_MOVE'
 }
 
-/** 流局原因：Boss 放弃 / 连续多轮全员跳过 / 桌上凑不齐代表且全员跳过一轮（不必再多等） */
+/** 流局原因：Boss 放弃 / 连续多轮无实质进展 / 桌上凑不齐代表且一轮无进展（不必再多等） */
 export type FailReason = 'ABANDONED' | 'STALEMATE' | 'INCOMPLETE'
 
 /**
@@ -403,7 +412,7 @@ export interface GameState {
 
 interface ActionBase {
   playerId: number
-  /** 随动作说的一句台词（AI 角色扮演 / 人类喊话），任何动作都可附带 */
+  /** 随动作说的一句台词（AI 角色扮演 / 人类喊话）；跳过 / 放行附带的台词不落入事件或最近喊话 */
   say?: string
   /** 电脑玩家随动作写下的私人笔记（不公开），见 Player.notes */
   note?: string

@@ -121,6 +121,27 @@ describe('CashChart', () => {
     expect(container.querySelector('svg')).toBeNull()
     expect(container.textContent).toContain('没有走势')
   })
+
+  it('同笔多个精彩时刻只标一次；重排后复用稳定节点，忽略无效交易编号', () => {
+    const { state, recording } = small()
+    const stats = computeStats(state, recording)
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const props = { series: stats.cashSeries, players: state.players, winnerIds: state.winnerIds }
+      const { container, rerender } = renderAs(<CashChart {...props} markers={[1, 1, 3, 3, 0, -1, 1.5, state.dealHistory.length + 1]} />)
+      const paths = [...container.querySelectorAll('.cc-marker')]
+      expect(paths).toHaveLength(2)
+      expect(paths.map(p => p.textContent)).toEqual(['第 1 次交易有精彩时刻', '第 3 次交易有精彩时刻'])
+      rerender(<CashChart {...props} markers={[3, 1, 1]} />)
+      const reordered = [...container.querySelectorAll('.cc-marker')]
+      expect(reordered).toHaveLength(2)
+      expect(reordered[0]).toBe(paths[1])
+      expect(reordered[1]).toBe(paths[0])
+      expect(error).not.toHaveBeenCalled()
+    } finally {
+      error.mockRestore()
+    }
+  })
 })
 
 describe('ReplayViewer', () => {

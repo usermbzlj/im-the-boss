@@ -21,7 +21,7 @@
 //   · 买牌：自己回合开单前付 1 / 3 / 6 份股价抽 1 / 2 / 3 张，每回合一次，不得超出手牌上限
 //   · 兑换：两张不同种类的牌 + 一份股价 → 2 张招募牌，每回合一次，不可逆（钱付给银行）
 //   · 病假牌：指定一人本回合不能主动出牌（进反应窗口，可被阻止牌取消）
-//   · 桌上凑不齐代表且全员跳过一轮 → 直接流局，不再多等
+//   · 桌上凑不齐代表且一整轮无实质进展 → 直接流局，不再多等
 //
 // 契约：
 //   · reducer 只接受通过 validator.isLegal 的动作；被拒绝的动作原样返回旧状态
@@ -48,7 +48,7 @@ import {
 } from './rules'
 import { isLegal } from './validator'
 
-export const SAVE_VERSION = 10
+export const SAVE_VERSION = 11
 
 export interface StartOptions {
   variantId?: GameVariantId
@@ -148,7 +148,12 @@ function remember(s: GameState, playerId: number, text: string | undefined) {
   const player = getPlayer(s, playerId)
   const clean = (text ?? '').trim().slice(0, NOTE_MAX_LEN)
   if (!player || !clean) return
-  player.notes.push(clean)
+  player.notes.push({
+    text: clean,
+    dealNo: s.negotiation ? s.dealHistory.length + 1 : null,
+    spaceId: s.negotiation?.spaceId ?? s.markerPos,
+    phase: s.phase,
+  })
   if (player.notes.length > MAX_NOTES) player.notes.splice(0, player.notes.length - MAX_NOTES)
 }
 
@@ -158,21 +163,26 @@ function remember(s: GameState, playerId: number, text: string | undefined) {
  * 通用价补到作用域内未单独报价的家族，作用域为空时通用价就是封口费。
  * 同一玩家对不同家族的价互不影响。quiet：只更新承诺、不发事件（同意方案 / 拒绝时用，由调用方自己叙述）。
  */
-function applyQuotes(s: GameState, playerId: number, quotes: Quote[], scope: FamilyId[], quiet = false): ResolvedQuote[] {
+function applyQuotes(s: GameState, playerId: number, quotes: Quote[], scope: FamilyId[], quiet = false): { resolved: ResolvedQuote[]; changed: boolean } {
   const neg = s.negotiation
-  if (!neg) return []
+  if (!neg) return { resolved: [], changed: false }
   const resolved = resolveQuotes(quotes, scope)
+  let changed = false
   for (const { amount, familyIds } of resolved) {
     if (familyIds.length === 0) {
+      if (neg.demands.find(d => d.playerId === playerId && d.familyId == null)?.amount === amount) continue
+      changed = true
       neg.demands = neg.demands.filter(d => !(d.playerId === playerId && d.familyId == null))
       neg.demands.push({ playerId, amount })
     } else {
+      if (familyIds.every(familyId => neg.demands.find(d => d.playerId === playerId && d.familyId === familyId)?.amount === amount)) continue
+      changed = true
       neg.demands = neg.demands.filter(d => !(d.playerId === playerId && d.familyId != null && familyIds.includes(d.familyId)))
       for (const familyId of familyIds) neg.demands.push({ playerId, amount, familyId })
     }
   }
-  if (!quiet && resolved.length > 0) emit(s, { kind: 'DEMAND', playerId, quotes: resolved })
-  return resolved
+  if (!quiet && changed) emit(s, { kind: 'DEMAND', playerId, quotes: resolved })
+  return { resolved, changed }
 }
 
 function markDisruptor(neg: Negotiation, playerId: number) {
@@ -581,6 +591,26 @@ function failDeal(s: GameState, reason: FailReason) {
   endTurn(s, bossId)
 }
 
+/** 跳过与无变化的喊话共同累计；真正的报价变化 / 出牌等才开启新的等待窗口。 */
+function advanceWithoutProgress(s: GameState, playerId: number) {
+  const neg = s.negotiation!
+  neg.passStreak++
+  if (neg.passStreak >= s.players.length) {
+    if (!tableCanComplete(s)) {
+      failDeal(s, 'INCOMPLETE')
+      return
+    }
+    neg.passStreak = 0
+    neg.stalemateRounds++
+    if (neg.stalemateRounds >= MAX_STALEMATE_ROUNDS) {
+      failDeal(s, 'STALEMATE')
+      return
+    }
+    emit(s, { kind: 'STALEMATE_ROUND', rounds: neg.stalemateRounds, max: MAX_STALEMATE_ROUNDS })
+  }
+  neg.turnId = nextPlayerId(s, playerId)
+}
+
 function finishGame(s: GameState) {
   s.phase = 'GAME_OVER'
   const max = Math.max(...s.players.map(p => p.cash))
@@ -606,12 +636,15 @@ function apply(s: GameState, action: PlayerAction) {
   const neg = s.negotiation
   const player = getPlayer(s, action.playerId)!
 
-  // 台词先落地（SPEAK 的主体就是台词；其他动作可附带一句）。
-  // 反应窗口的放行保持沉默：只有持阻止牌者才真正在"决定"，说话会暴露手牌。
-  if (action.type !== 'PASS_REACTION') say(s, player.id, action.say)
+  // 跳过 / 放行保持沉默；需要谈判台词就用有限额的 SPEAK，不能借 PASS 无限喊话。
+  const passing = action.type === 'PASS' || action.type === 'PASS_CLOSING' || action.type === 'PASS_REACTION'
+  if (!passing) say(s, player.id, action.say)
   remember(s, player.id, action.note)
-  // 僵局只数"连续"的全员跳过：除了跳过 / 放行，任何实质行动（喊话 / 出牌 / 提案 / 应答 / 宣布成交…）都把停滞轮数清零
-  if (neg && action.type !== 'PASS' && action.type !== 'PASS_CLOSING' && action.type !== 'PASS_REACTION') neg.stalemateRounds = 0
+  // SPEAK 要在报价落成后判断有无变化；其余合法出牌 / 提案 / 应答等都是实质行动。
+  if (neg && !passing && action.type !== 'SPEAK') {
+    neg.stalemateRounds = 0
+    neg.passStreak = 0
+  }
 
   switch (action.type) {
     case 'PLACE_MARKER':
@@ -765,32 +798,24 @@ function apply(s: GameState, action: PlayerAction) {
       return
     }
 
-    case 'SPEAK':
+    case 'SPEAK': {
+      const firstSpeech = (neg!.speakCounts[player.id] ?? 0) === 0
       neg!.speakCounts[player.id] = (neg!.speakCounts[player.id] ?? 0) + 1
       // 一次说完：每个相关家族各自的出借价；通用价补到没单独报的家族；没有相关代表 → 封口费
-      if (action.quotes?.length) applyQuotes(s, player.id, action.quotes, playerRelevantFamilies(s, player.id))
-      neg!.passStreak = 0
-      neg!.turnId = nextPlayerId(s, player.id)
+      const quoteProgress = action.quotes?.length
+        ? applyQuotes(s, player.id, action.quotes, playerRelevantFamilies(s, player.id)).changed
+        : firstSpeech
+      if (quoteProgress) {
+        neg!.passStreak = 0
+        neg!.stalemateRounds = 0
+        neg!.turnId = nextPlayerId(s, player.id)
+      } else advanceWithoutProgress(s, player.id)
       return
+    }
 
     case 'PASS':
       emit(s, { kind: 'PASSED', playerId: player.id, phase: 'NEGOTIATION' })
-      neg!.passStreak++
-      if (neg!.passStreak >= s.players.length) {
-        // 桌上凑不齐代表、又没人愿意补（全员跳过一轮）：再转几圈也不会有结果，直接流局
-        if (!tableCanComplete(s)) {
-          failDeal(s, 'INCOMPLETE')
-          return
-        }
-        neg!.passStreak = 0
-        neg!.stalemateRounds++
-        if (neg!.stalemateRounds >= MAX_STALEMATE_ROUNDS) {
-          failDeal(s, 'STALEMATE')
-          return
-        }
-        emit(s, { kind: 'STALEMATE_ROUND', rounds: neg!.stalemateRounds, max: MAX_STALEMATE_ROUNDS })
-      }
-      neg!.turnId = nextPlayerId(s, player.id)
+      advanceWithoutProgress(s, player.id)
       return
 
     case 'PROPOSE_OFFER': {
@@ -842,7 +867,7 @@ function apply(s: GameState, action: PlayerAction) {
     case 'DECLINE_OFFER': {
       neg!.offer!.responses[player.id] = 'DECLINED'
       // 反报价是对"方案里用到的我的代表"（每个）的出借价，可按家族分别给；不是封口费
-      const counters = action.quotes?.length ? applyQuotes(s, player.id, action.quotes, usedFamiliesOf(neg!, neg!.offer!, player.id), true) : []
+      const counters = action.quotes?.length ? applyQuotes(s, player.id, action.quotes, usedFamiliesOf(neg!, neg!.offer!, player.id), true).resolved : []
       emit(s, { kind: 'OFFER_DECLINED', playerId: player.id, counters })
       advanceResponse(s, true)
       return

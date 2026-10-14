@@ -62,7 +62,7 @@ export function promptView(state: GameState): GameState {
   const names = promptNames(state.players)
   return {
     ...state,
-    players: state.players.map(p => ({ ...p, name: names[p.id], notes: p.notes.map(n => sanitizeInline(n, 80)) })),
+    players: state.players.map(p => ({ ...p, name: names[p.id], notes: p.notes.map(n => ({ ...n, text: sanitizeInline(n.text, 80) })) })),
     negotiation: neg ? { ...neg, speeches: neg.speeches.map(s => ({ ...s, text: safeSpeech(s.text) })) } : neg,
   }
 }

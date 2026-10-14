@@ -6,7 +6,7 @@
 //   1. 存档格式 storageFormat（本文件的 STORAGE_FORMAT）——"盒子"的结构：状态放哪、日志怎么分块、开局参数存哪。
 //      只有 utils/storage.ts 关心；STORAGE_MIGRATIONS[n] 把格式 n 的原始 JSON 升到 n+1。
 //   2. 引擎状态版本 saveVersion（engine/gameEngine.ts 的 SAVE_VERSION）——"盒子里的东西"：GameState 的字段。
-//      引擎改了 GameState 结构就把 SAVE_VERSION + 1，同时在 STATE_MIGRATIONS 里补一条"从旧版本升上来"的迁移；
+//      引擎改变 GameState 结构或动作 / 事件语义就把 SAVE_VERSION + 1，同时补一条"从旧版本升上来"的迁移；
 //      读取时按存档里记录的 saveVersion 一级一级往上走，直到等于当前 SAVE_VERSION。
 //
 // 常见的"只加字段补默认值"升级只需要一行：
@@ -53,8 +53,22 @@ export interface StateMigration {
 
 /** key = 来源 saveVersion */
 export const STATE_MIGRATIONS: Record<number, StateMigration> = {
-  // 目前 SAVE_VERSION = MIN_SAVE_VERSION，没有需要补的迁移。
-  // 引擎把 SAVE_VERSION 升到 11 时，在这里加：  10: { migrate: addFields({ ... }) },
+  // 10 → 11：无进展喊话参与僵局计数，跳过台词不再发事件；旧动作日志无法在新引擎等价重放。
+  10: {
+    migrate: state => {
+      for (const p of state.players as Raw[]) {
+        const notes = Array.isArray(p.notes) ? p.notes : []
+        p.notes = notes.map(note => typeof note === 'string'
+          ? { text: note, dealNo: null, spaceId: null, phase: null }
+          : note)
+        delete p.lastSpeech
+      }
+      // v10 的 speeches 混有无限额的 PASS 台词，无法可靠区分来源；保留历史事件供查看，清空当前喊话上下文。
+      const neg = state.negotiation as Raw | null
+      if (neg) neg.speeches = []
+      return state
+    },
+  },
 }
 
 /** 给 GameState 顶层补默认值（已有的字段不覆盖）。默认值每次深拷贝，避免存档之间共享引用 */

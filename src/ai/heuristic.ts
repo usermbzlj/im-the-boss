@@ -28,6 +28,7 @@ import { stateRand as rand } from './stateRand'
 import { pickLine, type Situation, type LineVars } from './lines'
 import { relationsOf, type Relation } from './relations'
 import { STYLE_PARAMS, type StyleParams, type TableStyle } from './tableStyle'
+import { currentDealEvents } from './negotiationProgress'
 
 /** 人物的行为骨架（参数与人设在 personas.ts；平衡目标：各人物胜率相近、风格不同但都能赢） */
 function persona(state: GameState, id: number): PersonaParams {
@@ -166,7 +167,9 @@ function placeMarker(state: GameState, id: number, legal: PlayerAction[]): Playe
     // 格子的分量：分红份数 + 地标未来租金折算成份数（别把能独立凑齐的地标送给起始玩家）
     const weight = space.dividends + landmarkRentEstimate(state, space) / 2
     const mine = canCompleteAlone(state, id, space) ? weight : 0
-    const theirs = canCompleteAlone(state, starter, space) ? weight : 0
+    // 对手的家族卡属于秘密手牌；只以其公开投资者评估起始玩家。
+    const publicFamilies = new Set(state.investors.filter(inv => inv.ownerId === starter).map(inv => inv.familyId))
+    const theirs = space.groups.every(g => g.families.filter(f => publicFamilies.has(f)).length >= g.need) ? weight : 0
     const score = mine * 2 - theirs * 3 - weight * 0.1 + rand(state, space.id) * 0.5
     if (score > bestScore) { bestScore = score; best = a }
   }
@@ -199,14 +202,16 @@ function wantsToOpen(state: GameState, id: number, afterMove: boolean): boolean 
   const hand = getPlayer(state, id)!.hand.length
   const est = estimateDeal(state, id, space)
   if (!est.feasible) return false
-  const expectedProfit = value - est.buyCount * share * 1.2
+  const expectedProfit = value - est.buyCount * share
   const end = endChance(state)
   const leader = leaderIds(state).includes(id)
   // 终局：领先者只要有得赚就想开单（成交后掷骰可能直接赢）
-  const minProfit = leader && end > 0 ? 1 : Math.max(4, gross * 0.3)
+  // 早期的小盘子也能养现金：以人物走人底线定门槛，不再把所有薄利单一律挡在 $4M 外。
+  const p = persona(state, id)
+  const minProfit = leader && end > 0 ? 1 : Math.max(1, Math.round(gross * p.floor * ctx.style.keep))
   if (afterMove && hand <= 4 && expectedProfit < value * 0.6 && !(leader && end > 0)) return false // 手牌太少先补牌
   if (est.buyCount === 0) return true
-  return expectedProfit >= minProfit && rand(state, 7) < 0.85
+  return expectedProfit >= minProfit && rand(state, 7) < clamp(0.7 + 0.2 * p.flex * ctx.style.flex, 0.7, 0.95)
 }
 
 function handLimit(state: GameState, id: number, legal: PlayerAction[]): PlayerAction {
@@ -443,13 +448,25 @@ function bossTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerAc
     if (a.type !== 'PLAY_CLAN') continue
     const f = cardFamily(state, id, a.cardId)
     if (f && clanSavings(state, id, f) >= Math.max(1, Math.round(share * 0.75))) {
-      return { ...a, say: L(state, id, 'open_solo', { fam: FAMILIES[f].name }, 47) }
+      return { ...a, say: bossClanLine(state, id, f) }
     }
   }
 
+  // 代表已经齐全但买不起时，招募关键投资者或利好扩盘也是有成本的实际出路。
+  const selected = selectReps(state)
+  const recruitment = legal.filter(a => a.type === 'PLAY_RECRUITMENT').map(a => {
+    if (a.type !== 'PLAY_RECRUITMENT') return { action: a, saving: 0 }
+    const rep = selected.repKeys.map(k => findRep(neg, k)).find(r => r?.familyId === a.targetFamilyId && r.ownerId !== id)
+    return { action: a, saving: rep ? repCost(state, rep) : 0 }
+  }).sort((a, b) => b.saving - a.saving)[0]
+  if (recruitment && recruitment.saving >= Math.max(2, Math.round(share * 1.5))) return recruitment.action
+  const currentCost = selected.repKeys.reduce((sum, k) => sum + repCost(state, findRep(neg, k)!), 0)
+  const boom = legal.find(a => a.type === 'PLAY_BOOM')
+  if (boom && currentCost >= gross - bossFloor(gross, st, p)) return boom
+
   if (neg.offersMade >= MAX_OFFERS_PER_BOSS) return { type: 'ABANDON_DEAL', playerId: id }
-  const candidates = buildOfferCandidates(state)
-  if (candidates.length === 0) return { type: 'ABANDON_DEAL', playerId: id }
+  const candidates = buildOfferCandidates(state).filter(c => c.payouts.length > 0 || offerOwners(neg, c).every(o =>
+    (commitmentPrice(neg, c, o) ?? Infinity) <= (c.payouts.find(p => p.playerId === o)?.amount ?? 0)))
 
   // 预测每个方案会不会被接受：有承诺价的付到即成（按所用代表、各家族报价累计）；没报价的按其人物心理价估
   const willAccept = (owner: number, got: number, repKeys: string[]) => {
@@ -465,6 +482,12 @@ function bossTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerAc
     : Math.max(share, Math.round(gross * 0.3))
   // 走人底线：低于它就不再"照单全付"（被唯一代表狮子大开口时拖 / 威胁 / 找替代 / 放弃，而不是认栽）
   const floor = bossFloor(gross, st, p)
+  // 全体要价超过盘子时，仍可提出具体的、每位代表都有收入的预算内还价。
+  // 保留舒服底线与走人底线两档，不能重复拿已被拒绝的同一方案消耗轮次。
+  for (const keep of new Set([Math.max(floor, minKeep), floor])) {
+    const counter = budgetOffer(state, gross - keep)
+    if (counter && !candidates.some(c => sameOffer(c, counter))) candidates.push(counter)
+  }
   // 方案价值 = 我净得 − 终局阶段"送给成交后会压过我的人"的钱（帮对手赢的钱按终局概率加倍算亏）
   // 记仇者不愿把钱送给坑过自己的人
   const me = getPlayer(state, id)!
@@ -488,7 +511,7 @@ function bossTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerAc
     okAll: offerOwners(neg, c).every(o => willAccept(o, c.payouts.find(x => x.playerId === o)?.amount ?? 0, c.repKeys)),
     keep: c.bossKeep,
     value: value(c),
-  }))
+  })).filter(x => x.okAll || !offeredBefore(state, id, x.c))
   const byValue = (a: { value: number }, b: { value: number }) => b.value - a.value
   const acceptable = scored.filter(x => x.okAll && x.keep >= Math.min(minKeep, gross - 1)).sort(byValue)
 
@@ -502,7 +525,8 @@ function bossTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerAc
   }
 
   let choice = acceptable[0]
-    ?? (neg.offersMade === 0 ? scored.sort(byValue).find(x => x.keep >= minKeep) : null)
+    ?? scored.filter(x => x.okAll && x.keep >= floor).sort(byValue)[0]
+    ?? scored.filter(x => x.c.payouts.length > 0 && x.keep >= floor).sort(byValue)[0]
   if (!choice) {
     // 没有舒服的方案：只付到自己的底线为止（旧版"有得赚就照单全付"会被唯一代表按着头要价）
     choice = scored.filter(x => x.okAll && x.keep >= floor).sort(byValue)[0]
@@ -515,6 +539,49 @@ function bossTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerAc
   const sweetened = shareWithFriend(state, id, choice, minKeep, p)
   if (sweetened) return sweetened
   return { type: 'PROPOSE_OFFER', playerId: id, repKeys: choice.c.repKeys, payouts: choice.c.payouts }
+}
+
+function sameOffer(a: Pick<OfferCandidate, 'repKeys' | 'payouts'>, b: Pick<OfferCandidate, 'repKeys' | 'payouts'>): boolean {
+  const signature = (offer: Pick<OfferCandidate, 'repKeys' | 'payouts'>) => JSON.stringify({
+    reps: [...offer.repKeys].sort(),
+    payouts: offer.payouts.filter(p => p.amount > 0).map(p => [p.playerId, p.amount]).sort((x, y) => x[0] - y[0]),
+  })
+  return signature(a) === signature(b)
+}
+
+/** 是否本笔由同一 Boss 提过相同的公开代表组合和分成。 */
+function offeredBefore(state: GameState, id: number, candidate: OfferCandidate): boolean {
+  const neg = state.negotiation!
+  const signature = (refs: { familyId: FamilyId; ownerId: number; source: string }[]) =>
+    refs.map(r => `${r.familyId}:${r.ownerId}:${r.source}`).sort().join('|')
+  const refs = candidate.repKeys.map(k => findRep(neg, k)).filter((r): r is Representative => !!r)
+  return currentDealEvents(state).some(e => e.kind === 'OFFER_PROPOSED' && e.bossId === id &&
+    signature(e.reps) === signature(refs) && sameOffer({ repKeys: [], payouts: e.payouts }, { repKeys: [], payouts: candidate.payouts }))
+}
+
+/** 按公开要价比例分配可用预算，未承诺免费的代表至少 $1M。 */
+function budgetOffer(state: GameState, budget: number): OfferCandidate | null {
+  const neg = state.negotiation!
+  const selected = selectReps(state)
+  if (!selected.complete) return null
+  const owners = offerOwners(neg, selected)
+  if (owners.length === 0) return null
+  const minima = owners.map(o => commitmentPrice(neg, selected, o) === 0 ? 0 : repsUsedOf(neg, selected, o))
+  const minimum = minima.reduce((sum, n) => sum + n, 0)
+  if (budget < minimum) return null
+  const weights = owners.map((o, i) => Math.max(minima[i], commitmentPrice(neg, selected, o) ?? minima[i] * oneShareOf(state)))
+  const total = Math.min(Math.floor(budget), weights.reduce((sum, n) => sum + n, 0))
+  const remainder = total - minimum
+  const excess = weights.map((n, i) => n - minima[i])
+  const excessTotal = excess.reduce((sum, n) => sum + n, 0)
+  const exact = excess.map(n => excessTotal > 0 ? n * remainder / excessTotal : 0)
+  const amounts = exact.map((n, i) => minima[i] + Math.floor(n))
+  let left = total - amounts.reduce((sum, n) => sum + n, 0)
+  const order = exact.map((n, i) => ({ i, fraction: n - Math.floor(n) })).sort((a, b) => b.fraction - a.fraction || a.i - b.i)
+  for (const { i } of order) { if (left-- <= 0) break; amounts[i]++ }
+  const payouts = owners.map((playerId, i) => ({ playerId, amount: amounts[i] }))
+  const candidate: OfferCandidate = { key: 'haggle', repKeys: selected.repKeys, payouts, bossKeep: getGrossValue(state) - total, needsConsent: true }
+  return isLegal(state, { type: 'PROPOSE_OFFER', playerId: neg.bossId, ...candidate }) ? candidate : null
 }
 
 /** Boss 的走人底线：自留低于它就不再照单全付。领先且可能终局时放得很低（只求成交） */
@@ -552,7 +619,7 @@ function shareWithFriend(
 /**
  * 没有谁的价能让我在底线之上成交时的出路（按顺序）：
  *   1. 绕开要价最狠的人，换一组代表（找替代）；
- *   2. 本轮先放话 PASS，让要价的人掂量（每轮一次）；
+ *   2. 至多等一轮，让要价的人掂量；
  *   3. 务实者（flex 高）在最后几次提案里咬牙付；其余人宁可放弃。
  */
 function holdOut(
@@ -586,15 +653,16 @@ function holdOut(
         }, 0)),
       }))
       const action: PlayerAction = { type: 'PROPOSE_OFFER', playerId: id, repKeys: alt.repKeys, payouts }
-      if (gross - payoutTotal(payouts) >= floor && isLegal(state, action)) return action
+      const candidate: OfferCandidate = { key: 'switch', repKeys: alt.repKeys, payouts, bossKeep: gross - payoutTotal(payouts), needsConsent: true }
+      if (candidate.bossKeep >= floor && !offeredBefore(state, id, candidate) && isLegal(state, action)) return action
     }
   }
 
   // 2. 放话：本轮先晾一晾，要价的人自己会掂量（见 otherTurn 的 3c）
   const flex = p.flex * ctx.style.flex
-  const gname = greedy != null ? getPlayer(state, greedy)?.name ?? '' : ''
-  if (neg.stalemateRounds === 0 && neg.passStreak < state.players.length - 1 && rand(state, 151) < clamp(0.85 - 0.5 * flex, 0.25, 0.9)) {
-    return { type: 'PASS', playerId: id, say: L(state, id, 'boss_threat', { name: gname }, 153) }
+  const alreadyPassed = currentDealEvents(state).some(e => e.kind === 'PASSED' && e.phase === 'NEGOTIATION' && e.playerId === id)
+  if (!alreadyPassed && neg.stalemateRounds === 0 && neg.passStreak < state.players.length - 1 && rand(state, 151) < clamp(0.85 - 0.5 * flex, 0.25, 0.9)) {
+    return { type: 'PASS', playerId: id }
   }
 
   // 3. 最后几次提案：务实者咬牙付（自留至少 1），其余人宁可不做
@@ -607,6 +675,15 @@ function holdOut(
 
 function cardFamily(state: GameState, id: number, cardId: number): FamilyId | undefined {
   return getPlayer(state, id)?.hand.find(c => c.id === cardId)?.familyId
+}
+
+/** 只在这张牌入场后有效自有代表真正齐全时，才能说自己独立完成。 */
+function bossClanLine(state: GameState, id: number, f: FamilyId | undefined): string {
+  const space = getCurrentSpace(state)
+  const own = state.negotiation ? playerActiveFamilies(state.negotiation, id) : new Set<FamilyId>()
+  if (f) own.add(f)
+  const complete = !!space && space.groups.every(g => g.families.filter(family => own.has(family)).length >= g.need)
+  return L(state, id, complete ? 'open_solo' : 'clan_self', { fam: f ? FAMILIES[f].name : '这家' }, 47)
 }
 
 /** 该家族所在需求组当前是否还缺人（且该家族尚无有效代表） */
@@ -685,6 +762,21 @@ function disruptChance(state: GameState, id: number, base: number): number {
   const friend = relScore(state, id, neg.bossId)
   if (friend > 0) chance *= 1 - 0.25 * friend
   return chance
+}
+
+/** 本笔 Boss 的等待信号保留到每个人下一次行动，不被中间玩家的 PASS 覆盖。 */
+function bossWaitingSinceMyLastTurn(state: GameState, id: number): boolean {
+  const bossId = state.negotiation!.bossId
+  for (const e of currentDealEvents(state).reverse()) {
+    if (e.kind === 'OFFER_PROPOSED' || e.kind === 'BOSS_RESOLVED') return false
+    if (e.kind === 'PASSED' && e.phase === 'NEGOTIATION') {
+      if (e.playerId === bossId) return true
+      if (e.playerId === id) return false
+    }
+    if ('playerId' in e && e.playerId === id &&
+      ['SPEECH', 'DEMAND', 'CLAN_PLAYED', 'OFFER_ACCEPTED', 'OFFER_DECLINED', 'BOSS_PLAYED', 'TRAVEL_PLAYED', 'RECRUITMENT_PLAYED'].includes(e.kind)) return false
+  }
+  return false
 }
 
 function otherTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerAction {
@@ -773,10 +865,11 @@ function otherTurn(state: GameState, id: number, legal: PlayerAction[]): PlayerA
     }
   }
 
-  // 3c. Boss 嫌价高放了话（刚 PASS 过，且还没人能让他成交）：要价最狠的那位掂量一下，弹性大的肯降价；
+  // 3c. Boss 仍在等待且公开总价妨碍保留一份收益：弹性大的代表持有者考虑降价；
   //     没弹性的人（沈 / 周）宁可让这单流掉也不改口
-  const lastEv = state.events[state.events.length - 1]
-  if (canSpeak && lastEv?.kind === 'PASSED' && lastEv.playerId === neg.bossId && tableCanComplete(state)) {
+  const bossWaited = bossWaitingSinceMyLastTurn(state, id)
+  const selectedCost = selectReps(state).repKeys.reduce((sum, k) => sum + repCost(state, findRep(neg, k)!), 0)
+  if (canSpeak && bossWaited && tableCanComplete(state) && selectedCost > gross - share) {
     const flex = p.flex * ctx.style.flex
     for (const f of relevantMine) {
       const myAsk = repPriceOf(neg, { ownerId: id, familyId: f } as Representative)
@@ -1080,7 +1173,7 @@ export function heuristicSpeech(state: GameState, action: PlayerAction): string 
     case 'PLAY_CLAN': {
       const f = cardFamily(state, id, action.cardId)
       const fam = f ? FAMILIES[f].name : '这家'
-      if (neg && neg.bossId === id) return L(state, id, 'open_solo', { fam })
+      if (neg && neg.bossId === id) return bossClanLine(state, id, f)
       return L(state, id, action.demand != null ? 'clan_fill' : 'undercut', { fam, ask: action.demand })
     }
     case 'SWAP_CARD': return L(state, id, 'swap')
@@ -1101,16 +1194,19 @@ export function heuristicSpeech(state: GameState, action: PlayerAction): string 
       const paid = action.payouts.filter(p => p.amount > 0)
       const owners = offerOwners(neg, action)
       if (owners.length === 0) return L(state, id, 'propose_solo')
-      if (paid.length === 0) return L(state, id, 'propose_favor', { names: owners.map(nameOf).join('、') })
+      if (paid.length === 0) {
+        if (owners.every(o => commitmentPrice(neg, action, o) === 0)) {
+          return L(state, id, 'propose_fair', { parts: owners.map(o => `${nameOf(o)} 按免费承诺 $0M`).join('、') })
+        }
+        return L(state, id, 'propose_favor', { names: owners.map(nameOf).join('、') })
+      }
       const parts = paid.map(p => `${nameOf(p.playerId)} $${p.amount}M`).join('、')
       const lowball = owners.some(o => { const ask = commitmentPrice(neg, action, o); return ask != null && (action.payouts.find(x => x.playerId === o)?.amount ?? 0) < ask })
       if (neg.offersMade === 0 && lowball) return L(state, id, 'haggle', { parts })
       return L(state, id, lowball ? 'propose_low' : 'propose_fair', { parts })
     }
-    case 'PASS':
-      return neg?.bossId === id ? L(state, id, 'wait') : ''
-    case 'PASS_CLOSING':
-      return neg && offerShareOf(neg.offer, id) > 0 && r < 0.4 ? L(state, id, 'closing_paid') : ''
+    case 'PASS': case 'PASS_CLOSING': case 'PASS_REACTION':
+      return ''
     default: return ''
   }
 }

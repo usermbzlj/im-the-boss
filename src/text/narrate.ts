@@ -39,7 +39,7 @@ export const cardTypeName = (type: CardType) =>
 
 /** 流局原因的说法 */
 export const failReasonName = (reason: FailReason) =>
-  reason === 'ABANDONED' ? 'Boss 放弃' : reason === 'INCOMPLETE' ? '缺代表且全员跳过' : '僵局'
+  reason === 'ABANDONED' ? 'Boss 放弃' : reason === 'INCOMPLETE' ? '缺代表且无实质进展' : '僵局'
 
 /** 特殊格名称与一句话效果（STANDARD 返回空串） */
 export const spaceKindName = (kind: SpaceKind) =>
@@ -169,7 +169,7 @@ export function narrate(state: GameState, e: GameEvent): Narration {
     case 'DEMAND':
       return { tone: 'action', text: `${n(e.playerId)} 报价：${describeQuotes(e.quotes)}` }
     case 'STALEMATE_ROUND':
-      return { tone: 'system', text: `全员跳过一轮，谈判停滞（${e.rounds}/${e.max}；若接下来${e.max - e.rounds > 1 ? ` ${e.max - e.rounds} 轮` : '再一轮'}仍无人喊话 / 出牌 / 提案，将流局）` }
+      return { tone: 'system', text: `全员一轮无实质进展，谈判停滞（${e.rounds}/${e.max}；若接下来${e.max - e.rounds > 1 ? ` ${e.max - e.rounds} 轮` : '再一轮'}仍无改价 / 出牌 / 提案等进展，将流局；重复原价或纯喊话也计入）` }
     case 'OFFER_PROPOSED': {
       const reps = e.reps.map(r => `${famName(r.familyId)}←${n(r.ownerId)}${r.source === 'CLAN' ? '(卡)' : ''}`).join('、')
       const auto = e.autoAccepted ?? []
@@ -202,8 +202,8 @@ export function narrate(state: GameState, e: GameEvent): Narration {
     }
     case 'DEAL_FAILED': {
       const why = e.reason === 'ABANDONED' ? `${n(e.bossId)} 主动放弃`
-        : e.reason === 'INCOMPLETE' ? '桌上凑不齐代表，全员跳过一轮，不必再等'
-          : '谈判陷入僵局，连续多轮无人行动'
+        : e.reason === 'INCOMPLETE' ? '桌上凑不齐代表，全员一轮无实质进展'
+          : '谈判陷入僵局，连续多轮无实质进展'
       const lack = e.missing?.length ? `，缺 ${e.missing.map(famName).join('、')} 的代表` : ''
       return { tone: 'fail', text: `#${e.spaceId} 的交易流局（${why}${lack}）。未被打飞的家族卡收回，金钱标记留在原地` }
     }

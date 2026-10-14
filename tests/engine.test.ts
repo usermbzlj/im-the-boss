@@ -707,7 +707,7 @@ describe('流局', () => {
     expect(s.negotiation!.stalemateRounds).toBe(0)
   })
 
-  it('僵局必须"连续"：中间有人喊话就把已停滞的轮数清零，之后得重新连续两轮才流局', () => {
+  it('僵局必须"连续"：首次无报价喊话会把已停滞的轮数清零，之后重新连续两轮才流局', () => {
     let s = baseState(3, 7)
     s = openDealAt(s, 14, 0)
     const passRound = () => { for (let i = 0; i < 3; i++) s = step(s, { type: 'PASS', playerId: getActingPlayerId(s) }) }
@@ -807,7 +807,7 @@ describe('回合与手牌', () => {
     let s = baseState(3, 9)
     s = openDealAt(s, 14, 0)
     for (let i = 0; i < MAX_SPEECHES_PER_PLAYER; i++) {
-      s = step(s, { type: 'SPEAK', playerId: 1, say: `第 ${i + 1} 句` })
+      s = step(s, { type: 'SPEAK', playerId: 1, say: `第 ${i + 1} 句`, quotes: [{ amount: i + 1 }] })
       s = step(s, { type: 'PASS', playerId: 2 })
       s = step(s, { type: 'PASS', playerId: 0 })
     }
@@ -819,20 +819,22 @@ describe('回合与手牌', () => {
 })
 
 describe('台词与事件', () => {
-  it('任何动作附带 say 都会产生 SPEECH 事件并更新座位气泡；反应窗口的放行保持沉默', () => {
+  it('实质动作附带 say 产生 SPEECH 事件；跳过 / 放行保持沉默', () => {
     let s = baseState(4, 10)
     for (let i = 0; i < 4; i++) clearHand(s, i)
     const [travel] = giveCards(s, 1, [{ type: 'TRAVEL' }])
     setInvestors(s, { A: 0, B: 1, C: 2, D: 3 })
     s = openDealAt(s, 1, 0)
     s = step(s, { type: 'PASS', playerId: 1, say: '你们先说。' })
-    expect(s.players[1].lastSpeech).toBe('你们先说。')
-    expect(eventsOf(s, 'SPEECH').at(-1)).toMatchObject({ playerId: 1, text: '你们先说。' })
-    expect(s.negotiation!.speeches.at(-1)).toMatchObject({ playerId: 1, text: '你们先说。' })
+    expect(s.players[1].lastSpeech).toBeUndefined()
+    expect(eventsOf(s, 'SPEECH')).toHaveLength(0)
+    expect(s.negotiation!.speeches).toHaveLength(0)
     s = step(s, { type: 'PASS', playerId: 2 })
     s = step(s, { type: 'PASS', playerId: 3 })
     s = step(s, { type: 'PASS', playerId: 0 })
-    s = step(s, { type: 'PLAY_TRAVEL', playerId: 1, cardId: travel.id, targetRepKey: investorRepKey('A') })
+    s = step(s, { type: 'PLAY_TRAVEL', playerId: 1, cardId: travel.id, targetRepKey: investorRepKey('A'), say: '请 A 出去旅行。' })
+    expect(eventsOf(s, 'SPEECH').at(-1)).toMatchObject({ playerId: 1, text: '请 A 出去旅行。' })
+    expect(s.negotiation!.speeches.at(-1)).toMatchObject({ playerId: 1, text: '请 A 出去旅行。' })
     const before = eventsOf(s, 'SPEECH').length
     s = step(s, { type: 'PASS_REACTION', playerId: 2, say: '我可没阻止牌' })
     expect(eventsOf(s, 'SPEECH')).toHaveLength(before)

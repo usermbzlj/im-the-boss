@@ -12,7 +12,8 @@
 // 每局开始会话调用 status.reset()：清零计数，并在这里固定"本局桌风"（局中改设置，下一局生效）。
 // ============================================================
 
-import { getActingPlayerId, getLegalActions } from '../engine/validator'
+import { getActingPlayerId, getLegalActions, isLegal } from '../engine/validator'
+import type { GameState, PlayerAction } from '../engine/types'
 import type { Policy } from './policy'
 import type { AiStatusSource } from './aiStatus'
 import { AiHealth } from './breaker'
@@ -20,6 +21,7 @@ import { decisionTier } from './decisionTier'
 import { heuristicAction } from './heuristic'
 import { classifyLLMError, isLLMConfigured, loadLLMConfig, recordLLMEvent, type LLMConfig, type TableStyle } from './llmClient'
 import { decideWithLLM } from './llmPolicy'
+import { alreadyWaited, speechChangesQuote } from './negotiationProgress'
 
 export interface AiPolicyOptions {
   getConfig: () => LLMConfig
@@ -54,7 +56,7 @@ export function createAiPolicy(opts: AiPolicyOptions): Policy {
       try {
         const action = await decideWithLLM(state, actingId, legal, config, signal, { style })
         if (signal.aborted) return null
-        if (action) { opts.health?.succeeded(); return action }
+        if (action) { opts.health?.succeeded(); return ensureNegotiationProgress(state, action, h) }
         opts.health?.failed('invalid', '模型的回复不是有效的选项')
       } catch (e) {
         const kind = classifyLLMError(e, signal)
@@ -64,6 +66,18 @@ export function createAiPolicy(opts: AiPolicyOptions): Policy {
       return h
     },
   }
+}
+
+/** 模型可等待一次；重复不改价的喊话/跳过，用合法的实质动作推进或明确放弃。 */
+export function ensureNegotiationProgress(state: GameState, action: PlayerAction, fallback: PlayerAction): PlayerAction {
+  if (state.phase !== 'NEGOTIATION' || !state.negotiation || action.playerId !== fallback.playerId) return action
+  if (action.type !== 'PASS' && action.type !== 'SPEAK') return action
+  if (speechChangesQuote(state, action) || !alreadyWaited(state, action.playerId)) return action
+  if (fallback.type === 'PASS' || (fallback.type === 'SPEAK' && !speechChangesQuote(state, fallback))) {
+    // 已报价且没有任何实际出路的旁观者安静跳过，不重复占用喊话额度。
+    return { type: 'PASS', playerId: action.playerId }
+  }
+  return isLegal(state, fallback) ? fallback : action
 }
 
 function shortMessage(e: unknown): string {

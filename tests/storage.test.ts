@@ -315,7 +315,7 @@ describe('迁移机制', () => {
   })
 
   it('无需迁移 / 太旧 / 来自未来 / 缺迁移步骤 / 结构损坏', () => {
-    const same = migrateState(base())
+    const same = migrateState({ ...base(), saveVersion: SAVE_VERSION })
     expect(same.ok && same.migrated).toBe(false)
     expect(migrateState({ ...base(), saveVersion: 9 })).toEqual({ ok: false, reason: 'too-old' })
     expect(migrateState({ ...base(), saveVersion: SAVE_VERSION + 1 })).toEqual({ ok: false, reason: 'future' })

@@ -14,7 +14,7 @@ import { stateRand, pickBy } from './stateRand'
 
 export type Situation =
   | 'open_solo' | 'open_need'
-  | 'ask_sole' | 'ask_rival' | 'ask_multi' | 'undercut' | 'clan_fill' | 'cut_back' | 'bribe'
+  | 'ask_sole' | 'ask_rival' | 'ask_multi' | 'undercut' | 'clan_fill' | 'clan_self' | 'cut_back' | 'bribe'
   | 'excluded' | 'sidelined'
   | 'travel' | 'clear' | 'boss_play' | 'recruit' | 'reclaim' | 'headhunt' | 'boom' | 'bust' | 'exclusive' | 'sick'
   | 'swap' | 'buy' | 'trade' | 'stop'
@@ -33,7 +33,7 @@ export const CORE_SITUATIONS: readonly Situation[] = [
 
 export const ALL_SITUATIONS: readonly Situation[] = [
   ...CORE_SITUATIONS,
-  'clear', 'recruit', 'reclaim', 'headhunt', 'boom', 'bust', 'exclusive', 'sick', 'swap', 'buy', 'trade', 'closing_paid', 'chat',
+  'clan_self', 'clear', 'recruit', 'reclaim', 'headhunt', 'boom', 'bust', 'exclusive', 'sick', 'swap', 'buy', 'trade', 'closing_paid', 'chat',
 ]
 
 export type LineSet = Record<Situation, readonly string[]>
@@ -54,6 +54,7 @@ const shen: LineSet = {
   ask_multi: ['我的价：{list}。', '这样吧，{list}——各是各的，付到就成。', '{list}。公道价，不改口。', '按规矩，{list}。'],
   undercut: ['{fam}不必找他，我这边{ask}，更合适。', '同是{fam}，我{ask}。您斟酌。', '这样吧，我的{fam}{ask}，比他便宜。'],
   clan_fill: ['{fam}的人我带来了，{ask}，请。', '缺{fam}？这样吧，{ask}，我出面。', '{fam}交给我，{ask}，您放心。'],
+  clan_self: ['这样吧，{fam}由我自己出人。', '我派自家的{fam}代表，诸位请继续谈。'],
   cut_back: ['{fam}这家，我降到{cut}，您再考虑。', '那我让一步，{fam}{cut}，仅此一次。', '这样吧，{cut}，换我的{fam}。'],
   bribe: ['我手里有牌，{ask}，图个安静，如何？', '{ask}。算是我对这桌体面的一点心意。', '这样吧，分我{ask}，各自安好。'],
   excluded: ['方案里没有我，您可想清楚了。', '这样安排，恐怕不太体面。', '没我的份……我记下了。', '诸位这样，我只能另想办法了。'],
@@ -101,6 +102,7 @@ const lu: LineSet = {
   ask_multi: ['{list}。痛快点。', '价在这：{list}，付到就成。', '{list}，不砍。', '报价：{list}。'],
   undercut: ['别找他，我的{fam}才{ask}。', '他贵。我{fam}{ask}，换我。', '{fam}我{ask}，比他便宜，用我。'],
   clan_fill: ['{fam}我有人！{ask}，来不来？', '缺{fam}？我上，{ask}。', '{fam}我顶了，{ask}。'],
+  clan_self: ['{fam}我自己上人，省下这笔。', '这张{fam}我出，其他家接着谈。'],
   cut_back: ['行，{fam}我降到{cut}，够狠了。', '{cut}！{fam}换我，别拖。', '算我让，{fam}{cut}，成不成？'],
   bribe: ['手里有牌，{ask}，买个清净。', '拿{ask}，我不搅。', '{ask}，不给我就闹。'],
   excluded: ['方案里没我？别逼我。', '不带我？行，看你怎么成。', 'Boss，没我这单成不了。', '你这样不行。'],
@@ -148,6 +150,7 @@ const gu: LineSet = {
   ask_multi: ['我的报价：{list}。请记录在案。', '{list}。付到即视为同意，不再另议。', '按条款：{list}。', '{list}。价格公开，付到即可。'],
   undercut: ['如果您选我的{fam}，只需{ask}，比对方低。', '{fam}，{ask}——这是更优的条件。', '对方报价高于我，我的{fam}{ask}。'],
   clan_fill: ['{fam}的缺口我来补，{ask}，立即生效。', '如果缺{fam}，我可以出人：{ask}。', '{fam}由我补位，价格{ask}。'],
+  clan_self: ['{fam}改用我方成员，其他条件继续协商。', '我方派出{fam}代表，请继续商议分成。'],
   cut_back: ['我把{fam}调整为{cut}，仅此一次。', '如果这个价能让方案落地，{fam}可以{cut}。', '{fam}，{cut}。这是我的让步。'],
   bribe: ['我手里有牌，{ask}，换我不动用，如何？', '如果您愿意支付{ask}，我不干预这单。', '{ask}，作为"不干预"的对价。'],
   excluded: ['方案没有我，这与您此前的话不一致。', '您刚才说过会照顾各方，方案里却没有我。', '如果这是最终方案，我保留所有权利。', '没有我的份？那我只好用手里的牌了。'],
@@ -195,6 +198,7 @@ const he: LineSet = {
   ask_multi: ['{list}。这盘子够大，不贵。', '我的价：{list}，上船吧。', '{list}，大家都有肉吃。', '{list}。'],
   undercut: ['别看他，我的{fam}才{ask}，更划算。', '{fam}我给到{ask}，不信去比。', '{ask}，换我，不吃亏。'],
   clan_fill: ['{fam}缺人？我上，{ask}。', '这家我顶，{ask}，上船。', '{fam}我派人，{ask}，成交。'],
+  clan_self: ['{fam}换我自己的人，这笔我来省。', '我派{fam}上船，其他家继续报价。'],
   cut_back: ['{fam}我降到{cut}，上不上船？', '{cut}，我认了，这单我要做。', '给你面子：{fam}{cut}。'],
   bribe: ['{ask}，你们安心做，我不拆台。', '这船我不上，收{ask}，不翻船。', '{ask}，大家都好看。'],
   excluded: ['不带我？这船未必开得动。', '方案里没我，小心沉了。', '哦，我被晾着了——那我自己找乐子。', '没我的份？你们先别急着高兴。'],
@@ -242,6 +246,7 @@ const zhou: LineSet = {
   ask_multi: ['{list}，不多要。', '我的价：{list}，一份就好。', '{list}。慢慢来。', '{list}，付到我就点头。'],
   undercut: ['{fam}，我的价{ask}，更稳当。', '年轻人，别贪，我{fam}才{ask}。', '{ask}，换我，不吃亏。'],
   clan_fill: ['{fam}缺人，我顶上，{ask}。', '这家我来补，{ask}，别急。', '{fam}的人我有，{ask}。'],
+  clan_self: ['{fam}我派自家的人，别急，继续谈。', '这张{fam}我自己出，慢慢把方案凑齐。'],
   cut_back: ['罢了，{fam}{cut}，我退一步。', '{cut}吧，一把年纪，不争了。', '{fam}，{cut}，就这样。'],
   bribe: ['我不插手，{ask}，大家太平。', '{ask}，换我袖手旁观。', '留个安静，{ask}。'],
   excluded: ['年轻人，这个方案撑不住的。', '没我，这单是要出事的。', '这份方案，我先记着。', '别太着急，会有人拦的。'],
@@ -289,6 +294,7 @@ const su: LineSet = {
   ask_multi: ['我的价：{list}，交个朋友。', '{list}，成人之美。', '{list}，价钱都好说。', '{list}，各位赏个脸。'],
   undercut: ['{fam}那边贵了，我这{ask}，更实惠。', '各位老板，我的{fam}{ask}，更有诚意。', '{ask}，换我，大家都省心。'],
   clan_fill: ['{fam}缺人？我来牵线，{ask}。', '{fam}交给我，{ask}，包您满意。', '这家我顶，{ask}，成人之美。'],
+  clan_self: ['各位老板，{fam}我自己派人，接着谈。', '这边{fam}用我的人，其他家再商量。'],
   cut_back: ['{fam}我让到{cut}，给您面子。', '{cut}，{fam}，交个朋友。', '好说好说，{fam}{cut}。'],
   bribe: ['{sur}总，{ask}，我保证不添乱，成人之美嘛。', '没我的份？{ask}，大家太平。', '{ask}，给个脸面，我就不动。'],
   excluded: ['哎，方案里没我，是不是忘了？', '各位老板，没我这单恐怕不稳。', '我被晾着了？可得想清楚。', '做生意，不能把朋友落下。'],
@@ -336,6 +342,7 @@ const cheng: LineSet = {
   ask_multi: ['{list}。', '报价：{list}，已含溢价。', '{list}。成交概率最高的区间。', '我的价：{list}。'],
   undercut: ['{fam}，我报{ask}，比对方低。', '{ask}，更优。', '比他低，{fam}{ask}。'],
   clan_fill: ['{fam}缺位，我补，{ask}。', '{ask}，我补{fam}。', '{fam}，{ask}，立刻入场。'],
+  clan_self: ['{fam}使用自有成员，降低代表成本。', '我派出{fam}，其余席位继续议价。'],
   cut_back: ['{fam}，{cut}。重新算过。', '{cut}，更新报价。', '{fam}调整为{cut}。'],
   bribe: ['{ask}，我不干预。', '收{ask}，保持中立。', '{ask}，成本低于搅局收益。'],
   excluded: ['方案没用我的代表。这是个错误。', '没有我，成交概率下降。', '我记下了，之后会回应。', '这样分配，不是均衡。'],
@@ -383,6 +390,7 @@ const bai: LineSet = {
   ask_multi: ['{list}，deal 就这么定。', '我的价：{list}，别砍。', '{list}。', '{list}，爽快点。'],
   undercut: ['别找他，我的{fam}才{ask}。', '我更便宜，{fam}{ask}。', '{ask}，换我，deal。'],
   clan_fill: ['{fam}我来补，{ask}。', '缺{fam}？我上，{ask}。', '这家交给我，{ask}。'],
+  clan_self: ['{fam}这张我自己出，继续谈！', '我的{fam}上场，其他家报个实在价。'],
   cut_back: ['行，{fam}我降到{cut}，别说我小气。', '{cut}，换我的{fam}，deal？', '好，{fam}{cut}，这单我要。'],
   bribe: ['{ask}，我不闹。', '拿{ask}，我不搅你。', '给我{ask}，我当没看见。'],
   excluded: ['看不起我？这单没我成不了。', '把我晾着？行，我记着。', '没我的份？你们挺勇。', 'Boss，别逼我动手。'],

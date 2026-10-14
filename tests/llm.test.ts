@@ -27,7 +27,8 @@ describe('回复解析', () => {
       .toEqual({ choice: 3, speech: undefined, quotes: [{ amount: 2 }], payouts: [{ playerId: 1, amount: 2 }, { playerId: '钱多多', amount: 1 }], cardIds: undefined, note: undefined })
     expect(parseChoiceResponse('{"choice": 0}')).toBeNull()
     expect(parseChoiceResponse('{"speech": "没选"}')).toBeNull()
-    expect(parseChoiceResponse('{"choice": 1, "cardIds": [3, "4", null, "x"]}')!.cardIds).toEqual([3, 4])
+    expect(parseChoiceResponse('{"choice": 1, "cardIds": [3, "4"]}')!.cardIds).toEqual([3, 4])
+    expect(parseChoiceResponse('{"choice": 1, "cardIds": [3, "4", null, "x"]}')!.cardIds).toBeUndefined()
   })
 
   it('分成条目任一残缺 → 整组作废，而不是悄悄丢掉那一条', () => {
@@ -45,7 +46,7 @@ describe('落成动作', () => {
     return s
   }
 
-  it('序号越界 / 解析失败 → null；合法序号 → 对应动作并附台词', () => {
+  it('序号越界 / 解析失败 → null；合法跳过保持沉默', () => {
     const s = bossTurn()
     const legal = getLegalActions(s, 0)
     expect(resolveChoice('胡言乱语', legal, s)).toBeNull()
@@ -53,7 +54,7 @@ describe('落成动作', () => {
     const idx = legal.findIndex(a => a.type === 'PASS')
     const a = resolveChoice(`{"choice": ${idx + 1}, "speech": "  你们先谈  "}`, legal, s)!
     expect(a.type).toBe('PASS')
-    expect(a.say).toBe('你们先谈')
+    expect(a.say).toBeUndefined()
   })
 
   it('SPEAK 可附带要价（被夹到 [0, 总额]），无内容时用默认台词', () => {
@@ -66,7 +67,8 @@ describe('落成动作', () => {
     expect(a.say!.length).toBeGreaterThan(0)
     const b = resolveChoice(`{"choice": ${idx + 1}, "demand": -5, "speech": "${'长'.repeat(200)}"}`, legal, s)!
     expect(b.type === 'SPEAK' && b.quotes).toEqual([{ amount: 0 }])
-    expect(b.say!.length).toBe(SPEECH_MAX_LEN) // 提示词承诺 ≤60，代码按同一个常量截断
+    expect(b.say!.length).toBeLessThanOrEqual(SPEECH_MAX_LEN)
+    expect(b.say).not.toContain('长') // 报价夹取后用实际动作台词，不保留原承诺
   })
 
   it('没给台词时不显示占位符"…"：用该人物的台词库，且与最终报价一致', () => {
@@ -305,14 +307,14 @@ describe('提示词与策略', () => {
     const idx = legal.findIndex(a => a.type === 'PASS')
     const a = resolveChoice(`{"choice": ${idx + 1}, "thought": "先看看 Boss 出多少", "speech": "各位先请。", "note": "  Boss 是 0 号，上局压过我的价，这局不主动让  "}`, legal, s)!
     expect(a.note).toBe('Boss 是 0 号，上局压过我的价，这局不主动让')
-    expect(a.say).toBe('各位先请。')
+    expect(a.say).toBeUndefined()
     expect(a.thought).toBe('先看看 Boss 出多少') // 内心盘算保留在动作负载里供复盘（不进事件、不影响规则）
     expect(resolveChoice(`{"choice": ${idx + 1}, "note": "${'记'.repeat(100)}"}`, legal, s)!.note).toHaveLength(NOTE_MAX_LEN)
-    s.players[1].notes = Array.from({ length: 8 }, (_, i) => `旧${i}`) // 已满 8 条
+    s.players[1].notes = Array.from({ length: 8 }, (_, i) => ({ text: `旧${i}`, dealNo: null, spaceId: null, phase: null })) // 已满 8 条
     s = step(s, a)
     expect(s.players[1].notes).toHaveLength(8) // 上限 8 条：挤掉最旧的
-    expect(s.players[1].notes[0]).toBe('旧1')
-    expect(s.players[1].notes.at(-1)).toBe('Boss 是 0 号，上局压过我的价，这局不主动让')
+    expect(s.players[1].notes[0].text).toBe('旧1')
+    expect(s.players[1].notes.at(-1)).toMatchObject({ text: 'Boss 是 0 号，上局压过我的价，这局不主动让', dealNo: 1, spaceId: 1, phase: 'NEGOTIATION' })
     expect(s.events.some(e => JSON.stringify(e).includes('上局压过我的价'))).toBe(false)
     expect(s.events.some(e => JSON.stringify(e).includes('先看看 Boss 出多少'))).toBe(false)
     expect(s.negotiation!.speeches.some(sp => sp.text.includes('上局压过我的价'))).toBe(false)
@@ -326,7 +328,7 @@ describe('提示词与策略', () => {
 
     // 引擎对笔记的硬上限 80 字；空白笔记不记（LLM 路径按提示词承诺的 NOTE_MAX_LEN 先截断，见 resolveChoice）
     s = step(s, { type: 'PASS', playerId: 1, note: '长'.repeat(100) })
-    expect(s.players[1].notes.at(-1)).toHaveLength(80)
+    expect(s.players[1].notes.at(-1)!.text).toHaveLength(80)
     s = step(s, { type: 'PASS', playerId: 2, note: '   ' })
     expect(s.players[2].notes).toHaveLength(0)
   })

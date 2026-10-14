@@ -46,6 +46,8 @@ export default function CashChart({ series, players, winnerIds, cursorDeal, mark
   const y = (v: number) => M.t + (1 - (v - minCash) / (maxCash - minCash)) * (H - M.t - M.b)
   const ticks = [0, 1, 2, 3, 4].map(k => minCash + ((maxCash - minCash) * k) / 4)
   const xTickEvery = last > 24 ? 5 : last > 12 ? 2 : 1
+  // 同一笔交易可以有多个精彩时刻，横轴只标一次，交易编号也是稳定的元素标识。
+  const markedDeals = [...new Set(markers ?? [])].filter(dealNo => Number.isInteger(dealNo) && dealNo >= 1 && dealNo <= last)
 
   return (
     <figure className="cash-chart">
@@ -77,7 +79,7 @@ export default function CashChart({ series, players, winnerIds, cursorDeal, mark
             </g>
           )
         })}
-        {markers?.map(dealNo => dealNo >= 1 && dealNo <= last && (
+        {markedDeals.map(dealNo => (
           <path key={`m${dealNo}`} className="cc-marker" d={`M${x(dealNo)},${H - M.b - 2} l4,-5 l-4,-5 l-4,5 z`}>
             <title>{`第 ${dealNo} 次交易有精彩时刻`}</title>
           </path>
