@@ -48,6 +48,18 @@ npm run build        # 类型检查 + 产物构建（dist/）
 
 面板底部可查看最近 20 条调用日志（用途 / 耗时 / 请求与响应预览）。
 
+## 发布到 Cloudflare Workers
+
+目标站点：[im-the-boss.usermbzlj.workers.dev](https://im-the-boss.usermbzlj.workers.dev/)。`wrangler.jsonc` 固定目标账户与 Worker，只发布 `dist/` 中的静态资源。
+
+```bash
+npx --yes wrangler@4.150.0 login --scopes account:read user:read workers_scripts:write
+npm run build
+npx --yes wrangler@4.150.0 deploy --keep-vars --no-autoconfig
+```
+
+已登录时无需重复登录。`--keep-vars` 保留控制台设置的变量；认证凭据不放入项目或构建目录，`.wrangler/` 本地缓存已忽略。
+
 ## 文档
 
 | 文档 | 内容 |

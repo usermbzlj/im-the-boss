@@ -1,0 +1,9 @@
+{
+  "name": "im-the-boss",
+  "account_id": "af0b6b42c8e0672f72860ada4e2fffd2",
+  "compatibility_date": "2026-05-15",
+  "workers_dev": true,
+  "assets": {
+    "directory": "./dist"
+  }
+}
