@@ -48,7 +48,7 @@ import {
 } from './rules'
 import { isLegal } from './validator'
 
-export const SAVE_VERSION = 11
+export const SAVE_VERSION = 12
 
 export interface StartOptions {
   variantId?: GameVariantId
@@ -165,7 +165,8 @@ function remember(s: GameState, playerId: number, text: string | undefined) {
  */
 function applyQuotes(s: GameState, playerId: number, quotes: Quote[], scope: FamilyId[], quiet = false): { resolved: ResolvedQuote[]; changed: boolean } {
   const neg = s.negotiation
-  if (!neg) return { resolved: [], changed: false }
+  // Boss 的收入是总额减分成的余额，不向自己的交易报出借价或封口费。
+  if (!neg || neg.bossId === playerId) return { resolved: [], changed: false }
   const resolved = resolveQuotes(quotes, scope)
   let changed = false
   for (const { amount, familyIds } of resolved) {
@@ -370,6 +371,8 @@ function resolveReaction(s: GameState) {
   } else if (pr.kind === 'BOSS' && neg) {
     const previous = neg.bossId
     neg.bossId = pr.actorId
+    // 从出借代表 / 不搅局者变为组织交易的 Boss，旧角色的承诺价失效；其他人的价继续有效。
+    neg.demands = neg.demands.filter(d => d.playerId !== pr.actorId)
     neg.offer = null
     neg.offersMade = 0
     neg.stalemateRounds = 0

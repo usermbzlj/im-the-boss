@@ -21,7 +21,7 @@ import { decisionTier } from './decisionTier'
 import { heuristicAction } from './heuristic'
 import { classifyLLMError, isLLMConfigured, loadLLMConfig, recordLLMEvent, type LLMConfig, type TableStyle } from './llmClient'
 import { decideWithLLM } from './llmPolicy'
-import { alreadyWaited, speechChangesQuote } from './negotiationProgress'
+import { alreadyWaited, speechAdvancesNegotiation } from './negotiationProgress'
 
 export interface AiPolicyOptions {
   getConfig: () => LLMConfig
@@ -68,12 +68,15 @@ export function createAiPolicy(opts: AiPolicyOptions): Policy {
   }
 }
 
-/** 模型可等待一次；重复不改价的喊话/跳过，用合法的实质动作推进或明确放弃。 */
+/** 模型可等待一次；反复喊价和无关封口费抬价，用合法实质动作或静默跳过收口。 */
 export function ensureNegotiationProgress(state: GameState, action: PlayerAction, fallback: PlayerAction): PlayerAction {
   if (state.phase !== 'NEGOTIATION' || !state.negotiation || action.playerId !== fallback.playerId) return action
+  if (!state.players.find(p => p.id === action.playerId)?.isAI) return action
   if (action.type !== 'PASS' && action.type !== 'SPEAK') return action
-  if (speechChangesQuote(state, action) || !alreadyWaited(state, action.playerId)) return action
-  if (fallback.type === 'PASS' || (fallback.type === 'SPEAK' && !speechChangesQuote(state, fallback))) {
+  if (action.type === 'SPEAK' && action.quotes?.length) {
+    if (speechAdvancesNegotiation(state, action)) return action
+  } else if (!alreadyWaited(state, action.playerId)) return action
+  if (fallback.type === 'PASS' || (fallback.type === 'SPEAK' && !speechAdvancesNegotiation(state, fallback))) {
     // 已报价且没有任何实际出路的旁观者安静跳过，不重复占用喊话额度。
     return { type: 'PASS', playerId: action.playerId }
   }

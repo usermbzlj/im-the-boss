@@ -344,11 +344,13 @@ export function isLegal(state: GameState, action: PlayerAction): boolean {
       return state.phase === 'NEGOTIATION' && !!neg &&
         (neg.speakCounts[action.playerId] ?? 0) < MAX_SPEECHES_PER_PLAYER &&
         typeof action.say === 'string' && action.say.trim().length > 0 &&
-        validQuotes(action.quotes, playerRelevantFamilies(state, action.playerId), getGrossValue(state))
+        validQuotes(action.quotes, playerRelevantFamilies(state, action.playerId), getGrossValue(state)) &&
+        (neg.bossId !== action.playerId || !action.quotes?.length)
     case 'PLAY_CLAN':
       return state.phase === 'NEGOTIATION' &&
         playableClanCards(state, action.playerId).some(c => c.id === action.cardId) &&
-        isValidDemand(state, action.demand)
+        isValidDemand(state, action.demand) &&
+        (neg!.bossId !== action.playerId || action.demand == null)
     case 'PLAY_TRAVEL': {
       if (!neg || (state.phase !== 'NEGOTIATION' && state.phase !== 'CLOSING') || isExclusiveLocked(state)) return false
       const card = player.hand.find(c => c.id === action.cardId)

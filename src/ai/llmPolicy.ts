@@ -234,11 +234,17 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
   }
   let action: PlayerAction = structuredClone(option)
   let corrected = !!parsed.correctedFields
+  const isBoss = state.negotiation?.bossId === action.playerId
+  const acceptsQuotes = action.type === 'DECLINE_OFFER'
+    || (!isBoss && (action.type === 'SPEAK' || action.type === 'PLAY_CLAN'))
+  if (parsed.quotes?.length && !acceptsQuotes) corrected = true
 
   switch (action.type) {
     case 'SPEAK': {
-      const quotes = scoped(playerRelevantFamilies(state, action.playerId))
+      // Boss 在喊话中可以还价，但不能把支付意图落成自己的出借价 / 封口费。
+      const quotes = isBoss ? undefined : scoped(playerRelevantFamilies(state, action.playerId))
       if (quotes) action.quotes = quotes
+      else if (isBoss) delete action.quotes
       corrected ||= JSON.stringify(quotes) !== JSON.stringify(parsed.quotes)
       break
     }
@@ -246,8 +252,9 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
       // 这张卡的家族有单独报价就用它，否则用通用价
       const { playerId, cardId } = action
       const fam = state.players[playerId]?.hand.find(c => c.id === cardId)?.familyId
-      const q = parsed.quotes?.find(x => x.familyId === fam) ?? parsed.quotes?.find(x => x.familyId == null)
+      const q = isBoss ? undefined : parsed.quotes?.find(x => x.familyId === fam) ?? parsed.quotes?.find(x => x.familyId == null)
       if (q) action.demand = clamp(q.amount)
+      else if (isBoss) delete action.demand
       corrected ||= !!parsed.quotes?.some(x => (x.familyId != null && x.familyId !== fam) || x.amount !== clamp(x.amount))
       break
     }
@@ -282,8 +289,10 @@ export function resolveChoice(raw: string, legal: PlayerAction[], state: GameSta
   }
 
   action.say = actionSpeech(state, action, speech, corrected)
-  // 修正过的承诺不能再通过笔记回流为“我上次定的价”。原始盘算仍保留在 thought 供复盘。
-  if (parsed.note && !corrected) action.note = [...parsed.note.replace(/\s+/g, ' ')].slice(0, NOTE_MAX_LEN).join('')
+  // 角色、金额或台词事实被修正时，原笔记也不能再回流为当前承诺；原盘算只留在 thought 供复盘。
+  const speechCorrected = !!speech && action.say !== speech
+    && !['PASS', 'PASS_CLOSING', 'PASS_REACTION', 'ROLL_MOVE', 'DRAW_CARDS', 'ROLL_END'].includes(action.type)
+  if (parsed.note && !corrected && !speechCorrected) action.note = [...parsed.note.replace(/\s+/g, ' ')].slice(0, NOTE_MAX_LEN).join('')
   if (parsed.thought) action.thought = [...parsed.thought.replace(/\s+/g, ' ')].slice(0, THOUGHT_MAX_LEN * 2).join('')
   return isLegal(state, action) ? action : null
 }

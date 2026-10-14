@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GameState, PlayerAction } from '../src/engine/types'
 import { getActingPlayerId, getLegalActions, isLegal } from '../src/engine/validator'
-import { getGrossValue } from '../src/engine/rules'
+import { demandOf, getGrossValue } from '../src/engine/rules'
 import { heuristicAction, heuristicSpeech, estimateDeal } from '../src/ai/heuristic'
 import { decisionTier } from '../src/ai/decisionTier'
 import { createAiPolicy, ensureNegotiationProgress } from '../src/ai/aiPolicy'
 import { DEFAULT_LLM_CONFIG } from '../src/ai/llmClient'
-import { alreadyWaited, currentDealEvents } from '../src/ai/negotiationProgress'
+import { alreadyWaited, currentDealEvents, speechAdvancesNegotiation } from '../src/ai/negotiationProgress'
 import { baseState, clearHand, giveCards, openDealAt, setInvestors, step, toBoss } from './helpers'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -22,6 +22,34 @@ function expensiveDeal(seed = 1): GameState {
   for (const [playerId, familyId, amount] of [[1, 'B', 5], [2, 'C', 4], [3, 'D', 3]] as const) {
     s = step(s, { type: 'SPEAK', playerId, say: `报价 ${amount}`, quotes: [{ familyId, amount }] })
   }
+  return s
+}
+
+/** 用户日志中的 $9M A+B 交易：必要报价合计 $10M，3号只有无关投资者和 $2M 封口费。 */
+function fivePlayerSqueeze(): GameState {
+  let s = baseState(5, 41)
+  for (const p of s.players) clearHand(s, p.id)
+  setInvestors(s, { A: 1, B: 2, C: 3, D: 4, E: 4, F: 4 })
+  s.dealTileIndex = s.dealTiles.findIndex(t => t.shareValue === 3)
+  s.players[0].personaId = 'gu'
+  s.players[1].personaId = 'su'
+  s.players[2].isAI = false
+  s.players[3].personaId = 'cheng'
+  s = openDealAt(s, 1, 0)
+  s = step(s, { type: 'SPEAK', playerId: 1, say: '六百万', quotes: [{ familyId: 'A', amount: 6 }] })
+  s = step(s, { type: 'SPEAK', playerId: 2, say: '四百万', quotes: [{ familyId: 'B', amount: 4 }] })
+  s = step(s, { type: 'SPEAK', playerId: 3, say: '封口费两百万', quotes: [{ amount: 2 }] })
+  return toBoss(s)
+}
+
+function passTo(s: GameState, target: number): GameState {
+  let count = 0
+  while (s.phase === 'NEGOTIATION' && getActingPlayerId(s) !== target) {
+    s = step(s, { type: 'PASS', playerId: getActingPlayerId(s) })
+    if (++count > s.players.length) throw new Error('行动轮没有抵达目标')
+  }
+  expect(s.phase).toBe('NEGOTIATION')
+  expect(getActingPlayerId(s)).toBe(target)
   return s
 }
 
@@ -204,6 +232,138 @@ describe('交易入口与信息边界', () => {
 })
 
 describe('模型的重复空转保护', () => {
+  it('自己的首次报价消耗一次谈判机会，DEMAND 不立即清空等待判断', () => {
+    const s = fivePlayerSqueeze()
+    const ownPrice = s.events.findIndex(e => e.kind === 'DEMAND' && e.playerId === 1)
+    expect(alreadyWaited({ ...s, events: s.events.slice(0, ownPrice + 1) }, 1)).toBe(true)
+    expect(alreadyWaited(s, 3)).toBe(true)
+    const first = structuredClone(s)
+    first.events = first.events.filter(e => !('playerId' in e && e.playerId === 3))
+    first.negotiation!.demands = first.negotiation!.demands.filter(d => d.playerId !== 3)
+    const quote: PlayerAction = { type: 'SPEAK', playerId: 3, say: '封口费两百万', quotes: [{ amount: 2 }] }
+    expect(speechAdvancesNegotiation(first, quote)).toBe(true)
+    expect(ensureNegotiationProgress(first, quote, { type: 'PASS', playerId: 3 })).toEqual(quote)
+  })
+
+  it('没有相关代表已有封口费后，2→3 的纯抬价静默跳过，旧存档的 2→3→2 也不再往返', () => {
+    let s = fivePlayerSqueeze()
+    s = passTo(step(s, { type: 'PASS', playerId: 0 }), 3)
+    const raise: PlayerAction = { type: 'SPEAK', playerId: 3, say: '封口费三百万', quotes: [{ amount: 3 }] }
+    const pass: PlayerAction = { type: 'PASS', playerId: 3 }
+    expect(speechAdvancesNegotiation(s, raise)).toBe(false)
+    expect(ensureNegotiationProgress(s, raise, pass)).toEqual(pass)
+    // 引擎保留人类的报价自由：重建旧日志中已经实际报出 3 的状态。
+    s = step(s, raise)
+    s = passTo(s, 3)
+    const back: PlayerAction = { ...raise, say: '仍是两百万', quotes: [{ amount: 2 }] }
+    expect(speechAdvancesNegotiation(s, back)).toBe(false)
+    expect(ensureNegotiationProgress(s, back, pass)).toEqual(pass)
+    expect(demandOf(s.negotiation!, 3)).toBe(3)
+    expect(demandOf(s.negotiation!, 2, 'B')).toBe(4)
+  })
+
+  it('相关代表的未用新价和合理让价可谈，回到这一段已报过的价被抑制', () => {
+    let s = fivePlayerSqueeze()
+    s = step(s, { type: 'PASS', playerId: 0 })
+    const raise: PlayerAction = { type: 'SPEAK', playerId: 1, say: '七百万', quotes: [{ familyId: 'A', amount: 7 }] }
+    expect(speechAdvancesNegotiation(s, raise)).toBe(true)
+    const cut: PlayerAction = { ...raise, say: '五百万', quotes: [{ familyId: 'A', amount: 5 }] }
+    expect(ensureNegotiationProgress(s, cut, { type: 'PASS', playerId: 1 })).toEqual(cut)
+    s = passTo(step(s, cut), 1)
+    const back: PlayerAction = { ...raise, say: '还是六百万', quotes: [{ familyId: 'A', amount: 6 }] }
+    expect(ensureNegotiationProgress(s, back, { type: 'PASS', playerId: 1 })).toEqual({ type: 'PASS', playerId: 1 })
+    expect(demandOf(s.negotiation!, 1, 'A')).toBe(5)
+    expect(demandOf(s.negotiation!, 2, 'B')).toBe(4)
+  })
+
+  it('人类明确报价直接保留，AI进度守卫不替人类更改或放弃报价', () => {
+    let s = fivePlayerSqueeze()
+    s = passTo(step(s, { type: 'PASS', playerId: 0 }), 2)
+    const human: PlayerAction = { type: 'SPEAK', playerId: 2, say: '我的四百万不变', quotes: [{ familyId: 'B', amount: 4 }] }
+    expect(ensureNegotiationProgress(s, human, { type: 'PASS', playerId: 2 })).toEqual(human)
+    expect(isLegal(s, human)).toBe(true)
+  })
+
+  it('新提案和真实换牌重开报价机会，之后再次纯抬封口费仍被抑制', () => {
+    let swapped = passTo(step(fivePlayerSqueeze(), { type: 'PASS', playerId: 0 }), 3)
+    swapped.houseRules = true
+    const [clan] = giveCards(swapped, 3, [{ type: 'CLAN', familyId: 'C' }])
+    swapped = step(swapped, { type: 'SWAP_CARD', playerId: 3, cardId: clan.id, say: '换张票' })
+    const raise: PlayerAction = { type: 'SPEAK', playerId: 3, say: '封口费三百万', quotes: [{ amount: 3 }] }
+    expect(ensureNegotiationProgress(swapped, raise, { type: 'PASS', playerId: 3 })).toEqual(raise)
+    swapped = passTo(step(swapped, raise), 3)
+    const more: PlayerAction = { ...raise, quotes: [{ amount: 4 }] }
+    expect(ensureNegotiationProgress(swapped, more, { type: 'PASS', playerId: 3 })).toEqual({ type: 'PASS', playerId: 3 })
+
+    let proposed = fivePlayerSqueeze()
+    proposed = step(proposed, heuristicAction(proposed)!)
+    while (proposed.phase === 'OFFER_RESPONSE') {
+      const playerId = getActingPlayerId(proposed)
+      proposed = step(proposed, { type: 'DECLINE_OFFER', playerId, quotes: [{ amount: playerId === 1 ? 6 : 4 }] })
+    }
+    proposed = passTo(proposed, 3)
+    expect(speechAdvancesNegotiation(proposed, raise)).toBe(true)
+  })
+
+  it('无关封口费的新价不能重开 Boss 已经使用的等待机会', () => {
+    let s = fivePlayerSqueeze()
+    s = passTo(step(s, { type: 'SPEAK', playerId: 0, say: '各位继续谈' }), 3)
+    s = toBoss(step(s, { type: 'SPEAK', playerId: 3, say: '封口费三百万', quotes: [{ amount: 3 }] }))
+    expect(alreadyWaited(s, 0)).toBe(true)
+    const action = ensureNegotiationProgress(s, { type: 'SPEAK', playerId: 0, say: '再谈谈' }, heuristicAction(s)!)
+    expect(action.type).toBe('PROPOSE_OFFER')
+    if (action.type !== 'PROPOSE_OFFER') throw new Error('需要具体预算内方案')
+    expect(action.payouts.reduce((sum, p) => sum + p.amount, 0)).toBeLessThan(getGrossValue(s))
+    expect(action.payouts.map(p => p.playerId).sort()).toEqual([1, 2])
+    expect(demandOf(s.negotiation!, 2, 'B')).toBe(4)
+  })
+
+  it('已经耗尽提案次数时，重复 Boss 喊话回退为明确放弃', () => {
+    let s = fivePlayerSqueeze()
+    s = toBoss(step(s, { type: 'SPEAK', playerId: 0, say: '再谈谈' }))
+    s.negotiation!.offersMade = 5
+    const action = ensureNegotiationProgress(s, { type: 'SPEAK', playerId: 0, say: '继续等' }, heuristicAction(s)!)
+    expect(action.type).toBe('ABANDON_DEAL')
+    expect(isLegal(s, action)).toBe(true)
+  })
+
+  it('$9M A6+B4 的实际模型路由：Boss 重复 SPEAK/demand 和封口费振荡被收口为提案或静默 PASS', async () => {
+    let s = fivePlayerSqueeze()
+    const bossActions: string[] = []
+    const feeActions: string[] = []
+    let feeCalls = 0
+    const fetcher = vi.fn(async () => {
+      const actor = getActingPlayerId(s)
+      const choice = getLegalActions(s, actor).findIndex(a => a.type === 'SPEAK') + 1
+      expect(choice).toBeGreaterThan(0)
+      const demand = actor === 0 ? 4 : (++feeCalls % 2 ? 3 : 2)
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify({ choice, demand, speech: `封口费${demand}百万`, note: '价格照旧，继续等' }) } }] }), text: async () => '' }
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const policy = createAiPolicy({ getConfig: () => ({ ...DEFAULT_LLM_CONFIG, enabled: true, apiKey: 'k', decisionScope: 'all' }) })
+    let turns = 0
+    while (s.negotiation && turns++ < 70) {
+      const playerId = getActingPlayerId(s)
+      let action: PlayerAction
+      if (s.phase === 'OFFER_RESPONSE') action = { type: 'DECLINE_OFFER', playerId, quotes: [{ amount: playerId === 1 ? 6 : 4 }] }
+      else if (playerId === 0 || playerId === 3) {
+        action = (await policy.decide(s, new AbortController().signal))!
+        if (playerId === 0) bossActions.push(action.type)
+        else feeActions.push(action.type)
+        if (action.type === 'PASS') { expect(action.say).toBeUndefined(); expect(action.note).toBeUndefined() }
+      } else action = { type: 'PASS', playerId }
+      expect(demandOf(s.negotiation!, 2, 'B')).toBe(4)
+      s = step(s, action)
+    }
+    expect(fetcher).toHaveBeenCalled()
+    expect(turns).toBeLessThan(70)
+    expect(bossActions).toContain('PROPOSE_OFFER')
+    expect(feeActions[0]).toBe('PASS')
+    expect(bossActions.at(-1)).toBe('ABANDON_DEAL')
+    expect(s.negotiation).toBeNull()
+    expect(s.players.every(p => p.cash === 0)).toBe(true)
+  })
+
   it('换牌和兑换是公开实质行动，随后首次等待不能被其附带台词误判为空转', () => {
     let swapped = expensiveDeal(9)
     swapped.houseRules = true

@@ -57,9 +57,9 @@ describe('落成动作', () => {
     expect(a.say).toBeUndefined()
   })
 
-  it('SPEAK 可附带要价（被夹到 [0, 总额]），无内容时用默认台词', () => {
-    const s = bossTurn()
-    const legal = getLegalActions(s, 0)
+  it('非Boss SPEAK 可附带要价（被夹到 [0, 总额]），无内容时用默认台词', () => {
+    const s = step(bossTurn(), { type: 'PASS', playerId: 0 })
+    const legal = getLegalActions(s, 1)
     const idx = legal.findIndex(a => a.type === 'SPEAK')
     const a = resolveChoice(`{"choice": ${idx + 1}, "demand": 99}`, legal, s)!
     expect(a.type).toBe('SPEAK')
@@ -72,8 +72,8 @@ describe('落成动作', () => {
   })
 
   it('没给台词时不显示占位符"…"：用该人物的台词库，且与最终报价一致', () => {
-    const s = bossTurn()
-    const legal = getLegalActions(s, 0)
+    const s = step(bossTurn(), { type: 'PASS', playerId: 0 })
+    const legal = getLegalActions(s, 1)
     const idx = legal.findIndex(a => a.type === 'SPEAK')
     const a = resolveChoice(`{"choice": ${idx + 1}, "demand": 3}`, legal, s)!
     expect(a.say).toBeTruthy()

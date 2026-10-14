@@ -192,6 +192,10 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
     }
     case 'SPEAK': {
       if (!neg) break
+      if (neg.bossId === actorId) {
+        notes.push('你就是本笔 Boss：可向其他人还价、说明预算或询问条件，demand 必须填 null；你的代表免费，不能向自己索要出借价或封口费；支付分配必须通过「提出方案」及 payouts 落成')
+        break
+      }
       const mine = playerRelevantFamilies(state, actorId)
       if (mine.length) {
         const current = mine.map(f => `${f}·${famName(f)}${demandOf(neg, actorId, f) != null ? ` $${demandOf(neg, actorId, f)}M` : ' 未报价'}`).join('、')
@@ -449,7 +453,7 @@ function describeNegotiation(state: GameState, playerId: number): string {
   const bribes = neg.demands.filter(d => d.familyId == null && !playerActiveFamilies(neg, d.playerId).size && d.playerId !== neg.bossId)
   const speeches = neg.speeches.filter((s, i, all) => !all.slice(i + 1).some(x => x.playerId === s.playerId && x.text === s.text))
     .slice(-6).map(s => `${name(s.playerId)}: ${s.text}`).join('\n')
-  const myDemands = neg.demands.filter(d => d.playerId === playerId)
+  const myDemands = neg.bossId === playerId ? [] : neg.demands.filter(d => d.playerId === playerId)
   const myAsk = myDemands.length
     ? myDemands.map(d => `${d.familyId ? famName(d.familyId) + ' ' : ''}$${d.amount}M`).join('、')
     : null
@@ -556,9 +560,18 @@ export function buildGameContext(state: GameState, playerId: number): string {
   const hand = player.hand.map(c => `${describeCard(c)}#${c.id}`).join(', ')
   const shareNow = space ? effectiveShareValue(state, space) : (tile?.shareValue ?? 0)
   const shareNote = space && shareNow !== (tile?.shareValue ?? 0) ? `（景气牌 $${tile?.shareValue ?? 0}M${space.kind === 'PREMIUM' ? ' + 抢手' : ''}${state.negotiation?.priceDelta ? ' + 利好/利空' : ''}）` : ''
+  const neg = state.negotiation
+  const role = neg?.bossId === playerId
+    ? `你就是本笔 Boss ${player.name}，不是其他玩家的出借方。demand 必须为 null；可谈支付 / 还价，但正式分配须选择「提出方案」。本笔分成来自交易总额 $${gross}M，不扣你的已有现金；净得是总额减给其他人的分成。你自己的出借价 / 封口费及旧角色计划已失效。`
+    : neg
+      ? `你是非 Boss 玩家，当前 Boss 是 ${state.players[neg.bossId]?.name}。demand 只表示你自己的出借价 / 封口费，不是代别人报价，也不是你给别人的支付金额。`
+      : '尚未开单；成为 Boss 后从交易总额分配，不需要用已有现金购买代表。'
+  const ownFamilies = neg ? [...playerActiveFamilies(neg, playerId)] : state.investors.filter(inv => inv.ownerId === playerId).map(inv => inv.familyId)
 
   return `${rulesSummaryFor(state)}
 【你的身份】${player.name}（ID=${playerId}）
+【你的当前角色】${role}
+【你当前的公开代表】${ownFamilies.map(famLabel).join('、') || '无'}（手中的家族成员牌须打出才入场）
 【局面】阶段=${state.phase} | 已成交 ${state.completedDeals}/${state.dealTiles.length} 笔 | 金钱标记在 #${state.markerPos}
 当前格 #${space?.id ?? '?'}${space ? describeSpaceKind(space) : ''}：${space ? describeGroups(space) : ''} | 股价 $${shareNow}M${shareNote} × ${space?.dividends ?? 0} 份 = $${gross}M | 本笔成交后终局概率 ${getEndProbability(tile)}%
 ${describeDecisionScope(state)}${describeCoverage(state)}${BOARD_PHASES.has(state.phase) ? describeBoard(state) : ''}${describeAssets(state)}【投资者】${investors}

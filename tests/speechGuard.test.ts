@@ -18,6 +18,138 @@ function negotiating(): GameState {
 
 const ask: PlayerAction = { type: 'SPEAK', playerId: 1, quotes: [{ familyId: 'B', amount: 3 }] }
 
+/** Online regression: Gu is Boss, Su owns A, the human owns B; Gu lends neither family. */
+function guBoss(): GameState {
+  const state = baseState(4, 31)
+  state.players[0].name = '顾曼宁'; state.players[0].personaId = 'gu'
+  state.players[1].name = '苏澜'; state.players[1].personaId = 'su'
+  state.players[2].name = '周慕言'; state.players[2].personaId = 'zhou'
+  state.players[3].name = '姚老板'
+  setInvestors(state, { A: 1, B: 3, C: 2 })
+  state.board[0].groups = [{ families: ['A', 'B'], need: 2 }]
+  state.board[0].dividends = 4
+  const opened = openDealAt(state, 1, 0)
+  opened.negotiation!.demands.push({ playerId: 3, familyId: 'B', amount: 4 })
+  return opened
+}
+
+describe('speaker role and representative ownership', () => {
+  const bossSpeech: PlayerAction = { type: 'SPEAK', playerId: 0 }
+  const loan: PlayerAction = { type: 'SPEAK', playerId: 1, quotes: [{ familyId: 'A', amount: 4 }] }
+
+  it('a Boss cannot charge their own noninterference fee, even if an old invalid demand matches', () => {
+    const state = guBoss()
+    state.negotiation!.demands.push({ playerId: 0, amount: 4 })
+    for (const line of ['$4M，作为不干预的对价。', '四百万，换我不插手。', '给我四百万，我不干预这单。', '我的封口费：$4M。']) {
+      const result = actionSpeech(state, bossSpeech, line)
+      expect(result).toBeTruthy()
+      expect(result).not.toBe(line)
+      expect(result).not.toMatch(/封口费|不干预|不插手/)
+    }
+  })
+
+  it('keeps legitimate Boss payments, counteroffers, quotes and budget discussion', () => {
+    const state = guBoss()
+    const lines = [
+      '姚老板,赤岩集团我按$4M付到即可;苏澜,星桥的$6M不能少,价合理我就成交',
+      '姚老板：赤岩集团我愿意付三百万，能否让一步？',
+      '赤岩集团 $3M，星桥资本 $3M，我保留 $2M，总额 $8M。',
+      '周慕言，给你两百万，作为你不干预的对价。',
+      '周慕言说四百万换不干预，我建议两百万。',
+      '我是顾Boss，这一笔由我主持。',
+      '我不要封口费，先讨论如何凑齐这份方案。',
+      '我保留两百万，不干预你们余下怎么分。',
+    ]
+    for (const line of lines) expect(actionSpeech(state, bossSpeech, line)).toBe(line)
+  })
+
+  it('rejects addressing oneself as the other Boss, including ASCII punctuation and case', () => {
+    const state = guBoss()
+    for (const line of [
+      '顾Boss这单我不吃亏:赤岩集团$4M,照你方才的价,付到就成',
+      '顾Boss这单我不吃亏:赤岩集团$4M,照你刚才的价,付到就成',
+      '顾Boss,我的封口费是四百万。',
+      '顾BOSS：赤岩集团四百万，付到就成。',
+      '苏Boss，先把方案拿出来。',
+      '顾律师，照你方才的价，赤岩集团四百万。',
+    ]) expect(actionSpeech(state, bossSpeech, line)).not.toBe(line)
+    expect(actionSpeech(state, loan, '顾Boss：我的星桥资本四百万。')).toBe('顾Boss：我的星桥资本四百万。')
+    expect(actionSpeech(state, loan, '我是Boss，星桥资本四百万。')).not.toBe('我是Boss，星桥资本四百万。')
+    expect(actionSpeech(state, loan, '如果我是Boss，会重新分这笔钱。')).toBe('如果我是Boss，会重新分这笔钱。')
+  })
+
+  it('uses the resulting role for taking over, while allowing an outgoing Boss to be addressed', () => {
+    const state = guBoss()
+    const action: PlayerAction = { type: 'PLAY_BOSS', playerId: 1, cardId: 999 }
+    const line = '顾Boss，让位，这笔由我接管。我是Boss。'
+    expect(actionSpeech(state, action, line)).toBe(line)
+  })
+
+  it('does not lend another family just because the price matches their prior commitment', () => {
+    const state = guBoss()
+    for (const line of ['赤岩集团 $4M，付到就成。', '赤岩集团:$4M;星桥资本:$4M。', 'B:$4M，A:$4M。', '我的赤岩集团，付到我就同意。', '我代表赤岩集团。']) {
+      const result = actionSpeech(state, loan, line)!
+      expect(result).not.toBe(line)
+      expect(result).toContain('星桥资本')
+      expect(result).not.toContain('赤岩集团')
+    }
+    expect(actionSpeech(state, loan, '星桥资本:$4M，付到即成。')).toBe('星桥资本:$4M，付到即成。')
+  })
+
+  it('keeps explicit references, counteroffers and the speaker’s actual commitment', () => {
+    const state = guBoss()
+    for (const line of [
+      '姚老板的赤岩集团报四百万，我的星桥资本四百万。',
+      '赤岩集团原价四百万，太贵；我的星桥资本四百万。',
+      '赤岩集团我愿意付三百万，能否考虑；星桥资本我报四百万。',
+      'B:$3M，姚老板你能不能降到这个价？A:$4M是我的报价。',
+      '星桥资本旧价三百万，现在我的报价四百万。',
+      '预算：A:$4M,B:$3M,Boss:$1M，总额$8M。',
+    ]) expect(actionSpeech(state, loan, line)).toBe(line)
+    const wrong = '我的星桥资本五百万，按你方才的价。'
+    expect(actionSpeech(state, loan, wrong)).not.toBe(wrong)
+  })
+
+  it('a non-Boss spectator may discuss existing family prices while asking for a genuine bribe', () => {
+    const state = guBoss()
+    const action: PlayerAction = { type: 'SPEAK', playerId: 2, quotes: [{ amount: 1 }] }
+    const line = '赤岩集团四百万，给我一百万，我不插手。'
+    expect(actionSpeech(state, action, line)).toBe(line)
+    expect(actionSpeech(state, action, '我的赤岩集团四百万，付到我就同意。')).not.toBe('我的赤岩集团四百万，付到我就同意。')
+  })
+
+  it('only resolves a surname honorific when it identifies one player', () => {
+    const state = guBoss()
+    state.players[3].name = '顾小明'
+    const ambiguous = '顾Boss：赤岩集团我愿意付三百万，能否考虑？'
+    expect(actionSpeech(state, bossSpeech, ambiguous)).toBe(ambiguous)
+    const namedSelf = '顾曼宁Boss：照你方才的价，赤岩集团四百万。'
+    expect(actionSpeech(state, bossSpeech, namedSelf)).not.toBe(namedSelf)
+    const namedWrong = '顾小明Boss：请你提出方案。'
+    expect(actionSpeech(state, bossSpeech, namedWrong)).not.toBe(namedWrong)
+    const proposed: PlayerAction = { type: 'PROPOSE_OFFER', playerId: 0, repKeys: ['INV:A', 'INV:B'], payouts: [{ playerId: 1, amount: 4 }, { playerId: 3, amount: 2 }] }
+    expect(actionSpeech(state, proposed, '顾总：三百万，你考虑一下。')).toBe('顾总：三百万，你考虑一下。')
+    expect(actionSpeech(state, proposed, '顾小明：三百万，你考虑一下。')).not.toBe('顾小明：三百万，你考虑一下。')
+    expect(actionSpeech(state, proposed, '顾小明：两百万，你考虑一下。')).toBe('顾小明：两百万，你考虑一下。')
+  })
+
+  it('permits accurate disclosure of our unplayed clan card but not lending it as a seated representative', () => {
+    const state = guBoss()
+    for (const player of state.players) clearHand(state, player.id)
+    giveCards(state, 1, [{ type: 'CLAN', familyId: 'C' }])
+    const action: PlayerAction = { type: 'SPEAK', playerId: 1 }
+    for (const line of ['我有银湾基金的成员牌，下一手可以补位。', '我持有银湾基金成员卡，之后可以入场。', '我的银湾基金成员牌还在手里，下一手补位。']) {
+      expect(actionSpeech(state, action, line)).toBe(line)
+    }
+    for (const line of ['我的银湾基金出借四百万，付到即成。', '我代表银湾基金，四百万付到我就同意。', '我有银湾基金的成员牌，银湾基金四百万，付到就成。']) {
+      expect(actionSpeech(state, action, line)).not.toBe(line)
+    }
+    clearHand(state, 1)
+    const invented = '我有银湾基金的成员牌，下一手可以补位。'
+    expect(actionSpeech(state, action, invented)).not.toBe(invented)
+  })
+})
+
 describe('final-action speech facts', () => {
   it.each(['PASS', 'PASS_CLOSING', 'PASS_REACTION', 'ROLL_MOVE', 'DRAW_CARDS', 'ROLL_END'] as const)('%s stays silent even with stale bargaining speech', type => {
     expect(actionSpeech(negotiating(), { type, playerId: 1 }, '银湾四百万，一分不让。')).toBeUndefined()

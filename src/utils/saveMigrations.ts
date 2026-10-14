@@ -69,6 +69,17 @@ export const STATE_MIGRATIONS: Record<number, StateMigration> = {
       return state
     },
   },
+  // 11 → 12：Boss 不再能发布自己的承诺价；成功夺权也会清除新 Boss 的旧角色报价。
+  // 合法动作与夺权后的状态都发生变化，旧日志不能等价重放，但局面本身仍可续玩。
+  11: {
+    migrate: state => {
+      const neg = state.negotiation as Raw | null
+      if (neg && Array.isArray(neg.demands)) {
+        neg.demands = (neg.demands as Raw[]).filter(d => d.playerId !== neg.bossId)
+      }
+      return state
+    },
+  },
 }
 
 /** 给 GameState 顶层补默认值（已有的字段不覆盖）。默认值每次深拷贝，避免存档之间共享引用 */

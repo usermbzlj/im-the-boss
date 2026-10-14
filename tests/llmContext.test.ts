@@ -2,10 +2,89 @@ import { describe, expect, it } from 'vitest'
 import { parseChoiceResponse, parseQuotes, resolveChoice, resolvePayees } from '../src/ai/llmPolicy'
 import { annotateOption, buildDecisionPrompt, buildGameContext, describeCoverage } from '../src/ai/prompts'
 import { getActingPlayerId, getLegalActions } from '../src/engine/validator'
-import { investorRepKey } from '../src/engine/rules'
+import { getGrossValue, investorRepKey } from '../src/engine/rules'
 import { baseState, clearHand, giveCards, openDealAt, setInvestors, step, toBoss } from './helpers'
 
 describe('日志暴露的上下文与协议回归', () => {
+  function nineMillionDeal() {
+    let s = baseState(4, 87)
+    for (let i = 0; i < 4; i++) clearHand(s, i)
+    s.players[0].name = '姚老板'; s.players[1].name = '顾曼宁'
+    s.players[2].name = '苏澜'; s.players[3].name = '程亦舟'
+    setInvestors(s, { A: 2, B: 0, D: 1, F: 3 })
+    s.dealTileIndex = s.dealTiles.findIndex(t => t.shareValue === 3)
+    expect(s.dealTileIndex).toBeGreaterThanOrEqual(0)
+    s = openDealAt(s, 1, 1)
+    expect(getGrossValue(s)).toBe(9)
+    s = step(s, { type: 'SPEAK', playerId: 2, say: '星桥六百万', quotes: [{ familyId: 'A', amount: 6 }] })
+    s = step(s, { type: 'SPEAK', playerId: 3, say: '封口费两百万', quotes: [{ amount: 2 }] })
+    return step(s, { type: 'SPEAK', playerId: 0, say: '赤岩四百万', quotes: [{ familyId: 'B', amount: 4 }] })
+  }
+
+  it('9M交易的Boss喊话不再被注释成索封口费，代表与交易资金归属明确', () => {
+    const s = nineMillionDeal()
+    const prompt = buildDecisionPrompt(s, 1, getLegalActions(s, 1))
+    const speak = prompt.options.find(a => a.type === 'SPEAK')!
+    const annotation = annotateOption(s, 1, speak)
+    expect(annotation).toContain('你就是本笔 Boss')
+    expect(annotation).toContain('demand 必须填 null')
+    expect(annotation).not.toContain('可施压 / 索要封口费')
+    expect(prompt.user).toContain('你就是本笔 Boss 顾曼宁')
+    expect(prompt.user).toContain('不扣你的已有现金')
+    expect(prompt.user).toContain('超出总额 $1M')
+    expect(prompt.system).toContain('只有非 Boss 可以用 demand')
+  })
+
+  it('原始Boss demand=4回复被修成纯喊话，不生成自付封口费或回灌错误笔记', () => {
+    const s = nineMillionDeal()
+    const legal = getLegalActions(s, 1)
+    const choice = legal.findIndex(a => a.type === 'SPEAK') + 1
+    for (const speech of ['$4M，作为不干预的对价。', '顾Boss这单我不吃亏:赤岩集团$4M,照你方才的价,付到就成。']) {
+      const action = resolveChoice(JSON.stringify({ choice, speech, demand: 4, note: '我报4M守住，先不提方案' }), legal, s)!
+      expect(action.type).toBe('SPEAK')
+      expect(action.type === 'SPEAK' && action.quotes).toBeUndefined()
+      expect(action.say).not.toContain('不干预')
+      expect(action.say).not.toContain('顾Boss')
+      expect(action.note).toBeUndefined()
+      const next = step(s, action)
+      expect(next.negotiation!.demands.some(d => d.playerId === 1)).toBe(false)
+      expect(next.players[1].notes).toEqual([])
+    }
+  })
+
+  it('Boss派家族牌时忽略模型自己的出借价，非Boss合法承诺仍正常落成', () => {
+    const s = nineMillionDeal()
+    const [card] = giveCards(s, 1, [{ type: 'CLAN', familyId: 'B' }])
+    const legal = getLegalActions(s, 1)
+    const choice = legal.findIndex(a => a.type === 'PLAY_CLAN' && a.cardId === card.id) + 1
+    expect(choice).toBeGreaterThan(0)
+    const action = resolveChoice(JSON.stringify({ choice, demand: { B: 4 }, speech: '我出赤岩集团，四百万付到就成。', note: '我的赤岩报价4M' }), legal, s)!
+    expect(action.type).toBe('PLAY_CLAN')
+    expect(action.type === 'PLAY_CLAN' && action.demand).toBeUndefined()
+    expect(action.note).toBeUndefined()
+    expect(step(s, action).negotiation!.demands.some(d => d.playerId === 1)).toBe(false)
+    const original = baseState(4, 88)
+    setInvestors(original, { A: 2, B: 0 })
+    const nonBoss = openDealAt(original, 1, 1)
+    const borrower = resolveChoice(JSON.stringify({ choice: 1, demand: { A: 6 }, speech: '我的星桥资本，$6M付到就成。', note: '本笔星桥报价6M' }), [{ type: 'SPEAK', playerId: 2, say: '…' }], nonBoss)!
+    expect(borrower.type === 'SPEAK' && borrower.quotes).toEqual([{ familyId: 'A', amount: 6 }])
+    expect(borrower.note).toBe('本笔星桥报价6M')
+  })
+
+  it('Boss对其他人说支付或还价仍可保留；冒领代表的台词与笔记一并替换', () => {
+    const s = nineMillionDeal()
+    const legal = getLegalActions(s, 1)
+    const choice = legal.findIndex(a => a.type === 'SPEAK') + 1
+    const speech = '姚老板，赤岩集团我按$4M支付；苏澜，星桥资本请降到$3M。'
+    const payment = resolveChoice(JSON.stringify({ choice, speech, demand: null, note: '询问星桥能否降价' }), legal, s)!
+    expect(payment.say).toBe(speech)
+    expect(payment.note).toBe('询问星桥能否降价')
+    const falseClaim = resolveChoice(JSON.stringify({ choice, speech: '顾Boss，赤岩集团我出借，$4M付到就成。', note: '守住我的赤岩4M' }), legal, s)!
+    expect(falseClaim.say).not.toContain('顾Boss')
+    expect(falseClaim.say).not.toContain('我出借')
+    expect(falseClaim.note).toBeUndefined()
+  })
+
   it('编号、玩家ID和金额不静默取整；空报价与显式未知家族不能变成免费或通用报价', () => {
     for (const choice of [1.9, '1.9', '', ' ', Infinity]) {
       expect(parseChoiceResponse(JSON.stringify({ choice }))).toBeNull()

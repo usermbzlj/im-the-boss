@@ -46,7 +46,7 @@
 ### 2.1 单一动作入口
 
 任何输入——人类点击、LLM 决策、启发式兜底、仿真随机——都表示为一个 `PlayerAction`（`types.ts`）。
-每个动作都带 `playerId`，reducer 不做"隐含行动者"推断。任何动作都可附带 `say`（一句台词，公开）与 `note`（电脑玩家的私人笔记，只存入自己的 `notes`、不发事件），`SPEAK` 的主体就是 `say`。
+每个动作都带 `playerId`，reducer 不做"隐含行动者"推断。动作可附带 `say`（一句台词；跳过 / 放行不公开台词）与 `note`（电脑玩家的私人笔记，只存入自己的 `notes`、不发事件），`SPEAK` 的主体就是 `say`。
 
 ### 2.2 合法性只有一个口径
 
@@ -108,7 +108,7 @@ LLM 电脑玩家的不确定性只在"决策"这一步：它的台词（`action.
 
 - `reps: Representative[]` —— 桌上的代表。有主的投资者牌在开局谈判时全部入桌（key `INV:A`，易主时 `ownerId` 变、key 不变）；家族成员牌打出时入桌（key `CLAN:<cardId>`）；招募成功的公共区投资者随即入桌。`travelled` 标记本笔交易失效。
 - `offer` —— 当前方案（`repKeys` + `payouts` + 各持有者的 `responses`）；`offersMade` 为本任 Boss 已提案次数。
-- `turnId / passStreak / stalemateRounds` —— 谈判轮转与僵局计数。`stalemateRounds` 是"全员连续跳过的完整轮数"：除 `PASS / PASS_CLOSING / PASS_REACTION` 外，任何被接受的动作（喊话、出牌、提案、应答、宣布成交……）都把它清零，所以是真正的"连续"。
+- `turnId / passStreak / stalemateRounds` —— 谈判轮转与僵局计数。连续无进展行动包括跳过、重复原价及后续纯喊话；首次无报价喊话、实际改价、出牌、提案、应答与宣布成交清除部分与完整停滞计数。
 - `responseQueue / responseIndex` —— OFFER_RESPONSE 的应答顺序；`closingOrder / closingIndex` —— CLOSING 的询问顺序。
 - `demands: Demand[]` —— 公开报价，**按 (玩家, 家族) 记录**：`familyId` 有值 = 该家族代表每个的出借价；无值 = 通用价（没有相关代表时是封口费，有代表但该家族没单独报价时作兜底）。同一玩家可有多条，各家族互不覆盖。查询用 `rules.demandOf(neg, playerId, familyId?)` / `repPriceOf(neg, rep)` / `commitmentPrice(neg, offer, playerId)`（= 方案中所用其代表各自价之和）。
 - `speeches / speakCounts / disruptors / openerId / travelledInvestors` —— 供界面、AI 与结算使用的谈判记录。老板牌夺权成功后，新 Boss 从 `disruptors` 里移除（他现在是主人，不再算"搅局者"）。
@@ -183,7 +183,7 @@ END_ROLL ──ROLL_END──► 命中 ? GAME_OVER : 下一位 TURN
 
 - 每人每笔交易最多 4 次 `SPEAK`（`MAX_SPEECHES_PER_PLAYER`）。
 - 每任 Boss 最多 5 次 `PROPOSE_OFFER`（`MAX_OFFERS_PER_BOSS`），易主后清零。
-- 全员连续 `PASS` 一整轮记 1 次停滞，连续 2 轮停滞流局（`MAX_STALEMATE_ROUNDS`）；任何非跳过的动作都清零已累计的轮数，所以 `STALEMATE_ROUND` 事件里"再一轮无人行动将流局"的提示是准确的。桌上凑不齐需求时一轮即流局（`INCOMPLETE`）。
+- 连续人数次无进展行动记 1 次停滞，连续 2 轮停滞流局（`MAX_STALEMATE_ROUNDS`）；重复原价或纯喊话不重置停滞，真正改价 / 出牌 / 提案等清零。桌上凑不齐需求时一轮无进展即流局（`INCOMPLETE`）。AI 策略另外抑制报价往返和已有封口费后的无意义抬价，人类合法改价不受该策略限制。
 - 每张影响牌只能打一次，手牌有限；桌规的换牌 / 买牌 / 兑换每回合各一次（`TurnFlags`），且不会凭空造牌（从抽牌堆 / 弃牌堆里找）。
 
 因此任何策略（包括纯随机）下谈判都在有限步内结束；`tests/simulation.test.ts` 与 `npm run simulate` 的 random 模式为此提供回归证据。
@@ -487,7 +487,7 @@ localStorage，前缀 `im-the-boss:save`：
 | 版本号 | 在哪 | 谁管 | 含义 |
 | --- | --- | --- | --- |
 | `storageFormat`（`STORAGE_FORMAT`，当前 2） | `saveMigrations.ts` | 存档层 | "盒子"的结构：状态 / 参数 / 日志怎么放。1 = 旧版（整个 `GameState` 直接放在 `im-the-boss-save`），2 = 现行布局 |
-| `saveVersion`（`SAVE_VERSION`，当前 10） | `engine/gameEngine.ts` | 引擎 | "盒子里的东西"：`GameState` 的字段。引擎改了状态结构就 +1 |
+| `saveVersion`（`SAVE_VERSION`，当前 12） | `engine/gameEngine.ts` | 引擎 | "盒子里的东西"：`GameState` 的字段与动作 / 事件语义。改变后 +1 并补迁移 |
 
 读取流程：读 head（没有则读旧 key，视为 format 1）→ 按 `STORAGE_MIGRATIONS[n]` 逐级升 format → 取出 `state`，按其 `saveVersion` 沿 `STATE_MIGRATIONS[v]` 逐级升到当前 `SAVE_VERSION`（每级后统一设置 `saveVersion`）→ 校验日志 → 若发生过迁移就立刻以新格式回写（旧 key 随之删除）。
 处理规则：损坏 / 太旧（< `MIN_SAVE_VERSION`）/ 缺迁移步骤 → 清掉并返回 null；**来自更新版本**（`storageFormat` 或 `saveVersion` 更大）→ 返回 null 但不删，回退版本不会毁掉新存档。
