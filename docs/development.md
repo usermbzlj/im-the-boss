@@ -12,6 +12,8 @@ Node 18+（需要 `structuredClone`、`AbortSignal.any` 可选）。
 | `npm test` | vitest 全部用例（含整局仿真与 jsdom 组件测试，耗时视机器而定，通常半分钟到一分钟） |
 | `npm run test:watch` | vitest 监听模式 |
 | `npm run simulate [-- N]` | 命令行批量仿真（默认 200 局） |
+| `npm run arena -- N 变体` | 工作区启发式与 `main` 分支启发式混坐对打，比相对胜率（见 `docs/ai.md` §7） |
+| `npm run prompts:eval` | 提示词局面题：离线检查结构；设置 `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` 后真实调用模型 |
 | `npm run check` | typecheck → test → simulate 400，提交前跑一遍 |
 
 ---
@@ -114,7 +116,7 @@ src/sim/         仿真与不变量；被 scripts/ 与 tests/ 共用
 | 改电脑玩家的人物 / 台词 | `prompts/persona-cards.ts`（LLM 角色卡）、`ai/personas.ts`（座位副标题与启发式参数）、`engine/config.ts` 的 `AI_ROSTER`（名字）、`ai/lines.ts`（启发式台词库） |
 | 审查 / 修改 LLM 提示词文案 | 全部静态文案在 `src/prompts/`（总览见该目录 `README.md`）；`npm run prompts:preview` 把几种典型局面下的完整提示词写到 `prompt-preview/`，改完对照着看 |
 | 改启发式策略 | `ai/heuristic.ts`（保持只依赖 `state` 与 `legal`；改完跑仿真看平均步数与流局率） |
-| 改 LLM 提示词结构 | `ai/prompts.ts`（随局面生成的段落）；输出协议在 `ai/llmPolicy.ts`，改协议要同步 `prompts/frame.ts` 的 `USER_FOOTER` 与 `tests/llm.test.ts` |
+| 改 LLM 提示词结构 | `ai/prompts.ts`（随局面生成的段落）；输出协议在 `ai/llmPolicy.ts`，改协议要同步 `prompts/frame.ts` 的 `REPLY_FORMAT`（在 system 末尾）与 `tests/llm.test.ts`；改完跑 `npm run prompts:eval` |
 | 改变 `GameState` 结构 | `gameEngine.ts` 的 `SAVE_VERSION + 1` **并**在 `utils/saveMigrations.ts` 的 `STATE_MIGRATIONS` 补一条从旧版本升上来的迁移（见下"新增存档迁移"）；否则 `tests/storage.test.ts` 会失败 |
 | 新增一种事件 | `types.ts` 的 `GameEvent` 联合 → `gameEngine.ts` `emit`（谈判进行中自动带 `dealNo`；成交 / 流局记入 `dealHistory` 之后再发的要显式传号）→ `text/narrate.ts` 的 `switch`（穷尽检查会提示遗漏）；纯"过程噪音"的事件（如 `PASSED`）在 `narrate` 里标 `minor: true` 并加进 `isMinorEvent`，日志面板默认折叠、提示词的"最近动态"跳过 |
 | 新增一个组件里的"我是谁" / 弹层 | 视角一律 `useViewerId()`（不写死座位号）；弹层关闭用 `useModalDismiss(dirty, onClose)`；组件测试用 `renderAs(ui, viewerId)`（见 2.1） |

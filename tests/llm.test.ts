@@ -259,8 +259,10 @@ describe('提示词与策略', () => {
     expect(user).toContain('【你的身份】')
     expect(user).toContain('【局势摘要】')
     expect(user).not.toContain('默认建议') // 判断留给模型
-    expect(user).toContain('"thought"')
-    expect(user).toContain('"note"')
+    expect(system).toContain('"thought"')
+    expect(system).toContain('"note"')
+    expect(system).toContain('【回复格式】')
+    expect(user).toContain('【此刻要决定】')
     expect(user).not.toContain('【棋盘概览')
     expect(user).not.toContain('阻止牌#') // 3 号的阻止牌不能出现在 0 号的提示词里
     expect(user).toContain('手牌1张')

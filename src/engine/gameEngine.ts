@@ -616,6 +616,7 @@ function advanceWithoutProgress(s: GameState, playerId: number) {
 
 function finishGame(s: GameState) {
   s.phase = 'GAME_OVER'
+  s.turn = emptyTurn() // 终局可能发生在换牌 / 买牌之后的同一回合，回合标记不该留到结算画面
   const max = Math.max(...s.players.map(p => p.cash))
   s.winnerIds = s.players.filter(p => p.cash === max).map(p => p.id)
   emit(s, { kind: 'GAME_OVER', winnerIds: [...s.winnerIds], cash: max })

@@ -2,6 +2,9 @@ node_modules/
 .wrangler/
 dist/
 prompt-preview/
+src/ai/.baseline-heuristic.ts
 *.local
 .DS_Store
 Thumbs.db
+
+arena-out/

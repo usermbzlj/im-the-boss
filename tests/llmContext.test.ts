@@ -26,8 +26,7 @@ describe('日志暴露的上下文与协议回归', () => {
     const prompt = buildDecisionPrompt(s, 1, getLegalActions(s, 1))
     const speak = prompt.options.find(a => a.type === 'SPEAK')!
     const annotation = annotateOption(s, 1, speak)
-    expect(annotation).toContain('你就是本笔 Boss')
-    expect(annotation).toContain('demand 必须填 null')
+    expect(annotation).toContain('Boss 不报价，不填 demand')
     expect(annotation).not.toContain('可施压 / 索要封口费')
     expect(prompt.user).toContain('你就是本笔 Boss 顾曼宁')
     expect(prompt.user).toContain('不扣你的已有现金')

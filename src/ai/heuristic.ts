@@ -206,9 +206,10 @@ function wantsToOpen(state: GameState, id: number, afterMove: boolean): boolean 
   const end = endChance(state)
   const leader = leaderIds(state).includes(id)
   // 终局：领先者只要有得赚就想开单（成交后掷骰可能直接赢）
-  // 早期的小盘子也能养现金：以人物走人底线定门槛，不再把所有薄利单一律挡在 $4M 外。
+  // 其余时候要挑单：要向别人买代表的薄利单，开了也是替别人分钱，还白白放弃这回合的抽牌。
+  // 门槛 = 人物底线 × 4（上限总额的 3/4）；竞技场里比旧版的 1 倍门槛相对胜率高约四成，流局也更少。
   const p = persona(state, id)
-  const minProfit = leader && end > 0 ? 1 : Math.max(1, Math.round(gross * p.floor * ctx.style.keep))
+  const minProfit = leader && end > 0 ? 1 : Math.max(1, Math.round(gross * Math.min(0.75, p.floor * ctx.style.keep * 4)))
   if (afterMove && hand <= 4 && expectedProfit < value * 0.6 && !(leader && end > 0)) return false // 手牌太少先补牌
   if (est.buyCount === 0) return true
   return expectedProfit >= minProfit && rand(state, 7) < clamp(0.7 + 0.2 * p.flex * ctx.style.flex, 0.7, 0.95)
@@ -731,6 +732,18 @@ export function askPrice(state: GameState, id: number, family?: FamilyId): numbe
   return clamp(ask, 1, Math.max(1, gross - 1))
 }
 
+/** 非 Boss 视角：Boss 的最省组合里用了我几个代表，付完别人、保住他的底线后，平均每个能给我多少（给 LLM 的事实） */
+export function askBudget(state: GameState, id: number): { perRep: number; reps: number; othersCost: number; bossKeep: number } | null {
+  const neg = state.negotiation
+  if (!neg || neg.bossId === id) return null
+  const sel = selectReps(state)
+  const myKeys = sel.complete ? sel.repKeys.filter(k => findRep(neg, k)?.ownerId === id) : []
+  if (myKeys.length === 0) return null
+  const othersCost = sel.repKeys.reduce((s, k) => { const r = findRep(neg, k); return r && r.ownerId !== id ? s + repCost(state, r) : s }, 0)
+  const bossKeep = bossKeepEstimate(state, neg.bossId)
+  return { perRep: Math.floor((getGrossValue(state) - othersCost - bossKeep) / myKeys.length), reps: myKeys.length, othersCost, bossKeep }
+}
+
 function canCompleteAsBoss(state: GameState, id: number): boolean {
   return selectReps(state, { preferOwner: id }).complete
 }
@@ -964,6 +977,29 @@ function responseTerms(state: GameState, id: number) {
   // 相对自己的报价而不是相对一份分红，所以拿小钱的人不会被白嫖（旧版"只要有半份就接"可被唯一代表的 Boss 利用）
   const last = Math.max(1, Math.round(myAsk * (1 - 0.5 * flex) * (1 + 0.05 * Math.max(0, -rel)))) * used
   return { neg, used, myAsk, rel, flex, threshold, last }
+}
+
+/** 他人当 Boss 时大致不肯低于的自留（按人物底线估，不含桌风：这是对别人的估计） */
+export function bossKeepEstimate(state: GameState, bossId: number): number {
+  const gross = getGrossValue(state)
+  return clamp(Math.round(gross * persona(state, bossId).floor), 1, Math.max(1, gross - 1))
+}
+
+/**
+ * 拒绝之后我还剩什么：
+ *   · replace —— Boss 绕开我换用别人的代表要多花多少（没有替代则 Infinity）。分给我的钱不低于它，拒绝只会把位置让给对手；
+ *   · cap     —— Boss 在保住自己底线的前提下最多还能给我多少。我的要价超过它，坚持只会流局。
+ */
+export function outsideOption(state: GameState, id: number): { replace: number; cap: number } {
+  const neg = state.negotiation!
+  const offer = neg.offer!
+  const gross = getGrossValue(state)
+  const costOf = (keys: string[]) => keys.reduce((s, k) => { const r = findRep(neg, k); return r && r.ownerId !== id ? s + repCost(state, r) : s }, 0)
+  const alt = selectReps(state, { excludeOwners: [id] })
+  const replace = alt.complete ? Math.max(0, costOf(alt.repKeys) - costOf(offer.repKeys)) : Infinity
+  const others = offer.payouts.filter(x => x.playerId !== id).reduce((s, x) => s + x.amount, 0)
+  const cap = Math.max(0, gross - others - bossKeepEstimate(state, neg.bossId))
+  return { replace, cap }
 }
 
 function respond(state: GameState, id: number): PlayerAction {

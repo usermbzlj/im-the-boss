@@ -10,8 +10,8 @@
 // 静态文案（角色卡、桌风、框架、规则摘要、回复格式）在 src/prompts/；这里是随局面变化的部分。
 // ============================================================
 
-import type { GameState, PlayerAction, FamilyId, SpaceKind } from '../engine/types'
-import { MAX_OFFERS_PER_BOSS, HAND_LIMIT, getVariant, LANDMARK_RENT, BOOM_BONUS, BUST_PENALTY, sickCardCount } from '../engine/config'
+import type { GameState, PlayerAction, FamilyId, SpaceKind, InfluenceCard, Representative } from '../engine/types'
+import { MAX_OFFERS_PER_BOSS, HAND_LIMIT, getVariant, LANDMARK_RENT, BOOM_BONUS, BUST_PENALTY, sickCardCount, createDeckFor } from '../engine/config'
 import {
   getCurrentSpace, getCurrentTile, getGrossValue, getEndProbability, oneShareOf,
   relevantFamilies, isRequiredGroup, demandOf, offerShareOf, offerOwners, findRep, playerActiveFamilies,
@@ -25,8 +25,8 @@ import { canClose } from '../engine/validator'
 import { narrate, isMinorEvent, famLabel, famName, playerName, reactionKindName, spaceKindName, spaceKindEffect } from '../text/narrate'
 import { describeAction, describeCard, describeGroups, describeReactionTarget, describeSpaceKind, describeSpaceKindFull, grossAfterDelta } from '../text/labels'
 import { getPersonaForPlayer } from './personas'
-import { estimateDeal, decisionHints, type DecisionHints } from './heuristic'
-import { buildRulesSummary, ROLE_FRAME, TABLE_TRUTHS, USER_FOOTER } from '../prompts'
+import { estimateDeal, decisionHints, askBudget, outsideOption, bossKeepEstimate, type DecisionHints } from './heuristic'
+import { buildRulesSummary, ROLE_FRAME, TABLE_TRUTHS, USER_FOOTER, REPLY_FORMAT } from '../prompts'
 import { promptView } from './sanitize'
 import { relationsOf } from './relations'
 import { toneOf, type TableStyle } from './tableStyle'
@@ -62,6 +62,8 @@ export function pruneForLLM(state: GameState, actorId: number, legal: PlayerActi
       .map(a => (a as { targetRepKey: string }).targetRepKey))
   const out = legal.filter(a => {
     if (a.type === 'PLAY_TRAVEL' && neg) {
+      // Boss 打飞任何代表都只会减少自己的可选供给（不想用谁，不选他就是了）
+      if (neg.bossId === actorId) return false
       const rep = findRep(neg, a.targetRepKey)
       if (rep?.ownerId === actorId) return false
       const card = state.players[actorId]?.hand.find(c => c.id === a.cardId)
@@ -121,8 +123,13 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
       const f = card?.familyId
       if (!f) break
       if (neg.bossId === actorId) {
-        const paid = selectReps(state).repKeys.map(k => findRep(neg, k)).find(r => r?.familyId === f && r.ownerId !== actorId)
-        notes.push(paid ? `替代 ${playerName(state, paid.ownerId)} 的 ${famName(f)} 代表，省下约 $${repCost(state, paid)}M` : '你自己补上这个家族，不用买别人的')
+        const before = bossPlanCost(state)
+        const fake: Representative = { key: 'CLAN:hypothetical', familyId: f, source: 'CLAN', ownerId: actorId, travelled: false }
+        const after = bossPlanCost({ ...state, negotiation: { ...neg, reps: [...neg.reps, fake] } })
+        if (after == null) notes.push('打出后桌上仍凑不齐，还要别人补位')
+        else if (before == null) notes.push(`补上缺口：打出后最省组合需付别人约 $${after}M，你净得约 $${gross - after}M`)
+        else if (after < before) notes.push(`打出后最省组合需付别人约 $${after}M（现在 $${before}M），你净得从 $${gross - before}M 升到约 $${gross - after}M`)
+        else notes.push('打出后最省组合的花费不变：这张卡现在省不了钱，留着可能更有用')
       } else {
         const rivals = rivalReps(state, actorId, f).filter(r => r.ownerId !== neg.bossId)
         if (activeRepsOfFamily(neg, f).length === 0) notes.push(`${famName(f)} 目前无人代表，你入场即有议价权，附 demand 报价`)
@@ -193,7 +200,7 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
     case 'SPEAK': {
       if (!neg) break
       if (neg.bossId === actorId) {
-        notes.push('你就是本笔 Boss：可向其他人还价、说明预算或询问条件，demand 必须填 null；你的代表免费，不能向自己索要出借价或封口费；支付分配必须通过「提出方案」及 payouts 落成')
+        notes.push('只是说话：真正的支付须用「提出方案」的 payouts 落成')
         break
       }
       const mine = playerRelevantFamilies(state, actorId)
@@ -202,10 +209,8 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
         const example = mine.length > 1 ? `，如 {${mine.map((f, i) => `"${f}":${Math.max(1, share + (i === 0 ? 1 : 0) - i)}`).join(',')}}` : ''
         notes.push(`用 demand 报出每个代表的承诺价（一份分红≈$${share}M；你的代表：${current}）；${mine.length > 1 ? `不同家族可报不同价，用对象按家族字母分别写${example}，填一个数字则全部同价；` : ''}Boss 付到即自动同意`)
       } else notes.push('你没有相关代表：可施压 / 索要封口费（demand 填数字）')
-      if (hints.asks?.length) {
-        const ref = hints.asks.map(x => `${famName(x.familyId)} $${x.amount}M`).join('、')
-        notes.push(`以你的性格，参考报价：${ref}（已算入你的杠杆与竞争）${hints.askFloor ? `；低于 $${hints.askFloor}M 基本等于送钱` : ''}`)
-      }
+      const budget = askBudget(state, actorId)
+      if (budget) notes.push(`Boss 的账：最省组合用你 ${budget.reps} 个代表，付完其他人约 $${budget.othersCost}M、再留给自己约 $${budget.bossKeep}M 后，每个代表约剩 $${Math.max(0, budget.perRep)}M——要得比这多，这单多半谈不成或被换掉`)
       break
     }
     case 'PROPOSE_OFFER': {
@@ -229,16 +234,19 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
     }
     case 'ACCEPT_OFFER':
       notes.push(`你拿 $${myShare}M，并以此为承诺价`)
-      if (hints.accept) notes.push(myShare >= hints.accept.threshold
-        ? `达到你的心理线（合计 $${hints.accept.threshold}M）`
-        : `低于你的心理线（合计 $${hints.accept.threshold}M，每个代表约 $${hints.accept.perRep}M）：以你的性格，更像该拒绝并反报价`)
       break
     case 'DECLINE_OFFER': {
       const left = neg ? MAX_OFFERS_PER_BOSS - neg.offersMade : 0
       const usedFams = neg?.offer ? usedFamiliesOf(neg, neg.offer, actorId) : []
       const perFam = usedFams.length > 1 ? `；方案用了你 ${usedFams.map(f => `${f}·${famName(f)}`).join('、')} 的代表，可按家族分别反报价（对象写法）` : ''
       notes.push(`方案作废；Boss 还剩 ${left} 次提案${left <= 1 ? '（很可能直接放弃，你一分不得）' : ''}；可用 demand 反报价（每个代表，成为新承诺价）${perFam}`)
-      if (hints.accept) notes.push(`以你的性格，心理价每个代表约 $${hints.accept.perRep}M`)
+      if (neg?.offer) {
+        const { replace, cap } = outsideOption(state, actorId)
+        notes.push(Number.isFinite(replace)
+          ? `你的退路：Boss 绕开你换用别人的代表只需多花约 $${replace}M${replace <= myShare ? '——比给你的还便宜，拒绝多半把位置让给对手' : ''}`
+          : '没人能替代你的代表：你有议价权')
+        notes.push(`Boss 留够自己约 $${bossKeepEstimate(state, neg.bossId)}M 后，最多还能给你约 $${cap}M${cap <= myShare ? '（已经给到头了）' : ''}`)
+      }
       break
     }
     case 'CLOSE_DEAL':
@@ -274,6 +282,14 @@ export function annotateOption(state: GameState, actorId: number, a: PlayerActio
       break
   }
   return notes.length ? `${label} → ${notes.join('；')}` : label
+}
+
+/** Boss 最省组合要付给别人的钱；凑不齐为 null */
+function bossPlanCost(state: GameState): number | null {
+  const neg = state.negotiation
+  if (!neg) return null
+  const sel = selectReps(state)
+  return sel.complete ? sel.repKeys.reduce((s, k) => s + repCost(state, findRep(neg, k)!), 0) : null
 }
 
 /** 给 LLM 看的编号列表（带后果注释） */
@@ -546,6 +562,42 @@ function describeDealHistory(state: GameState, playerId: number): string {
 
 const BOARD_PHASES = new Set<GameState['phase']>(['PLACE_MARKER', 'TURN', 'AFTER_MOVE'])
 
+/** 开头一段：这一步要决定什么、你在比分上的位置。细节在后面，先让模型知道题目 */
+function describeDecisionFocus(state: GameState, playerId: number): string {
+  const neg = state.negotiation
+  const isBoss = neg?.bossId === playerId
+  const task: Record<string, string> = {
+    PLACE_MARKER: '放金钱标记：起始玩家先决定是否交易那一格',
+    TURN: '你的回合：直接开当前格的单，或掷骰移动',
+    AFTER_MOVE: '已移动：开新位置的单，或抽 3 张牌结束回合',
+    NEGOTIATION: isBoss ? '你是 Boss：提方案 / 出牌补位或省钱 / 宣布成交 / 等一轮 / 放弃' : '谈判中轮到你：报价（承诺价）/ 出牌 / 跳过',
+    OFFER_RESPONSE: 'Boss 的方案用到了你的代表：同意，或拒绝并反报价',
+    REACTION: '有人刚出了可被阻止的牌：是否打阻止牌',
+    CLOSING: 'Boss 已宣布成交：放行，或打出最后一张干扰牌',
+    HAND_LIMIT: '手牌超限：弃牌，或先打招募',
+    END_ROLL: '掷终局骰',
+  }
+  const me = state.players[playerId]
+  const others = state.players.filter(p => p.id !== playerId).sort((a, b) => b.cash - a.cash)
+  const rank = 1 + others.filter(p => p.cash > me.cash).length
+  const best = others[0]
+  const gap = !best ? '' : best.cash > me.cash
+    ? `落后领先者 ${best.name} $${best.cash - me.cash}M`
+    : best.cash === me.cash ? '与最高者持平' : `领先第二名 ${best.name} $${me.cash - best.cash}M`
+  const left = state.dealTiles.length - state.completedDeals
+  return `【此刻要决定】${task[state.phase] ?? state.phase}
+【比分】你 $${me.cash}M，第 ${rank}/${state.players.length} 名${gap ? `，${gap}` : ''}；已成交 ${state.completedDeals}/${state.dealTiles.length} 笔（最多还剩 ${left} 笔），本笔成交后终局概率 ${getEndProbability(getCurrentTile(state))}%
+`
+}
+
+/** 弃牌堆是公开的：已经亮出来的威胁牌越多，剩下藏在谁手里的就越少 */
+function describeDiscards(state: GameState): string {
+  const deck = createDeckFor(getVariant(state.variantId), state.houseRules)
+  const kinds: Array<[InfluenceCard['type'], string]> = [['STOP', '阻止'], ['BOSS', '老板'], ['TRAVEL', '旅行'], ['RECRUITMENT', '招募']]
+  const parts = kinds.map(([t, n]) => `${n} ${state.discardPile.filter(c => c.type === t).length}/${deck.filter(c => c.type === t).length}`)
+  return `【弃牌堆（公开，自上次洗牌）】${parts.join('、')}；其余在牌堆或各人手里`
+}
+
 export function buildGameContext(state: GameState, playerId: number): string {
   const player = state.players[playerId]
   const space = getCurrentSpace(state)
@@ -568,7 +620,7 @@ export function buildGameContext(state: GameState, playerId: number): string {
       : '尚未开单；成为 Boss 后从交易总额分配，不需要用已有现金购买代表。'
   const ownFamilies = neg ? [...playerActiveFamilies(neg, playerId)] : state.investors.filter(inv => inv.ownerId === playerId).map(inv => inv.familyId)
 
-  return `${rulesSummaryFor(state)}
+  return `${describeDecisionFocus(state, playerId)}
 【你的身份】${player.name}（ID=${playerId}）
 【你的当前角色】${role}
 【你当前的公开代表】${ownFamilies.map(famLabel).join('、') || '无'}（手中的家族成员牌须打出才入场）
@@ -577,6 +629,7 @@ export function buildGameContext(state: GameState, playerId: number): string {
 ${describeDecisionScope(state)}${describeCoverage(state)}${BOARD_PHASES.has(state.phase) ? describeBoard(state) : ''}${describeAssets(state)}【投资者】${investors}
 【你的手牌】(${player.hand.length}张): ${hand || '无'}
 【你的现金】$${player.cash}M
+${describeDiscards(state)}
 【其他玩家】
 ${others}
 ${describeNegotiation(state, playerId)}${describeRecentEvents(state)}${describePhaseHint(state, playerId)}${describeDealHistory(state, playerId)}`
@@ -610,7 +663,8 @@ export function buildDecisionPrompt(state: GameState, playerId: number, legal: P
     .replace('{{notes}}', () => `${describeRelations(view, playerId)}${notes}`)
     .replace('{{legalActions}}', () => actions)
   return {
-    system: `${withName(persona.brief)}\n${toneOf(style)}\n${withName(ROLE_FRAME)}\n${TABLE_TRUTHS}`,
+    // system 整局不变（人物、桌风、规则、回复格式）：兼容接口可缓存前缀；user 只放随局面变化的内容
+    system: `${withName(persona.brief)}\n${toneOf(style)}\n${withName(ROLE_FRAME)}\n${TABLE_TRUTHS}\n${rulesSummaryFor(view)}\n${withName(REPLY_FORMAT)}`,
     user: `${buildGameContext(view, playerId)}\n${footer}`,
     options,
   }

@@ -142,7 +142,7 @@ export function describeAction(state: GameState, a: PlayerAction): string {
     case 'DISCARD': return `弃掉 ${a.cardIds.length} 张牌（默认弃价值最低的牌；可用 cardIds 自选）`
     case 'PLAY_CLAN': {
       const card = player?.hand.find(c => c.id === a.cardId)
-      return `打出家族成员卡 ${card?.familyId ? famLabel(card.familyId) : ''} 入场（可附带报价 demand）`
+      return `打出家族成员卡 ${card?.familyId ? famLabel(card.familyId) : ''} 入场${neg?.bossId === a.playerId ? '（自己的代表，免费）' : '（可附带报价 demand）'}`
     }
     case 'PLAY_TRAVEL': {
       const card = player?.hand.find(c => c.id === a.cardId)
@@ -182,6 +182,7 @@ export function describeAction(state: GameState, a: PlayerAction): string {
     case 'PLAY_STOP': return '打出阻止牌，取消这张牌的效果'
     case 'PASS_REACTION': return '不阻止'
     case 'SPEAK': {
+      if (neg?.bossId === a.playerId) return '喊话：向他人还价 / 说明预算 / 施压（Boss 不报价，不填 demand）'
       const hasRep = !!neg && playerActiveFamilies(neg, a.playerId).size > 0
       return hasRep ? '喊话并报价：报出你每个代表的出借价（填 demand，可按家族分别报）' : '喊话：施压 / 表态 / 索要封口费（可填 demand）'
     }

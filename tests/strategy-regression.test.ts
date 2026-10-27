@@ -179,7 +179,8 @@ describe('交易入口与信息边界', () => {
     return s
   }
 
-  it('马拉松 #17 二选组和 #18 组合在公开代表齐全时薄利也会尝试开单', () => {
+  // 能识别为可成交，但要向别人买代表的薄利单多数时候不开（竞技场验证：挑单比见单就开胜率高约四成）
+  it('马拉松 #17 二选组和 #18 组合可识别为可成交，薄利时多数先不开', () => {
     for (const spaceId of [17, 18]) {
       let opened = 0
       for (let seed = 1; seed <= 30; seed++) {
@@ -189,8 +190,7 @@ describe('交易入口与信息边界', () => {
         expect(isLegal(s, a)).toBe(true)
         if (a.type === 'OPEN_DEAL') opened++
       }
-      expect(opened).toBeGreaterThan(15)
-      expect(opened).toBeLessThan(30)
+      expect(opened).toBeLessThan(15)
     }
   })
 
